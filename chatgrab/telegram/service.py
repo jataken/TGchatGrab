@@ -32,6 +32,10 @@ class TelegramService:
         self.client: TelegramClient | None = None
         self._phone: str | None = None
         self._phone_code_hash: str | None = None
+        # Cached synchronously-readable flag — the sidebar and other
+        # lightweight UI polling can check this without awaiting a round
+        # trip to Telegram on every refresh tick.
+        self.authorized: bool = False
 
     def _build_client(self) -> TelegramClient:
         if not self.config.api_id.strip() or not self.config.api_hash.strip():
@@ -65,7 +69,8 @@ class TelegramService:
 
     async def is_authorized(self) -> bool:
         await self.connect()
-        return await self.client.is_user_authorized()
+        self.authorized = await self.client.is_user_authorized()
+        return self.authorized
 
     async def me(self):
         await self.connect()
@@ -100,6 +105,7 @@ class TelegramService:
             self.client = None
         self._phone = None
         self._phone_code_hash = None
+        self.authorized = False
 
     # ---- chat lookups -------------------------------------------------
     async def list_dialogs(self, limit: int | None = 1000) -> list[DialogInfo]:

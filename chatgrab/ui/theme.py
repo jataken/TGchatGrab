@@ -134,7 +134,14 @@ def build_qss() -> str:
     }}
     QDialogButtonBox QPushButton:hover {{ background: rgba(233,233,237,16); }}
 
+    /* QScrollArea auto-creates an internal viewport widget that paints its
+       own (light) palette background by default, independent of any
+       stylesheet on the QScrollArea itself — reach through it and the
+       content widget explicitly, or every scrollable screen (Обзор,
+       Поиск, Экспорт, Настройки) renders as a white page with barely
+       visible text on top. */
     QScrollArea {{ border: none; background: transparent; }}
+    QScrollArea > QWidget > QWidget {{ background: transparent; }}
     QScrollBar:vertical {{ width: 10px; background: transparent; }}
     QScrollBar::handle:vertical {{ background: #3f424d; border-radius: 5px; min-height: 24px; }}
     QScrollBar::handle:vertical:hover {{ background: #55586a; }}
