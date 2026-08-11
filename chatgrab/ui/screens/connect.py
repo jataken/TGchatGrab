@@ -105,6 +105,10 @@ class ConnectScreen(QWidget):
         self.send_code_btn = button("Получить код", "primary")
         self.send_code_btn.clicked.connect(self._on_send_code)
         row.addWidget(self.send_code_btn)
+        self.goto_settings_btn = button("Перейти в настройки", "secondary")
+        self.goto_settings_btn.clicked.connect(lambda: self.navigate("settings"))
+        self.goto_settings_btn.hide()
+        row.addWidget(self.goto_settings_btn)
         row.addStretch(1)
         lay.addLayout(row)
         lay.addStretch(1)
@@ -174,8 +178,10 @@ class ConnectScreen(QWidget):
                 "Сначала укажите ключ приложения (api_id) и секрет (api_hash) на экране «Настройки» — "
                 "их выдаёт my.telegram.org."
             )
+            self.goto_settings_btn.show()
             self.stack.setCurrentWidget(self.phone_page)
             return
+        self.goto_settings_btn.hide()
         fire(self._check_auth(), parent=self)
 
     async def _check_auth(self) -> None:
@@ -194,6 +200,13 @@ class ConnectScreen(QWidget):
 
     # ---- actions ---------------------------------------------------------
     def _on_send_code(self) -> None:
+        if not self.ctx.config.is_configured:
+            self.phone_error.setText(
+                "Сначала укажите ключ приложения (api_id) и секрет (api_hash) на экране "
+                "«Настройки» — их выдаёт my.telegram.org."
+            )
+            self.goto_settings_btn.show()
+            return
         phone = self.phone_field.text().strip()
         if not phone:
             self.phone_error.setText("Введите номер телефона.")

@@ -30,8 +30,19 @@ class TelegramService:
         self._phone_code_hash: str | None = None
 
     def _build_client(self) -> TelegramClient:
-        api_id = int(self.config.api_id)
-        api_hash = self.config.api_hash
+        if not self.config.api_id.strip() or not self.config.api_hash.strip():
+            raise ValueError(
+                "Сначала укажите ключ приложения (api_id) и секрет (api_hash) на "
+                "экране «Настройки» — их выдаёт my.telegram.org."
+            )
+        try:
+            api_id = int(self.config.api_id.strip())
+        except ValueError:
+            raise ValueError(
+                "Ключ приложения (api_id) должен быть числом — проверьте значение "
+                "на экране «Настройки»."
+            ) from None
+        api_hash = self.config.api_hash.strip()
         return TelegramClient(
             self.config.session_path, api_id, api_hash,
             device_model="ChatGrab", app_version=__version__,
