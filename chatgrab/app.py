@@ -9,6 +9,7 @@ import qasync
 from PySide6.QtWidgets import QApplication
 
 from . import APP_NAME
+from . import safety_net
 from .config import AppConfig
 from .db.database import Database
 from .paths import PATHS
@@ -24,6 +25,7 @@ from .ui.theme import build_qss
 
 def run() -> int:
     PATHS.ensure()
+    safety_net.install(PATHS)
     config = AppConfig.load(PATHS)
 
     app = QApplication(sys.argv)
@@ -32,6 +34,7 @@ def run() -> int:
 
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
+    safety_net.install_loop_handler(loop, PATHS)
 
     db = Database(PATHS.db_path)
     tg = TelegramService(config)

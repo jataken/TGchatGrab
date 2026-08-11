@@ -21,6 +21,19 @@ from telethon.errors import AuthKeyUnregisteredError
 
 
 def humanize_error(exc: Exception) -> str:
+    """Never raises — called from every error-handling path in the UI, so
+    a bug here must degrade to a generic message, not compound the
+    original failure with a second, unhandled one."""
+    try:
+        return _humanize(exc)
+    except Exception:
+        try:
+            return str(exc) or exc.__class__.__name__
+        except Exception:
+            return "Неизвестная ошибка."
+
+
+def _humanize(exc: Exception) -> str:
     if isinstance(exc, PhoneCodeInvalidError):
         return "Неверный код. Проверьте цифры и попробуйте снова."
     if isinstance(exc, PhoneCodeExpiredError):
