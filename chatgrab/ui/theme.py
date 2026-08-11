@@ -84,16 +84,55 @@ def build_qss() -> str:
         padding: 6px; font-size: 13px; color: {TEXT};
     }}
 
+    /* Any list/table/dropdown-popup view: dark background + light text,
+       explicitly — otherwise it falls back to the OS's (usually light)
+       palette while text stays light, which is unreadable. */
+    QAbstractItemView {{
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {DIVIDER};
+        border-radius: 8px; outline: none;
+        selection-background-color: rgba(145,132,217,60);
+        selection-color: {ACCENT_100};
+    }}
+    QComboBox QAbstractItemView {{
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {DIVIDER};
+        selection-background-color: rgba(145,132,217,60); selection-color: {ACCENT_100};
+    }}
+    QListWidget, QListView, QTreeView {{
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {DIVIDER};
+        border-radius: 8px;
+    }}
+    QListWidget::item, QListView::item {{ padding: 5px 8px; border-radius: 5px; }}
+    QListWidget::item:selected, QListView::item:selected {{
+        background: rgba(145,132,217,60); color: {ACCENT_100};
+    }}
+    QListWidget::item:hover, QListView::item:hover {{ background: rgba(233,233,237,15); }}
+
     QTableWidget {{
         background: transparent; border: none; gridline-color: {DIVIDER};
-        selection-background-color: rgba(145,132,217,30); font-size: 13px;
+        selection-background-color: rgba(145,132,217,30); color: {TEXT}; font-size: 13px;
     }}
-    QTableWidget::item {{ padding: 6px; border-bottom: 1px solid {DIVIDER}; }}
+    QTableWidget::item {{ padding: 6px; border-bottom: 1px solid {DIVIDER}; color: {TEXT}; }}
     QHeaderView::section {{
         background: transparent; color: {TEXT_MUTED}; border: none;
         border-bottom: 1px solid {DIVIDER}; padding: 6px; font-size: 11px;
         text-transform: uppercase;
     }}
+
+    /* QMessageBox / QInputDialog / our own dialogs are all QDialog under
+       the hood — style the base class once so none of them silently
+       revert to a light native background under dark text. */
+    QDialog {{ background: {BG}; color: {TEXT}; }}
+    QMessageBox {{ background: {BG}; }}
+    QMessageBox QLabel {{ color: {TEXT}; background: transparent; }}
+    /* Only the auto-generated OK/Cancel buttons of native QMessageBox /
+       QInputDialog live in a QDialogButtonBox — our own dialog buttons
+       carry an explicit class (primary/secondary/ghost) and are styled
+       by the rules above instead, so this can't fight with those. */
+    QDialogButtonBox QPushButton {{
+        border: 1px solid {DIVIDER}; border-radius: 8px; padding: 6px 14px;
+        min-width: 64px; background: rgba(233,233,237,6); color: {TEXT};
+    }}
+    QDialogButtonBox QPushButton:hover {{ background: rgba(233,233,237,16); }}
 
     QScrollArea {{ border: none; background: transparent; }}
     QScrollBar:vertical {{ width: 10px; background: transparent; }}
