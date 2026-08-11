@@ -3,14 +3,18 @@ app, covering the login wizard and basic entity/dialog lookups. The
 collector (collector.py) builds on top of this for history + realtime."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.types import Channel, Chat, User
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+from telethon.tl.types import ChatInviteAlready, User
 
 from .. import __version__
 from ..config import AppConfig
+
+_DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/", re.IGNORECASE)
 
 
 @dataclass
@@ -98,13 +102,16 @@ class TelegramService:
         self._phone_code_hash = None
 
     # ---- chat lookups -------------------------------------------------
-    async def list_dialogs(self, limit: int = 300) -> list[DialogInfo]:
+    async def list_dialogs(self, limit: int | None = 1000) -> list[DialogInfo]:
         await self.connect()
         out: list[DialogInfo] = []
         async for d in self.client.iter_dialogs(limit=limit):
-            entity = d.entity
-            if not isinstance(entity, (Channel, Chat)):
+            # Telethon's own classification — covers megagroups, broadcast
+            # channels and basic groups, and correctly excludes chats the
+            # account was kicked from (ChatForbidden) and private DMs.
+            if not (d.is_group or d.is_channel):
                 continue
+            entity = d.entity
             members = getattr(entity, "participants_count", None)
             out.append(DialogInfo(
                 chat_id=d.id, title=d.name or str(d.id),
@@ -115,11 +122,49 @@ class TelegramService:
 
     async def resolve_chat(self, link_or_username: str):
         await self.connect()
-        text = link_or_username.strip()
-        text = text.replace("https://t.me/", "").replace("http://t.me/", "")
-        text = text.replace("t.me/", "").lstrip("@")
-        text = text.split("?")[0].strip("/")
-        entity = await self.client.get_entity(text)
+        text = _DOMAIN_RE.sub("", link_or_username.strip())
+        text = text.split("?")[0].split("#")[0].strip("/")
+        if not text:
+            raise ValueError("Не удалось распознать ссылку или имя чата.")
+
+        invite_hash = _extract_invite_hash(text)
+        if invite_hash:
+            return await self._resolve_invite(invite_hash)
+
+        username = text.lstrip("@")
+        try:
+            entity = await self.client.get_entity(username)
+        except ValueError as e:
+            raise ValueError(
+                f"Такого чата не существует, либо он недоступен: «{link_or_username.strip()}». "
+                "Проверьте ссылку/имя или выберите чат из списка своих диалогов."
+            ) from e
         if isinstance(entity, User):
             raise ValueError("Это личный чат, а не групповой — приложение собирает только групповые чаты и каналы.")
         return entity
+
+    async def _resolve_invite(self, invite_hash: str):
+        try:
+            invite = await self.client(CheckChatInviteRequest(invite_hash))
+        except Exception as e:
+            raise ValueError(
+                "Не удалось проверить ссылку-приглашение — возможно, она устарела или отозвана."
+            ) from e
+        if isinstance(invite, ChatInviteAlready):
+            return invite.chat
+        # Not a participant yet (ChatInvite/ChatInvitePeek) — joining is the
+        # only way a user account can read full history of a private chat.
+        updates = await self.client(ImportChatInviteRequest(invite_hash))
+        if not updates.chats:
+            raise ValueError("Не удалось присоединиться к чату по этой ссылке.")
+        return updates.chats[0]
+
+
+def _extract_invite_hash(text: str) -> str | None:
+    """`+HASH` or `joinchat/HASH` — private invite links, resolved via
+    CheckChatInviteRequest/ImportChatInviteRequest rather than get_entity
+    (which would otherwise misread a leading '+' as a phone number)."""
+    if text.startswith("+"):
+        return text[1:] or None
+    m = re.match(r"^joinchat/([\w-]+)$", text, re.IGNORECASE)
+    return m.group(1) if m else None
