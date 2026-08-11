@@ -1,0 +1,40 @@
+"""Filesystem layout. Everything lives next to the executable (or the
+project root when run from source), so the whole folder is portable —
+copy it anywhere and the app keeps working with the same data."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+def base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        # PyInstaller onefile: sys.executable is the real .exe location,
+        # not the temp extraction dir — safe to anchor data next to it.
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+class Paths:
+    def __init__(self, root: Path | None = None):
+        self.root = root or base_dir()
+        self.data_dir = self.root / "data"
+        self.db_path = self.data_dir / "chatgrab.db"
+        self.photos_dir = self.data_dir / "photos"
+        self.exports_dir = self.data_dir / "exports"
+        self.session_dir = self.data_dir / "session"
+        self.session_path = self.session_dir / "worker.session"
+        self.backups_dir = self.data_dir / "backups"
+        self.config_path = self.root / "config.json"
+        self.log_path = self.data_dir / "chatgrab.log"
+
+    def ensure(self) -> None:
+        for d in (self.data_dir, self.photos_dir, self.exports_dir,
+                  self.session_dir, self.backups_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+    def photo_path(self, chat_id: int, message_id: int) -> Path:
+        return self.photos_dir / str(chat_id) / f"{message_id}.jpg"
+
+
+PATHS = Paths()

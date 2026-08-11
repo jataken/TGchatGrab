@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
+    QScrollArea, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
+)
+
+from ..context import AppContext
+from ..widgets import button, card, h1, muted
+from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
+from ...services.export_service import DEFAULT_MD_HEADER
+from ...telegram.collector import DEFAULT_SCHEDULE
+
+WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+class SettingsScreen(QWidget):
+    def __init__(self, ctx: AppContext, navigate):
+        super().__init__()
+        self.ctx = ctx
+        self.navigate = navigate
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        scroll.setWidget(container)
+        wrap = QVBoxLayout(self)
+        wrap.setContentsMargins(0, 0, 0, 0)
+        wrap.addWidget(scroll)
+
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(40, 28, 40, 32)
+        outer.addWidget(h1("Настройки"))
+        outer.addWidget(muted(
+            "Ключи доступа берутся на my.telegram.org и хранятся в отдельном файле "
+            "рядом с программой, не в её коде."
+        ))
+        outer.addSpacing(18)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(28)
+        grid.setVerticalSpacing(10)
+        outer.addLayout(grid)
+
+        # ---- Telegram access -------------------------------------------
+        grid.addWidget(muted("ДОСТУП К TELEGRAM"), 0, 0)
+        grid.addWidget(QLabel("Ключ приложения (api_id)"), 1, 0)
+        self.api_id_input = QLineEdit(self.ctx.config.api_id)
+        grid.addWidget(self.api_id_input, 2, 0)
+        grid.addWidget(QLabel("Секрет приложения (api_hash)"), 3, 0)
+        self.api_hash_input = QLineEdit(self.ctx.config.api_hash)
+        self.api_hash_input.setEchoMode(QLineEdit.Password)
+        grid.addWidget(self.api_hash_input, 4, 0)
+        grid.addWidget(QLabel("Файл входа в аккаунт"), 5, 0)
+        session_row = QHBoxLayout()
+        self.session_path_input = QLineEdit(self.ctx.config.session_path)
+        session_row.addWidget(self.session_path_input)
+        session_browse = button("Обзор…", "secondary")
+        session_browse.clicked.connect(self._browse_session)
+        session_row.addWidget(session_browse)
+        session_row_w = QWidget()
+        session_row_w.setLayout(session_row)
+        grid.addWidget(session_row_w, 6, 0)
+        note = muted("Этот файл даёт полный доступ к аккаунту. Не пересылайте его и не кладите в выгрузки.")
+        note.setWordWrap(True)
+        grid.addWidget(note, 7, 0)
+        save_creds_btn = button("Сохранить", "primary")
+        save_creds_btn.clicked.connect(self._save_credentials)
+        grid.addWidget(save_creds_btn, 8, 0)
+
+        # ---- speed & photos ------------------------------------------------
+        grid.addWidget(muted("СКОРОСТЬ И ФОТОГРАФИИ"), 0, 1)
+        grid.addWidget(QLabel("Пауза между запросами истории, с"), 1, 1)
+        delay_row = QHBoxLayout()
+        self.delay_min = QDoubleSpinBox()
+        self.delay_min.setRange(0.1, 10.0)
+        self.delay_min.setSingleStep(0.1)
+        self.delay_max = QDoubleSpinBox()
+        self.delay_max.setRange(0.1, 20.0)
+        self.delay_max.setSingleStep(0.1)
+        bounds = self.ctx.db.get_setting("delay_bounds", {"min": 0.2, "max": 4.0})
+        self.delay_min.setValue(bounds["min"])
+        self.delay_max.setValue(bounds["max"])
+        delay_row.addWidget(muted("от"))
+        delay_row.addWidget(self.delay_min)
+        delay_row.addWidget(muted("до"))
+        delay_row.addWidget(self.delay_max)
+        delay_row_w = QWidget()
+        delay_row_w.setLayout(delay_row)
+        grid.addWidget(delay_row_w, 2, 1)
+        hint = muted("Больше пауза — реже остановки со стороны Telegram, но история собирается дольше. "
+                      "Пауза подстраивается сама: растёт после отказа, плавно снижается при успешной серии.")
+        hint.setWordWrap(True)
+        grid.addWidget(hint, 3, 1)
+
+        photos_row = QHBoxLayout()
+        photos_col = QVBoxLayout()
+        photos_col.addWidget(QLabel("Скачивать фотографии из сообщений"))
+        photos_col.addWidget(muted("Видео, документы и голосовые не скачиваются никогда"))
+        photos_row.addLayout(photos_col)
+        photos_row.addStretch(1)
+        self.photos_cb = QCheckBox()
+        self.photos_cb.setChecked(self.ctx.config.photos_enabled)
+        photos_row.addWidget(self.photos_cb)
+        photos_row_w = QWidget()
+        photos_row_w.setLayout(photos_row)
+        grid.addWidget(photos_row_w, 4, 1)
+
+        grid.addWidget(QLabel("Папка для фотографий"), 5, 1)
+        photos_dir_row = QHBoxLayout()
+        self.photos_dir_input = QLineEdit(self.ctx.config.photos_dir)
+        photos_dir_row.addWidget(self.photos_dir_input)
+        photos_dir_browse = button("Обзор…", "secondary")
+        photos_dir_browse.clicked.connect(self._browse_photos_dir)
+        photos_dir_row.addWidget(photos_dir_browse)
+        photos_dir_row_w = QWidget()
+        photos_dir_row_w.setLayout(photos_dir_row)
+        grid.addWidget(photos_dir_row_w, 6, 1)
+        path_note = QLabel("photos/<chat_id>/<message_id>.jpg")
+        path_note.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #6c6c78;")
+        grid.addWidget(path_note, 7, 1)
+        save_speed_btn = button("Сохранить", "primary")
+        save_speed_btn.clicked.connect(self._save_speed_photos)
+        grid.addWidget(save_speed_btn, 8, 1)
+
+        outer.addSpacing(24)
+
+        # ---- schedule ------------------------------------------------------
+        sched_card = card()
+        sched_lay = QVBoxLayout(sched_card)
+        sched_lay.setContentsMargins(16, 14, 16, 14)
+        sched_lay.addWidget(muted("РАСПИСАНИЕ ЗАГРУЗКИ ИСТОРИИ"))
+        sched_lay.addWidget(muted(
+            "Прослушивание новых сообщений работает всегда, независимо от расписания."
+        ))
+        schedule = self.ctx.db.get_setting("schedule", DEFAULT_SCHEDULE)
+        self.sched_enabled_cb = QCheckBox("Ограничить загрузку истории окном времени")
+        self.sched_enabled_cb.setChecked(schedule.get("enabled", False))
+        sched_lay.addWidget(self.sched_enabled_cb)
+        time_row = QHBoxLayout()
+        time_row.addWidget(muted("с"))
+        self.sched_start = QLineEdit(schedule.get("start", "23:00"))
+        self.sched_start.setMaximumWidth(70)
+        time_row.addWidget(self.sched_start)
+        time_row.addWidget(muted("до"))
+        self.sched_end = QLineEdit(schedule.get("end", "08:00"))
+        self.sched_end.setMaximumWidth(70)
+        time_row.addWidget(self.sched_end)
+        time_row.addSpacing(16)
+        self.day_checks: list[QCheckBox] = []
+        for i, name in enumerate(WEEKDAYS):
+            cb = QCheckBox(name)
+            cb.setChecked(i in schedule.get("days", list(range(7))))
+            self.day_checks.append(cb)
+            time_row.addWidget(cb)
+        time_row.addStretch(1)
+        sched_lay.addLayout(time_row)
+        save_sched_btn = button("Сохранить расписание", "primary")
+        save_sched_btn.clicked.connect(self._save_schedule)
+        sched_lay.addWidget(save_sched_btn)
+        outer.addWidget(sched_card)
+        outer.addSpacing(24)
+
+        # ---- ignore rules ------------------------------------------------------
+        ignore_card = card()
+        ig_lay = QVBoxLayout(ignore_card)
+        ig_lay.setContentsMargins(16, 14, 16, 14)
+        ig_lay.addWidget(muted("ПРАВИЛА ИГНОРА"))
+        ig_lay.addWidget(muted(
+            "Сообщения от автора или со стоп-словом помечаются скрытыми — не удаляются, "
+            "не попадают в выгрузку по умолчанию."
+        ))
+        add_row = QHBoxLayout()
+        self.rule_type_combo = QComboBox()
+        self.rule_type_combo.addItems(["автор (имя или @ник)", "стоп-слово"])
+        add_row.addWidget(self.rule_type_combo)
+        self.rule_value_input = QLineEdit()
+        self.rule_value_input.setPlaceholderText("значение")
+        add_row.addWidget(self.rule_value_input, 1)
+        self.rule_scope_combo = QComboBox()
+        self.rule_scope_combo.addItem("во всех чатах", "global")
+        for chat in self.ctx.db.list_chats():
+            self.rule_scope_combo.addItem(f"только в «{chat['title']}»", chat["chat_id"])
+        add_row.addWidget(self.rule_scope_combo)
+        add_rule_btn = button("Добавить правило", "primary")
+        add_rule_btn.clicked.connect(self._add_ignore_rule)
+        add_row.addWidget(add_rule_btn)
+        ig_lay.addLayout(add_row)
+
+        self.rules_list = QListWidget()
+        self.rules_list.setMaximumHeight(140)
+        ig_lay.addWidget(self.rules_list)
+        rule_btn_row = QHBoxLayout()
+        del_rule_btn = button("Удалить выбранное", "secondary")
+        del_rule_btn.clicked.connect(self._delete_ignore_rule)
+        rule_btn_row.addWidget(del_rule_btn)
+        apply_rules_btn = button("Применить к уже собранным", "ghost")
+        apply_rules_btn.clicked.connect(self._apply_ignore_rules)
+        rule_btn_row.addWidget(apply_rules_btn)
+        rule_btn_row.addStretch(1)
+        ig_lay.addLayout(rule_btn_row)
+        outer.addWidget(ignore_card)
+        outer.addSpacing(24)
+
+        # ---- authors ------------------------------------------------------
+        authors_card = card()
+        au_lay = QVBoxLayout(authors_card)
+        au_lay.setContentsMargins(16, 14, 16, 14)
+        au_lay.addWidget(muted("АВТОРЫ ПО ЧАТУ"))
+        au_pick_row = QHBoxLayout()
+        self.authors_chat_combo = QComboBox()
+        for chat in self.ctx.db.list_chats():
+            self.authors_chat_combo.addItem(chat["title"], chat["chat_id"])
+        self.authors_chat_combo.currentIndexChanged.connect(self._refresh_authors)
+        au_pick_row.addWidget(self.authors_chat_combo, 1)
+        au_lay.addLayout(au_pick_row)
+        self.authors_table = QTableWidget(0, 5)
+        self.authors_table.setHorizontalHeaderLabels(["Автор", "@ник", "Сообщений", "Первое", "Последнее"])
+        self.authors_table.setMaximumHeight(200)
+        self.authors_table.verticalHeader().setVisible(False)
+        au_lay.addWidget(self.authors_table)
+        outer.addWidget(authors_card)
+        outer.addSpacing(24)
+
+        # ---- database maintenance ------------------------------------------------------
+        db_card = card()
+        db_lay = QVBoxLayout(db_card)
+        db_lay.setContentsMargins(16, 14, 16, 14)
+        db_lay.addWidget(muted("БАЗА ДАННЫХ"))
+        paths_row = QHBoxLayout()
+        paths_row.addWidget(QLabel(f"База: {self.ctx.paths.db_path}"))
+        open_db_btn = button("Открыть в проводнике", "secondary")
+        open_db_btn.clicked.connect(lambda: open_in_explorer(self.ctx.paths.data_dir))
+        paths_row.addWidget(open_db_btn)
+        paths_row.addStretch(1)
+        db_lay.addLayout(paths_row)
+        photos_path_row = QHBoxLayout()
+        photos_path_row.addWidget(QLabel(f"Фото: {self.ctx.paths.photos_dir}"))
+        open_photos_btn = button("Открыть в проводнике", "secondary")
+        open_photos_btn.clicked.connect(lambda: open_in_explorer(self.ctx.paths.photos_dir))
+        photos_path_row.addWidget(open_photos_btn)
+        photos_path_row.addStretch(1)
+        db_lay.addLayout(photos_path_row)
+
+        backup_settings = self.ctx.backup_service.settings()
+        backup_row = QHBoxLayout()
+        self.backup_enabled_cb = QCheckBox("Резервная копия по расписанию")
+        self.backup_enabled_cb.setChecked(backup_settings.get("enabled", True))
+        backup_row.addWidget(self.backup_enabled_cb)
+        backup_row.addWidget(muted("каждые"))
+        self.backup_interval_spin = QSpinBox()
+        self.backup_interval_spin.setRange(1, 168)
+        self.backup_interval_spin.setValue(backup_settings.get("interval_hours", 24))
+        backup_row.addWidget(self.backup_interval_spin)
+        backup_row.addWidget(muted("ч. · хранить"))
+        self.backup_keep_spin = QSpinBox()
+        self.backup_keep_spin.setRange(1, 50)
+        self.backup_keep_spin.setValue(backup_settings.get("keep", 5))
+        backup_row.addWidget(self.backup_keep_spin)
+        backup_row.addWidget(muted("копий"))
+        backup_row.addStretch(1)
+        db_lay.addLayout(backup_row)
+
+        action_row = QHBoxLayout()
+        save_backup_btn = button("Сохранить настройки бэкапа", "secondary")
+        save_backup_btn.clicked.connect(self._save_backup_settings)
+        action_row.addWidget(save_backup_btn)
+        backup_now_btn = button("Сделать бэкап сейчас", "secondary")
+        backup_now_btn.clicked.connect(self._backup_now)
+        action_row.addWidget(backup_now_btn)
+        vacuum_btn = button("Сжать базу (VACUUM)", "secondary")
+        vacuum_btn.clicked.connect(self._vacuum)
+        action_row.addWidget(vacuum_btn)
+        action_row.addStretch(1)
+        db_lay.addLayout(action_row)
+        self.db_size_label = muted("")
+        db_lay.addWidget(self.db_size_label)
+        outer.addWidget(db_card)
+        outer.addSpacing(24)
+
+        # ---- misc ------------------------------------------------------
+        misc_card = card()
+        misc_lay = QVBoxLayout(misc_card)
+        misc_lay.setContentsMargins(16, 14, 16, 14)
+        misc_lay.addWidget(muted("ПРОЧЕЕ"))
+        gap_row = QHBoxLayout()
+        gap_row.addWidget(QLabel("Предупреждать, если по чату нет новых сообщений дольше, суток"))
+        self.gap_days_spin = QSpinBox()
+        self.gap_days_spin.setRange(1, 90)
+        self.gap_days_spin.setValue(self.ctx.db.get_setting("gap_notify_days", 7))
+        gap_row.addWidget(self.gap_days_spin)
+        gap_row.addStretch(1)
+        misc_lay.addLayout(gap_row)
+
+        misc_lay.addWidget(QLabel("Шапка Markdown-дайджеста"))
+        self.md_header_edit = QPlainTextEdit(self.ctx.db.get_setting("markdown_header", DEFAULT_MD_HEADER))
+        self.md_header_edit.setMaximumHeight(120)
+        misc_lay.addWidget(self.md_header_edit)
+        save_misc_btn = button("Сохранить", "primary")
+        save_misc_btn.clicked.connect(self._save_misc)
+        misc_lay.addWidget(save_misc_btn)
+        outer.addWidget(misc_card)
+        outer.addStretch(1)
+
+        self._refresh_rules()
+        self._refresh_authors()
+        self._refresh_db_size()
+
+    def on_show(self, **kwargs) -> None:
+        self._refresh_rules()
+        self._refresh_authors()
+        self._refresh_db_size()
+
+    # ---- actions -----------------------------------------------------
+    def _browse_session(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Файл входа", self.session_path_input.text())
+        if path:
+            self.session_path_input.setText(path)
+
+    def _browse_photos_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Папка для фотографий", self.photos_dir_input.text())
+        if d:
+            self.photos_dir_input.setText(d)
+
+    def _save_credentials(self) -> None:
+        cfg = self.ctx.config
+        cfg.api_id = self.api_id_input.text().strip()
+        cfg.api_hash = self.api_hash_input.text().strip()
+        cfg.session_path = self.session_path_input.text().strip()
+        cfg.save()
+        QMessageBox.information(
+            self, "Сохранено",
+            "Ключи сохранены. Если менялся файл входа — перезапустите приложение, чтобы применить."
+        )
+
+    def _save_speed_photos(self) -> None:
+        self.ctx.collector.save_delay_bounds(self.delay_min.value(), self.delay_max.value())
+        self.ctx.config.photos_enabled = self.photos_cb.isChecked()
+        self.ctx.config.photos_dir = self.photos_dir_input.text().strip()
+        self.ctx.config.save()
+        self.ctx.paths.photos_dir = Path(self.ctx.config.photos_dir)
+        self.ctx.paths.photos_dir.mkdir(parents=True, exist_ok=True)
+        QMessageBox.information(self, "Сохранено", "Настройки скорости и фотографий обновлены.")
+
+    def _save_schedule(self) -> None:
+        days = [i for i, cb in enumerate(self.day_checks) if cb.isChecked()]
+        self.ctx.collector.save_schedule(
+            self.sched_enabled_cb.isChecked(), self.sched_start.text().strip(),
+            self.sched_end.text().strip(), days,
+        )
+        QMessageBox.information(self, "Сохранено", "Расписание обновлено.")
+
+    def _add_ignore_rule(self) -> None:
+        value = self.rule_value_input.text().strip()
+        if not value:
+            return
+        rule_type = "author" if self.rule_type_combo.currentIndex() == 0 else "stopword"
+        scope_data = self.rule_scope_combo.currentData()
+        scope = "global" if scope_data in (None, "global") else "chat"
+        chat_id = scope_data if scope == "chat" else None
+        self.ctx.ignore_service.add_rule(rule_type, value, scope, chat_id)
+        self.rule_value_input.clear()
+        self._refresh_rules()
+
+    def _delete_ignore_rule(self) -> None:
+        item = self.rules_list.currentItem()
+        if item:
+            self.ctx.ignore_service.remove_rule(item.data(1000))
+            self._refresh_rules()
+
+    def _refresh_rules(self) -> None:
+        self.rules_list.clear()
+        for r in self.ctx.ignore_service.list_rules():
+            scope = "везде" if r["scope"] == "global" else f"чат {r['chat_id']}"
+            kind = "автор" if r["rule_type"] == "author" else "стоп-слово"
+            item = QListWidgetItem(f"{kind}: {r['value']}  ·  {scope}")
+            item.setData(1000, r["id"])
+            self.rules_list.addItem(item)
+
+    def _apply_ignore_rules(self) -> None:
+        n = self.ctx.ignore_service.apply_to_existing()
+        QMessageBox.information(self, "Готово", f"Скрыто сообщений: {n}.")
+
+    def _refresh_authors(self) -> None:
+        chat_id = self.authors_chat_combo.currentData()
+        self.authors_table.setRowCount(0)
+        if chat_id is None:
+            return
+        authors = self.ctx.db.authors_for_chat(chat_id)
+        self.authors_table.setRowCount(len(authors))
+        for row, a in enumerate(authors):
+            self.authors_table.setItem(row, 0, QTableWidgetItem(a["sender_display_name"] or "—"))
+            self.authors_table.setItem(row, 1, QTableWidgetItem(a["sender_username"] or ""))
+            self.authors_table.setItem(row, 2, QTableWidgetItem(str(a["n"])))
+            self.authors_table.setItem(row, 3, QTableWidgetItem(str(a["first"])[:10]))
+            self.authors_table.setItem(row, 4, QTableWidgetItem(str(a["last"])[:10]))
+
+    def _refresh_db_size(self) -> None:
+        size_mb = self.ctx.db.file_size() / (1024 * 1024)
+        self.db_size_label.setText(f"Текущий размер базы: {size_mb:.1f} МБ")
+
+    def _save_backup_settings(self) -> None:
+        self.ctx.backup_service.save_settings(
+            self.backup_enabled_cb.isChecked(), self.backup_interval_spin.value(),
+            self.backup_keep_spin.value(),
+        )
+        QMessageBox.information(self, "Сохранено", "Настройки резервного копирования обновлены.")
+
+    def _backup_now(self) -> None:
+        path = self.ctx.backup_service.run_backup_now()
+        QMessageBox.information(self, "Готово", f"Резервная копия сохранена: {path}")
+
+    def _vacuum(self) -> None:
+        before, after = self.ctx.backup_service.vacuum()
+        self._refresh_db_size()
+        QMessageBox.information(
+            self, "Готово",
+            f"Было: {before / (1024 * 1024):.1f} МБ → стало: {after / (1024 * 1024):.1f} МБ",
+        )
+
+    def _save_misc(self) -> None:
+        self.ctx.db.set_setting("gap_notify_days", self.gap_days_spin.value())
+        self.ctx.db.set_setting("markdown_header", self.md_header_edit.toPlainText())
+        QMessageBox.information(self, "Сохранено", "Настройки обновлены.")
