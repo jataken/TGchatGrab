@@ -208,6 +208,7 @@ class ConnectScreen(QWidget):
             self.account_meta_label.setText(f"{phone} · вход выполнен {now}" if phone else f"вход выполнен {now}")
             self.stack.setCurrentWidget(self.authed_page)
             await self.ctx.collector.start()
+            await self.ctx.bot_manager.start()
         else:
             self.stack.setCurrentWidget(self.phone_page)
 

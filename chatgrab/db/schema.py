@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 _DDL_META = """
 CREATE TABLE IF NOT EXISTS app_meta (
@@ -129,6 +129,139 @@ CREATE TABLE IF NOT EXISTS chat_stat_cache (
 );
 """
 
+# ---- bot constructor ---------------------------------------------------
+# bot_id is the isolation key throughout: every table below either carries
+# it directly or reaches it via a foreign row, so a future server-side
+# multi-account version only needs to add a tenant/user key alongside it,
+# not restructure the model.
+
+_DDL_BOTS = """
+CREATE TABLE IF NOT EXISTS bots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,                       -- userbot | bot_api
+    token_encrypted TEXT,                     -- bot_api only
+    preset TEXT NOT NULL DEFAULT 'custom',    -- b2b | b2c | custom
+    manager_chat_id TEXT,
+    status TEXT NOT NULL DEFAULT 'stopped',   -- running | stopped | error
+    last_error TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_BOT_TRIGGERS = """
+CREATE TABLE IF NOT EXISTS bot_triggers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL,
+    type TEXT NOT NULL,                       -- keyword | command | incoming_dm | chat_message | schedule | inactivity
+    config TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_BOT_ACTIONS = """
+CREATE TABLE IF NOT EXISTS bot_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_id INTEGER NOT NULL,
+    type TEXT NOT NULL,                       -- send_dm | run_scenario | save_lead | forward_lead | tag | notify
+    config TEXT NOT NULL DEFAULT '{}',
+    order_index INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+_DDL_BOT_CONTACTS = """
+CREATE TABLE IF NOT EXISTS bot_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL UNIQUE,
+    username TEXT,
+    first_seen TEXT NOT NULL,
+    last_active TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT 'organic'    -- organic | parsed
+);
+"""
+
+_DDL_BOT_LEADS = """
+CREATE TABLE IF NOT EXISTS bot_leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id INTEGER NOT NULL,
+    bot_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',       -- new | in_progress | closed
+    manager TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
+_DDL_BOT_ACTIVITY_LOG = """
+CREATE TABLE IF NOT EXISTS bot_activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id INTEGER,
+    bot_id INTEGER,
+    chat_id INTEGER,
+    message_id INTEGER,
+    timestamp TEXT NOT NULL,
+    chat_type TEXT,                           -- dm | group | channel
+    kind TEXT NOT NULL DEFAULT 'message'      -- message | trigger_fired | error
+);
+"""
+
+_DDL_BOT_TEMPLATES = """
+CREATE TABLE IF NOT EXISTS bot_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER,
+    name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    variables TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_BOT_SCENARIOS = """
+CREATE TABLE IF NOT EXISTS bot_scenarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    steps TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+"""
+
+# One row per in-flight (or finished) scripted dialog with a contact — not
+# in the original spec's table list, but required for it to actually work:
+# without persisted step/answer state, restarting the app mid-conversation
+# would silently lose where a contact was in the scenario.
+_DDL_BOT_SCENARIO_SESSIONS = """
+CREATE TABLE IF NOT EXISTS bot_scenario_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL,
+    scenario_id INTEGER NOT NULL,
+    contact_telegram_id INTEGER NOT NULL,
+    step_index INTEGER NOT NULL DEFAULT 0,
+    answers TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active',    -- active | done | abandoned
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(bot_id, contact_telegram_id, status)
+);
+"""
+
+_DDL_BOT_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_bot_triggers_bot ON bot_triggers(bot_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_actions_trigger ON bot_actions(trigger_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_leads_bot ON bot_leads(bot_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_leads_contact ON bot_leads(contact_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_activity_contact ON bot_activity_log(contact_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_activity_bot ON bot_activity_log(bot_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_scenarios_bot ON bot_scenarios(bot_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_templates_bot ON bot_templates(bot_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_contacts_telegram_id ON bot_contacts(telegram_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_scenario_sessions_lookup "
+    "ON bot_scenario_sessions(bot_id, contact_telegram_id, status);",
+]
+
 _DDL_FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text, media_caption, content='messages', content_rowid='id'
@@ -161,6 +294,9 @@ _FTS_TRIGGERS = [
 _ALL_TABLE_DDL = [
     _DDL_META, _DDL_SETTINGS, _DDL_CHATS, _DDL_MESSAGES,
     _DDL_EXPORT_LOG, _DDL_EXPORT_PRESET, _DDL_IGNORE_RULE, _DDL_STAT_CACHE,
+    _DDL_BOTS, _DDL_BOT_TRIGGERS, _DDL_BOT_ACTIONS, _DDL_BOT_CONTACTS,
+    _DDL_BOT_LEADS, _DDL_BOT_ACTIVITY_LOG, _DDL_BOT_TEMPLATES,
+    _DDL_BOT_SCENARIOS, _DDL_BOT_SCENARIO_SESSIONS,
 ]
 
 
@@ -208,6 +344,8 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
         )
 
     for ddl in _DDL_INDEXES:
+        conn.execute(ddl)
+    for ddl in _DDL_BOT_INDEXES:
         conn.execute(ddl)
     conn.execute(_DDL_FTS)
     for ddl in _FTS_TRIGGERS:

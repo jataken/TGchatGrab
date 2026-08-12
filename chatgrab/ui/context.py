@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..bots.manager import BotManager
 from ..config import AppConfig
 from ..db.database import Database
 from ..paths import Paths
@@ -26,3 +27,4 @@ class AppContext:
     ignore_service: IgnoreService
     backup_service: BackupService
     security: SecurityService
+    bot_manager: BotManager

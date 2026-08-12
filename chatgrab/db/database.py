@@ -461,6 +461,339 @@ class Database:
         with self._lock:
             self._conn.close()
 
+    # ---- bots -----------------------------------------------------------
+    def add_bot(self, name: str, type_: str, token_encrypted: str | None,
+                preset: str = "custom", manager_chat_id: str | None = None) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO bots(name, type, token_encrypted, preset, manager_chat_id,
+                       status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'stopped', ?)""",
+                (name, type_, token_encrypted, preset, manager_chat_id, now_iso()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_bot(self, bot_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bots WHERE id = ?", (bot_id,))
+
+    def list_bots(self) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM bots ORDER BY created_at")
+
+    def set_bot_field(self, bot_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bots SET {cols} WHERE id = ?", (*fields.values(), bot_id))
+
+    def delete_bot(self, bot_id: int) -> None:
+        """Removes the bot's own config (triggers/actions/scenarios/
+        templates/scenario sessions). Leads, contacts and activity history
+        are kept — they're shared records of real conversations, not bot
+        configuration, so they outlive the bot that created them."""
+        with self._lock:
+            trigger_ids = [r["id"] for r in self._conn.execute(
+                "SELECT id FROM bot_triggers WHERE bot_id = ?", (bot_id,)).fetchall()]
+            for tid in trigger_ids:
+                self._conn.execute("DELETE FROM bot_actions WHERE trigger_id = ?", (tid,))
+            self._conn.execute("DELETE FROM bot_triggers WHERE bot_id = ?", (bot_id,))
+            self._conn.execute("DELETE FROM bot_scenarios WHERE bot_id = ?", (bot_id,))
+            self._conn.execute("DELETE FROM bot_scenario_sessions WHERE bot_id = ?", (bot_id,))
+            self._conn.execute("DELETE FROM bot_templates WHERE bot_id = ?", (bot_id,))
+            self._conn.execute("DELETE FROM bots WHERE id = ?", (bot_id,))
+            self._conn.commit()
+
+    # ---- bot triggers / actions ------------------------------------------
+    def add_trigger(self, bot_id: int, type_: str, config: dict, enabled: bool = True) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO bot_triggers(bot_id, type, config, enabled, created_at) VALUES (?, ?, ?, ?, ?)",
+                (bot_id, type_, json.dumps(config, ensure_ascii=False), 1 if enabled else 0, now_iso()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_trigger(self, trigger_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bot_triggers WHERE id = ?", (trigger_id,))
+
+    def list_triggers(self, bot_id: int, type_: str | None = None) -> list[sqlite3.Row]:
+        if type_ is not None:
+            return self.query(
+                "SELECT * FROM bot_triggers WHERE bot_id = ? AND type = ? AND enabled = 1 ORDER BY id",
+                (bot_id, type_),
+            )
+        return self.query("SELECT * FROM bot_triggers WHERE bot_id = ? ORDER BY id", (bot_id,))
+
+    def set_trigger_field(self, trigger_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        if "config" in fields and isinstance(fields["config"], dict):
+            fields["config"] = json.dumps(fields["config"], ensure_ascii=False)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bot_triggers SET {cols} WHERE id = ?", (*fields.values(), trigger_id))
+
+    def delete_trigger(self, trigger_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM bot_actions WHERE trigger_id = ?", (trigger_id,))
+            self._conn.execute("DELETE FROM bot_triggers WHERE id = ?", (trigger_id,))
+            self._conn.commit()
+
+    def add_action(self, trigger_id: int, type_: str, config: dict, order_index: int = 0) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO bot_actions(trigger_id, type, config, order_index) VALUES (?, ?, ?, ?)",
+                (trigger_id, type_, json.dumps(config, ensure_ascii=False), order_index),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def list_actions(self, trigger_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM bot_actions WHERE trigger_id = ? ORDER BY order_index, id", (trigger_id,)
+        )
+
+    def set_action_field(self, action_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        if "config" in fields and isinstance(fields["config"], dict):
+            fields["config"] = json.dumps(fields["config"], ensure_ascii=False)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bot_actions SET {cols} WHERE id = ?", (*fields.values(), action_id))
+
+    def delete_action(self, action_id: int) -> None:
+        self.execute("DELETE FROM bot_actions WHERE id = ?", (action_id,))
+
+    # ---- bot contacts / leads / activity ---------------------------------
+    def upsert_contact(self, telegram_id: int, username: str | None = None,
+                        source: str = "organic") -> int:
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT id FROM bot_contacts WHERE telegram_id = ?", (telegram_id,)
+            ).fetchone()
+            now = now_iso()
+            if existing:
+                self._conn.execute(
+                    "UPDATE bot_contacts SET username = COALESCE(?, username), last_active = ? WHERE id = ?",
+                    (username, now, existing["id"]),
+                )
+                self._conn.commit()
+                return existing["id"]
+            cur = self._conn.execute(
+                """INSERT INTO bot_contacts(telegram_id, username, first_seen, last_active, source)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (telegram_id, username, now, now, source),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_contact(self, contact_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bot_contacts WHERE id = ?", (contact_id,))
+
+    def get_contact_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bot_contacts WHERE telegram_id = ?", (telegram_id,))
+
+    def list_contacts(self, limit: int = 500) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM bot_contacts ORDER BY last_active DESC LIMIT ?", (limit,))
+
+    def set_contact_tags(self, contact_id: int, tags: list[str]) -> None:
+        self.execute(
+            "UPDATE bot_contacts SET tags = ? WHERE id = ?",
+            (json.dumps(tags, ensure_ascii=False), contact_id),
+        )
+
+    def add_lead(self, contact_id: int, bot_id: int, content: dict, status: str = "new",
+                 manager: str | None = None) -> int:
+        with self._lock:
+            now = now_iso()
+            cur = self._conn.execute(
+                """INSERT INTO bot_leads(contact_id, bot_id, status, manager, created_at, updated_at, content)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (contact_id, bot_id, status, manager, now, now, json.dumps(content, ensure_ascii=False)),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_lead(self, lead_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bot_leads WHERE id = ?", (lead_id,))
+
+    def list_leads(self, bot_id: int | None = None, status: str | None = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM bot_leads"
+        clauses, params = [], []
+        if bot_id is not None:
+            clauses.append("bot_id = ?")
+            params.append(bot_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC"
+        return self.query(sql, params)
+
+    def set_lead_field(self, lead_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields = dict(fields)
+        if "content" in fields and isinstance(fields["content"], dict):
+            fields["content"] = json.dumps(fields["content"], ensure_ascii=False)
+        fields.setdefault("updated_at", now_iso())
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bot_leads SET {cols} WHERE id = ?", (*fields.values(), lead_id))
+
+    def log_activity(self, contact_id: int | None, bot_id: int | None, chat_id: int | None,
+                      message_id: int | None, chat_type: str | None, kind: str = "message") -> None:
+        self.execute(
+            """INSERT INTO bot_activity_log(contact_id, bot_id, chat_id, message_id, timestamp, chat_type, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (contact_id, bot_id, chat_id, message_id, now_iso(), chat_type, kind),
+        )
+
+    def activity_for_contact(self, contact_id: int, limit: int = 200) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM bot_activity_log WHERE contact_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (contact_id, limit),
+        )
+
+    def contact_ranking(self, limit: int = 50, half_life_days: float = 14.0) -> list[dict]:
+        """Recency+frequency activity score per contact: each activity_log
+        row contributes exp(-age_days / half_life_days) — a message from
+        today counts close to 1, one from half_life_days ago counts 0.5,
+        older ones fade further, so someone active a lot three months ago
+        doesn't outrank someone active daily this week."""
+        import math
+        rows = self.query(
+            """SELECT contact_id, timestamp FROM bot_activity_log
+               WHERE contact_id IS NOT NULL ORDER BY contact_id"""
+        )
+        now = dt.datetime.now().astimezone()
+        scores: dict[int, float] = {}
+        counts: dict[int, int] = {}
+        for r in rows:
+            try:
+                ts = dt.datetime.fromisoformat(r["timestamp"])
+            except ValueError:
+                continue
+            age_days = max(0.0, (now - ts).total_seconds() / 86400)
+            scores[r["contact_id"]] = scores.get(r["contact_id"], 0.0) + math.exp(-age_days / half_life_days)
+            counts[r["contact_id"]] = counts.get(r["contact_id"], 0) + 1
+        out = []
+        for contact_id, score in scores.items():
+            contact = self.get_contact(contact_id)
+            if not contact:
+                continue
+            out.append({
+                "contact_id": contact_id, "telegram_id": contact["telegram_id"],
+                "username": contact["username"], "score": round(score, 3),
+                "activity_count": counts[contact_id], "last_active": contact["last_active"],
+            })
+        out.sort(key=lambda r: r["score"], reverse=True)
+        return out[:limit]
+
+    def leads_funnel(self, bot_id: int | None = None) -> dict[str, int]:
+        sql = "SELECT status, count(*) AS c FROM bot_leads"
+        params: list[Any] = []
+        if bot_id is not None:
+            sql += " WHERE bot_id = ?"
+            params.append(bot_id)
+        sql += " GROUP BY status"
+        counts = {r["status"]: r["c"] for r in self.query(sql, params)}
+        return {"new": counts.get("new", 0), "in_progress": counts.get("in_progress", 0),
+                "closed": counts.get("closed", 0)}
+
+    # ---- bot templates ---------------------------------------------------
+    def add_template(self, bot_id: int | None, name: str, text: str, variables: list[str]) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO bot_templates(bot_id, name, text, variables, created_at) VALUES (?, ?, ?, ?, ?)",
+                (bot_id, name, text, json.dumps(variables, ensure_ascii=False), now_iso()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_template(self, template_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bot_templates WHERE id = ?", (template_id,))
+
+    def list_templates(self, bot_id: int | None = None) -> list[sqlite3.Row]:
+        if bot_id is not None:
+            return self.query(
+                "SELECT * FROM bot_templates WHERE bot_id = ? ORDER BY created_at", (bot_id,)
+            )
+        return self.query("SELECT * FROM bot_templates ORDER BY created_at")
+
+    def update_template(self, template_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields = dict(fields)
+        if "variables" in fields and isinstance(fields["variables"], list):
+            fields["variables"] = json.dumps(fields["variables"], ensure_ascii=False)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bot_templates SET {cols} WHERE id = ?", (*fields.values(), template_id))
+
+    def delete_template(self, template_id: int) -> None:
+        self.execute("DELETE FROM bot_templates WHERE id = ?", (template_id,))
+
+    # ---- bot scenarios -----------------------------------------------------
+    def add_scenario(self, bot_id: int, name: str, steps: list[dict]) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO bot_scenarios(bot_id, name, steps, created_at) VALUES (?, ?, ?, ?)",
+                (bot_id, name, json.dumps(steps, ensure_ascii=False), now_iso()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_scenario(self, scenario_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM bot_scenarios WHERE id = ?", (scenario_id,))
+
+    def list_scenarios(self, bot_id: int) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM bot_scenarios WHERE bot_id = ? ORDER BY created_at", (bot_id,))
+
+    def update_scenario(self, scenario_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields = dict(fields)
+        if "steps" in fields and isinstance(fields["steps"], list):
+            fields["steps"] = json.dumps(fields["steps"], ensure_ascii=False)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bot_scenarios SET {cols} WHERE id = ?", (*fields.values(), scenario_id))
+
+    def delete_scenario(self, scenario_id: int) -> None:
+        self.execute("DELETE FROM bot_scenarios WHERE id = ?", (scenario_id,))
+
+    # ---- bot scenario sessions (FSM state) --------------------------------
+    def get_active_scenario_session(self, bot_id: int, contact_telegram_id: int) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM bot_scenario_sessions WHERE bot_id = ? AND contact_telegram_id = ? AND status = 'active'",
+            (bot_id, contact_telegram_id),
+        )
+
+    def start_scenario_session(self, bot_id: int, scenario_id: int, contact_telegram_id: int) -> int:
+        with self._lock:
+            now = now_iso()
+            self._conn.execute(
+                "UPDATE bot_scenario_sessions SET status = 'abandoned', updated_at = ? "
+                "WHERE bot_id = ? AND contact_telegram_id = ? AND status = 'active'",
+                (now, bot_id, contact_telegram_id),
+            )
+            cur = self._conn.execute(
+                """INSERT INTO bot_scenario_sessions(bot_id, scenario_id, contact_telegram_id,
+                       step_index, answers, status, started_at, updated_at)
+                   VALUES (?, ?, ?, 0, '{}', 'active', ?, ?)""",
+                (bot_id, scenario_id, contact_telegram_id, now, now),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def update_scenario_session(self, session_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields = dict(fields)
+        if "answers" in fields and isinstance(fields["answers"], dict):
+            fields["answers"] = json.dumps(fields["answers"], ensure_ascii=False)
+        fields.setdefault("updated_at", now_iso())
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE bot_scenario_sessions SET {cols} WHERE id = ?", (*fields.values(), session_id))
+
 
 def _fts_query(text: str) -> str:
     """Turn free text into a safe FTS5 MATCH query: quote each token as a

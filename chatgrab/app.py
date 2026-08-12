@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 from . import APP_NAME
 from . import safety_net
+from .bots.crypto import register_bot_token_rotation
+from .bots.manager import BotManager
 from .config import AppConfig
 from .db.database import Database
 from .paths import PATHS, resource_path
@@ -58,11 +60,13 @@ def run() -> int:
     export_service = ExportService(db, PATHS)
     ignore_service = IgnoreService(db)
     backup_service = BackupService(db, PATHS)
+    bot_manager = BotManager(db, tg, security)
+    register_bot_token_rotation(db, security)
 
     ctx = AppContext(
         config=config, paths=PATHS, db=db, tg=tg, collector=collector,
         export_service=export_service, ignore_service=ignore_service,
-        backup_service=backup_service, security=security,
+        backup_service=backup_service, security=security, bot_manager=bot_manager,
     )
 
     window = MainWindow(ctx)

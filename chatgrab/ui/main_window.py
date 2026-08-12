@@ -10,6 +10,7 @@ from .. import APP_TITLE
 from ..paths import resource_path
 from .context import AppContext
 from .util import fire
+from .screens.bots import BotsScreen
 from .screens.browse import BrowseScreen
 from .screens.chats import ChatsScreen
 from .screens.collect import CollectScreen
@@ -25,6 +26,7 @@ NAV_ITEMS = [
     ("collect", "Сбор данных"),
     ("browse", "Поиск в собранном"),
     ("export", "Экспорт"),
+    ("bots", "Боты"),
     ("settings", "Настройки"),
 ]
 
@@ -94,6 +96,7 @@ class MainWindow(QMainWindow):
             "collect": CollectScreen(ctx, self.navigate),
             "browse": BrowseScreen(ctx, self.navigate),
             "export": ExportScreen(ctx, self.navigate),
+            "bots": BotsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
         for key, _ in NAV_ITEMS:

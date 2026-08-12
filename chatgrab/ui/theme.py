@@ -36,6 +36,9 @@ STATUS_STYLES = {
     "queued": {"label": "в очереди", "bg": "rgba(145,132,217,26)", "fg": "#b5afe8", "dot": "#5d5294"},
     "listening": {"label": "слушает новые", "bg": "rgba(120,190,150,36)", "fg": "#bfe5cd", "dot": GOOD},
     "off": {"label": "сбор выключен", "bg": "rgba(233,233,237,13)", "fg": "#6c6c78", "dot": "#3f424d"},
+    "running": {"label": "работает", "bg": "rgba(120,190,150,36)", "fg": "#bfe5cd", "dot": GOOD},
+    "stopped": {"label": "остановлен", "bg": "rgba(233,233,237,13)", "fg": "#6c6c78", "dot": "#3f424d"},
+    "error": {"label": "ошибка", "bg": "rgba(200,90,110,40)", "fg": "#e9b3bf", "dot": "#c85a6e"},
 }
 
 

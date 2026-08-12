@@ -3,3 +3,4 @@ qasync==0.27.1
 telethon==1.36.0
 openpyxl==3.1.5
 cryptography==50.0.0
+aiogram==3.30.0
