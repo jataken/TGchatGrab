@@ -4,13 +4,14 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
-    QScrollArea, QSpinBox, QTableWidget,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPlainTextEdit, QScrollArea, QSpinBox, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
 from ..widgets import button, card, h1, muted
+from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
 from ...services.export_service import DEFAULT_MD_HEADER
 from ...telegram.collector import DEFAULT_SCHEDULE
@@ -138,6 +139,23 @@ class SettingsScreen(QWidget):
         save_speed_btn.clicked.connect(self._save_speed_photos)
         grid.addWidget(save_speed_btn, 8, 1)
 
+        outer.addSpacing(24)
+
+        # ---- master password -----------------------------------------------
+        self.security_card = card()
+        sec_lay = QVBoxLayout(self.security_card)
+        sec_lay.setContentsMargins(16, 14, 16, 14)
+        sec_lay.addWidget(muted("ЗАЩИТА МАСТЕР-ПАРОЛЕМ"))
+        self.security_status_label = QLabel("")
+        self.security_status_label.setWordWrap(True)
+        sec_lay.addWidget(self.security_status_label)
+        sec_btn_row = QHBoxLayout()
+        self.security_toggle_btn = button("", "primary")
+        self.security_toggle_btn.clicked.connect(self._on_toggle_security)
+        sec_btn_row.addWidget(self.security_toggle_btn)
+        sec_btn_row.addStretch(1)
+        sec_lay.addLayout(sec_btn_row)
+        outer.addWidget(self.security_card)
         outer.addSpacing(24)
 
         # ---- schedule ------------------------------------------------------
@@ -320,11 +338,13 @@ class SettingsScreen(QWidget):
         self._refresh_rules()
         self._refresh_authors()
         self._refresh_db_size()
+        self._refresh_security_section()
 
     def on_show(self, **kwargs) -> None:
         self._refresh_rules()
         self._refresh_authors()
         self._refresh_db_size()
+        self._refresh_security_section()
 
     # ---- actions -----------------------------------------------------
     @staticmethod
@@ -344,14 +364,88 @@ class SettingsScreen(QWidget):
 
     def _save_credentials(self) -> None:
         cfg = self.ctx.config
-        cfg.api_id = self.api_id_input.text().strip()
-        cfg.api_hash = self.api_hash_input.text().strip()
-        cfg.session_path = self.session_path_input.text().strip()
-        cfg.save()
+        new_api_id = self.api_id_input.text().strip()
+        new_api_hash = self.api_hash_input.text().strip()
+        new_session_path = self.session_path_input.text().strip()
+
+        if self.ctx.security.enabled and new_api_hash != cfg.api_hash:
+            pwd, ok = QInputDialog.getText(
+                self, "Мастер-пароль",
+                "Ключ защищён мастер-паролем — введите его, чтобы сохранить новое значение:",
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
+            try:
+                self.ctx.security.unlock(pwd)
+            except WrongPasswordError:
+                QMessageBox.warning(self, "Неверный пароль", "Не удалось сохранить — пароль неверен.")
+                return
+            cfg.api_id = new_api_id
+            cfg.session_path = new_session_path
+            cfg.api_hash = new_api_hash
+            self.ctx.security.enable(pwd)
+        else:
+            cfg.api_id = new_api_id
+            cfg.api_hash = new_api_hash
+            cfg.session_path = new_session_path
+            cfg.save()
+
         QMessageBox.information(
             self, "Сохранено",
             "Ключи сохранены. Если менялся файл входа — перезапустите приложение, чтобы применить."
         )
+
+    def _refresh_security_section(self) -> None:
+        if self.ctx.security.enabled:
+            self.security_status_label.setText(
+                "Файл входа в Telegram и ключ приложения зашифрованы мастер-паролем. "
+                "Он нигде не хранится — забыв его, нужно будет войти в Telegram заново."
+            )
+            self.security_toggle_btn.setText("Выключить защиту")
+        else:
+            self.security_status_label.setText(
+                "Файл входа в Telegram и ключ приложения сейчас хранятся на диске "
+                "открытым текстом. Мастер-пароль шифрует их — без пароля эти файлы "
+                "бесполезны, даже если их скопировать с этого компьютера."
+            )
+            self.security_toggle_btn.setText("Включить защиту мастер-паролем")
+
+    def _on_toggle_security(self) -> None:
+        if self.ctx.security.enabled:
+            self._disable_security()
+        else:
+            self._enable_security()
+
+    def _enable_security(self) -> None:
+        pwd, ok = QInputDialog.getText(self, "Мастер-пароль", "Придумайте мастер-пароль:", QLineEdit.Password)
+        if not ok or not pwd:
+            return
+        pwd2, ok2 = QInputDialog.getText(self, "Мастер-пароль", "Повторите пароль:", QLineEdit.Password)
+        if not ok2:
+            return
+        if pwd != pwd2:
+            QMessageBox.warning(self, "Не совпадает", "Пароли не совпадают — попробуйте ещё раз.")
+            return
+        self.ctx.security.enable(pwd)
+        self._refresh_security_section()
+        QMessageBox.information(
+            self, "Готово",
+            "Защита включена. Пароль нигде не сохранён — не забудьте его: восстановить "
+            "нельзя, только сбросить вход и начать заново."
+        )
+
+    def _disable_security(self) -> None:
+        pwd, ok = QInputDialog.getText(self, "Мастер-пароль", "Введите текущий мастер-пароль:", QLineEdit.Password)
+        if not ok or not pwd:
+            return
+        try:
+            self.ctx.security.disable(pwd)
+        except WrongPasswordError:
+            QMessageBox.warning(self, "Неверный пароль", "Не удалось выключить защиту — пароль неверен.")
+            return
+        self._refresh_security_section()
+        QMessageBox.information(self, "Готово", "Защита выключена.")
 
     def _save_speed_photos(self) -> None:
         self.ctx.collector.save_delay_bounds(self.delay_min.value(), self.delay_max.value())

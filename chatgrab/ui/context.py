@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from ..config import AppConfig
 from ..db.database import Database
 from ..paths import Paths
+from ..security import SecurityService
 from ..services.backup_service import BackupService
 from ..services.export_service import ExportService
 from ..services.ignore_service import IgnoreService
@@ -24,3 +25,4 @@ class AppContext:
     export_service: ExportService
     ignore_service: IgnoreService
     backup_service: BackupService
+    security: SecurityService
