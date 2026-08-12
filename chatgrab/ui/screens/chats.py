@@ -167,6 +167,9 @@ class RemoveChatDialog(QDialog):
         self.result_purge: bool | None = None
         lay = QVBoxLayout(self)
         body = QLabel(f"«{title}» перестанет отслеживаться. Что сделать с уже собранными сообщениями?")
+        # `title` is the chat's own Telegram title (admin-controlled) —
+        # keep it literal, not auto-detected as rich text.
+        body.setTextFormat(Qt.PlainText)
         body.setWordWrap(True)
         lay.addWidget(body)
         row = QHBoxLayout()

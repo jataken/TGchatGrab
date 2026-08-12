@@ -12,6 +12,12 @@ from . import theme
 
 def label(text: str, cls: str = "") -> QLabel:
     lbl = QLabel(text)
+    # QLabel auto-detects rich text (Qt.AutoText default) — a chat title,
+    # display name, or message body containing something that merely
+    # *looks* like a tag (e.g. a stray "<b>") would otherwise render as
+    # real HTML, not literal text. None of this app's own labels need
+    # rich text, so it's off unconditionally rather than per call site.
+    lbl.setTextFormat(Qt.PlainText)
     if cls:
         lbl.setProperty("class", cls)
     return lbl

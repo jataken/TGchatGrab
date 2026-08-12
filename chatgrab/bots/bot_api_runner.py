@@ -6,12 +6,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from ..db.database import Database
 from .crypto import decrypt_token
 from .rules_engine import IncomingEvent, RulesEngine
 
 _logger = logging.getLogger("chatgrab")
+
+# Bot API tokens look like "123456789:AAExampleTokenTextHere-abc123" and
+# aiogram/aiohttp error messages sometimes echo the request URL (which
+# embeds the token) verbatim. Redact before anything reaches chatgrab.log,
+# the bot's last_error field, or the bots list UI — all three persist or
+# display str(exception) as-is otherwise.
+_TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
+
+
+def _redact(text: str) -> str:
+    return _TOKEN_RE.sub("<токен скрыт>", text)
 
 
 class BotApiRunner:
@@ -44,7 +56,7 @@ class BotApiRunner:
         try:
             me = await self.bot.get_me()
         except TelegramAPIError as e:
-            self._on_status(self.bot_id, "error", f"Telegram отклонил токен: {e}")
+            self._on_status(self.bot_id, "error", _redact(f"Telegram отклонил токен: {e}"))
             await self.bot.session.close()
             self.bot = None
             return
@@ -63,11 +75,11 @@ class BotApiRunner:
         except asyncio.CancelledError:
             raise
         except TelegramAPIError as e:
-            self._on_status(self.bot_id, "error", f"Ошибка Bot API: {e}")
-            self._log(f"остановлен из-за ошибки Telegram: {e}", "warn")
+            self._on_status(self.bot_id, "error", _redact(f"Ошибка Bot API: {e}"))
+            self._log(_redact(f"остановлен из-за ошибки Telegram: {e}"), "warn")
         except Exception as e:
-            self._on_status(self.bot_id, "error", str(e))
-            self._log(f"остановлен из-за непредвиденной ошибки: {e}", "warn")
+            self._on_status(self.bot_id, "error", _redact(str(e)))
+            self._log(_redact(f"остановлен из-за непредвиденной ошибки: {e}"), "warn")
 
     async def stop(self) -> None:
         if self.dp:
@@ -93,12 +105,28 @@ class BotApiRunner:
                 target = int(target)
             except ValueError:
                 pass
-        try:
-            await self.bot.send_message(target, text)
-        except Exception as e:
-            self._log(f"не удалось отправить сообщение {target}: {e}", "warn")
+        from aiogram.exceptions import TelegramRetryAfter
+        for _ in range(3):
+            try:
+                await self.bot.send_message(target, text)
+                return
+            except TelegramRetryAfter as e:
+                self._log(f"Telegram попросил подождать {e.retry_after} с перед отправкой, продолжу сам", "warn")
+                await asyncio.sleep(e.retry_after + 1)
+            except Exception as e:
+                self._log(_redact(f"не удалось отправить сообщение {target}: {e}"), "warn")
+                return
 
     async def _on_message(self, message) -> None:
+        # A single malformed/unexpected message (DB error, odd payload)
+        # must not vanish into aiogram's own exception handling unlogged —
+        # same per-item isolation Collector uses for history backfill.
+        try:
+            await self._handle_message(message)
+        except Exception as e:
+            self._log(_redact(f"ошибка обработки входящего сообщения: {e}"), "warn")
+
+    async def _handle_message(self, message) -> None:
         text = message.text or message.caption or ""
         contact_telegram_id = message.from_user.id
         username = message.from_user.username

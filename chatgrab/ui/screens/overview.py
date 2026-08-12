@@ -28,6 +28,10 @@ class ChatTile(QWidget):
 
         top = QHBoxLayout()
         self.title_label = QLabel("")
+        # Chat titles come from Telegram (any group admin/channel owner
+        # controls them) — plain text only, so one that looks like markup
+        # can't get rendered as real HTML by QLabel's rich-text autodetect.
+        self.title_label.setTextFormat(Qt.PlainText)
         self.title_label.setWordWrap(True)
         self.title_label.setStyleSheet("font-size: 14.5px;")
         top.addWidget(self.title_label, 1)
@@ -50,6 +54,7 @@ class ChatTile(QWidget):
         lay.addLayout(bottom)
 
         self.warn_label = QLabel("")
+        self.warn_label.setTextFormat(Qt.PlainText)
         self.warn_label.setStyleSheet("color: #f0c6a0; font-size: 11.5px;")
         self.warn_label.setWordWrap(True)
         lay.addWidget(self.warn_label)

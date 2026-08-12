@@ -19,14 +19,14 @@ def register_bot_token_rotation(db: Database, security: SecurityService) -> None
     under. Without this, a bot_api bot's token would silently become
     undecryptable the next time the vault's password changed."""
 
-    def _on_rotate(old_password, old_salt_b64, new_password, new_salt_b64) -> None:
+    def _on_rotate(old_password, old_salt_b64, old_iterations, new_password, new_salt_b64, new_iterations) -> None:
         for bot in db.list_bots():
             if bot["type"] != "bot_api" or not bot["token_encrypted"]:
                 continue
             stored = bot["token_encrypted"]
             try:
                 if old_password and old_salt_b64:
-                    plain = SecurityService.decrypt_with(stored, old_password, old_salt_b64)
+                    plain = SecurityService.decrypt_with(stored, old_password, old_salt_b64, old_iterations)
                 else:
                     plain = stored  # was plaintext before this rotation
             except Exception:
@@ -36,7 +36,7 @@ def register_bot_token_rotation(db: Database, security: SecurityService) -> None
                 _logger.warning("bot %s token unrecoverable during key rotation", bot["id"])
                 continue
             if new_password and new_salt_b64:
-                new_stored = SecurityService.encrypt_with(plain, new_password, new_salt_b64)
+                new_stored = SecurityService.encrypt_with(plain, new_password, new_salt_b64, new_iterations)
             else:
                 new_stored = plain
             db.set_bot_field(bot["id"], token_encrypted=new_stored)

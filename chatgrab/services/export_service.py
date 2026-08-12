@@ -13,6 +13,7 @@ from typing import Any
 
 from ..db.database import Database, now_iso
 from ..paths import Paths
+from .xlsx_safety import excel_safe
 
 DEFAULT_TOKEN_LIMIT = 180_000
 DEFAULT_MD_HEADER = (
@@ -217,8 +218,8 @@ class ExportService:
         for r in rows:
             username = f"@{r['sender_username']}" if r["sender_username"] else ""
             ws.append([
-                r["date"], r["chat_title"], r["sender_display_name"] or "",
-                username, text_with_markers(r), media_marker(r),
+                r["date"], excel_safe(r["chat_title"]), excel_safe(r["sender_display_name"] or ""),
+                excel_safe(username), excel_safe(text_with_markers(r)), excel_safe(media_marker(r)),
             ])
             row_idx = ws.max_row
             for col in range(1, 7):

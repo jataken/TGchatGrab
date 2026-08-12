@@ -57,6 +57,17 @@ class UserbotRunner:
         return [b for b in self.db.list_bots() if b["type"] == "userbot" and b["status"] == "running"]
 
     async def _on_new_message(self, event) -> None:
+        # This handler stays registered on the shared Telethon client for
+        # the app's whole lifetime — one bad message (odd sender state, a
+        # DB hiccup) must never kill it or silently stop later messages
+        # from being processed, the same isolation Collector relies on
+        # for history backfill.
+        try:
+            await self._handle_new_message(event)
+        except Exception:
+            _logger.warning("userbot runner failed to handle an incoming message", exc_info=True)
+
+    async def _handle_new_message(self, event) -> None:
         running = self._running_bots()
         if not running:
             return
@@ -79,16 +90,21 @@ class UserbotRunner:
 
         for bot in running:
             bot_id = bot["id"]
-            incoming = IncomingEvent(contact_telegram_id=contact_telegram_id, username=username,
-                                      text=text, chat_id=chat_id, chat_type=chat_type)
             log = self._log_for(bot_id)
-            send_dm = self._make_send(bot_id)
-            if chat_type == "dm" and self.rules.has_active_scenario(bot_id, contact_telegram_id):
-                await self.rules.continue_scenario(bot_id, incoming, send_dm, log)
-                continue
-            triggers = self.rules.triggers_for(bot_id, incoming)
-            for trigger in triggers:
-                await self.rules.fire(bot_id, trigger, incoming, send_dm, log)
+            try:
+                incoming = IncomingEvent(contact_telegram_id=contact_telegram_id, username=username,
+                                          text=text, chat_id=chat_id, chat_type=chat_type)
+                send_dm = self._make_send(bot_id)
+                if chat_type == "dm" and self.rules.has_active_scenario(bot_id, contact_telegram_id):
+                    await self.rules.continue_scenario(bot_id, incoming, send_dm, log)
+                    continue
+                triggers = self.rules.triggers_for(bot_id, incoming)
+                for trigger in triggers:
+                    await self.rules.fire(bot_id, trigger, incoming, send_dm, log)
+            except Exception as e:
+                # One misbehaving bot (bad trigger config, DB error) must
+                # not stop the rest of `running` from seeing this message.
+                log(f"ошибка обработки сообщения: {e}", "warn")
 
     def _make_send(self, bot_id: int):
         async def send_dm(target: int | str, text: str) -> None:

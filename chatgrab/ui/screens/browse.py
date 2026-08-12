@@ -32,12 +32,23 @@ class MessageCard(QWidget):
         top = QHBoxLayout()
         author = row["sender_display_name"] or "—"
         handle = f"@{row['sender_username']}" if row["sender_username"] else ""
-        top.addWidget(QLabel(f"<b>{author}</b>"))
+        # Author, chat title and message text below all come straight from
+        # Telegram — any sender/admin controls them. QLabel auto-detects
+        # rich text, so without an explicit PlainText format a name or
+        # message that merely looks like a tag would render as real HTML.
+        # Bold styling for the author is done via QSS, not an f-string
+        # "<b>" wrapper, so there's no interpolated markup to reason about.
+        author_label = QLabel(author)
+        author_label.setTextFormat(Qt.PlainText)
+        author_label.setStyleSheet("font-weight: 600;")
+        top.addWidget(author_label)
         if handle:
             h = QLabel(handle)
+            h.setTextFormat(Qt.PlainText)
             h.setProperty("class", "faint")
             top.addWidget(h)
         chat = QLabel(row["chat_title"] or "")
+        chat.setTextFormat(Qt.PlainText)
         chat.setStyleSheet("color: #b5abfc; font-size: 11.5px;")
         top.addWidget(chat)
         top.addStretch(1)
@@ -47,6 +58,7 @@ class MessageCard(QWidget):
         lay.addLayout(top)
 
         text = QLabel(row["text"] or "")
+        text.setTextFormat(Qt.PlainText)
         text.setWordWrap(True)
         text.setStyleSheet("font-size: 13.5px;")
         lay.addWidget(text)

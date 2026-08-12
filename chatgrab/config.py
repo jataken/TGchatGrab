@@ -32,6 +32,7 @@ class AppConfig:
     max_media_size_mb: int = 20
     master_password_enabled: bool = False
     kdf_salt: str = ""
+    kdf_iterations: int = 0
     api_hash_enc: str = ""
 
     @classmethod
@@ -58,6 +59,7 @@ class AppConfig:
             max_media_size_mb=int(raw.get("max_media_size_mb", 20)),
             master_password_enabled=bool(raw.get("master_password_enabled", False)),
             kdf_salt=str(raw.get("kdf_salt", "")),
+            kdf_iterations=int(raw.get("kdf_iterations", 0) or 0),
             api_hash_enc=str(raw.get("api_hash_enc", "")),
         )
         cfg.save(paths)

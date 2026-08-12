@@ -5,6 +5,7 @@ the single object the UI talks to regardless of whether a given bot is a
 Bot API assistant or a userbot rule bundle."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -36,6 +37,18 @@ class BotManager(QObject):
         self._bot_api_runners: dict[int, BotApiRunner] = {}
         self.log_entries: list[dict] = []
         self._running = False
+        # One lock per bot_id — serializes start_bot()/stop_bot() for that
+        # bot so a rapid double-click (or any other concurrent caller)
+        # can't create two BotApiRunner instances polling the same token
+        # at once, which Telegram rejects as a getUpdates conflict.
+        self._bot_locks: dict[int, asyncio.Lock] = {}
+
+    def _lock_for(self, bot_id: int) -> asyncio.Lock:
+        lock = self._bot_locks.get(bot_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._bot_locks[bot_id] = lock
+        return lock
 
     # ---- logging / status callbacks (shared by both runner types) -------
     def _on_log(self, bot_id: int, text: str, tone: str = "") -> None:
@@ -104,31 +117,35 @@ class BotManager(QObject):
 
     # ---- start/stop a single bot ------------------------------------------
     async def start_bot(self, bot_id: int) -> None:
-        bot = self.db.get_bot(bot_id)
-        if not bot:
-            return
-        if bot["type"] == "userbot":
-            self.userbot_runner.register()
-            self.db.set_bot_field(bot_id, status="running", last_error=None)
-            self._on_log(bot_id, "правила юзербота включены", "ok")
-        else:
-            await self._start_bot_api(bot)
-        self.bots_changed.emit()
+        async with self._lock_for(bot_id):
+            bot = self.db.get_bot(bot_id)
+            if not bot:
+                return
+            if bot["type"] == "userbot":
+                self.userbot_runner.register()
+                self.db.set_bot_field(bot_id, status="running", last_error=None)
+                self._on_log(bot_id, "правила юзербота включены", "ok")
+            else:
+                if bot_id in self._bot_api_runners:
+                    return  # already running (or another start_bot() call is mid-flight)
+                await self._start_bot_api(bot)
+            self.bots_changed.emit()
 
     async def stop_bot(self, bot_id: int) -> None:
-        bot = self.db.get_bot(bot_id)
-        if not bot:
-            return
-        if bot["type"] == "userbot":
-            self.db.set_bot_field(bot_id, status="stopped")
-            self._on_log(bot_id, "правила юзербота выключены", "")
-        else:
-            runner = self._bot_api_runners.pop(bot_id, None)
-            if runner:
-                await runner.stop()
-            else:
+        async with self._lock_for(bot_id):
+            bot = self.db.get_bot(bot_id)
+            if not bot:
+                return
+            if bot["type"] == "userbot":
                 self.db.set_bot_field(bot_id, status="stopped")
-        self.bots_changed.emit()
+                self._on_log(bot_id, "правила юзербота выключены", "")
+            else:
+                runner = self._bot_api_runners.pop(bot_id, None)
+                if runner:
+                    await runner.stop()
+                else:
+                    self.db.set_bot_field(bot_id, status="stopped")
+            self.bots_changed.emit()
 
     async def _start_bot_api(self, bot_row) -> None:
         runner = BotApiRunner(self.db, self.security, self.rules, bot_row, self._on_log, self._on_status)

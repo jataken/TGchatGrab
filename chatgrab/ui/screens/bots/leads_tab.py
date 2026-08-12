@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
+from ...util import fire, run_blocking
 from ...widgets import button, muted
 from ....bots.export import export_leads_xlsx
 
@@ -136,19 +137,30 @@ class LeadsTab(QWidget):
 
     def _on_export(self) -> None:
         bot_id = self.bot_filter.currentData()
-        try:
-            path = export_leads_xlsx(self.ctx.db, self.ctx.paths, bot_id=bot_id)
-        except Exception as e:
+
+        def on_error(e):
             QMessageBox.warning(self, "Не получилось выгрузить", str(e))
-            return
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Готово")
-        msg.setText(f"Заявки выгружены в {path.name}")
-        open_btn = msg.addButton("Открыть папку", QMessageBox.ActionRole)
-        msg.addButton(QMessageBox.Ok)
-        msg.exec()
-        if msg.clickedButton() == open_btn:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+        # Off the shared qasync loop (see export_screen.py's _run_export
+        # for why) — openpyxl on a large leads table would otherwise
+        # freeze the UI and every running bot until it finished.
+        task = fire(run_blocking(export_leads_xlsx, self.ctx.db, self.ctx.paths, bot_id),
+                    parent=self, on_error=on_error)
+
+        def _apply(t):
+            if t.cancelled() or t.exception() is not None:
+                return
+            path = t.result()
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Готово")
+            msg.setText(f"Заявки выгружены в {path.name}")
+            open_btn = msg.addButton("Открыть папку", QMessageBox.ActionRole)
+            msg.addButton(QMessageBox.Ok)
+            msg.exec()
+            if msg.clickedButton() == open_btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+        task.add_done_callback(_apply)
 
     def _reassign(self, lead_id: int) -> None:
         from PySide6.QtWidgets import QInputDialog

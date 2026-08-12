@@ -32,6 +32,7 @@ class BotCard(QWidget):
 
         top = QHBoxLayout()
         self.title_label = QLabel("")
+        self.title_label.setTextFormat(Qt.PlainText)
         self.title_label.setStyleSheet("font-size: 14.5px; font-weight: 600;")
         top.addWidget(self.title_label, 1)
         self.status_pill = StatusPill("stopped")
@@ -42,6 +43,10 @@ class BotCard(QWidget):
         lay.addWidget(self.meta_label)
 
         self.error_label = QLabel("")
+        # last_error can echo text from an exception raised by a 3rd-party
+        # library (aiogram/Telethon) — plain text only, same reasoning as
+        # every other label showing content this app doesn't fully control.
+        self.error_label.setTextFormat(Qt.PlainText)
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #e0a8b0; font-size: 11.5px;")
         lay.addWidget(self.error_label)

@@ -659,13 +659,20 @@ class Database:
         row contributes exp(-age_days / half_life_days) — a message from
         today counts close to 1, one from half_life_days ago counts 0.5,
         older ones fade further, so someone active a lot three months ago
-        doesn't outrank someone active daily this week."""
+        doesn't outrank someone active daily this week.
+
+        Bounded to the last 10 half-lives — beyond that a row's own
+        contribution is under 0.005, negligible to the score, so there's
+        no reason to keep pulling the *entire* activity_log into Python on
+        every refresh as it grows over months of use."""
         import math
+        now = dt.datetime.now().astimezone()
+        cutoff = (now - dt.timedelta(days=half_life_days * 10)).isoformat()
         rows = self.query(
             """SELECT contact_id, timestamp FROM bot_activity_log
-               WHERE contact_id IS NOT NULL ORDER BY contact_id"""
+               WHERE contact_id IS NOT NULL AND timestamp >= ? ORDER BY contact_id""",
+            (cutoff,),
         )
-        now = dt.datetime.now().astimezone()
         scores: dict[int, float] = {}
         counts: dict[int, int] = {}
         for r in rows:

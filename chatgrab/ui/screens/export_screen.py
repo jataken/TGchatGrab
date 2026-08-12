@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
-from ..util import fire
+from ..util import fire, run_blocking
 from ..widgets import button, card, h1, muted
 from ...services.export_service import DEFAULT_TOKEN_LIMIT, ExportParams
 
@@ -356,15 +356,30 @@ class ExportScreen(QWidget):
             QMessageBox.information(self, "Экспорт", "Выберите хотя бы один чат.")
             return
         self.run_btn.setEnabled(False)
-        result = self.ctx.export_service.run(params)
-        self.run_btn.setEnabled(True)
-        self.done_label.setText(
-            f"Готово. {result.row_count} сообщений сохранено в {len(result.output_paths)} файл(ов) — "
-            f'<a href="#">открыть папку</a>.'
-        )
-        self.done_label.linkActivated.connect(lambda _: self._open_folder())
-        self.done_label.show()
-        self._populate_log()
+
+        # Off the shared qasync loop, via a worker thread — a large export
+        # (openpyxl writing thousands of rows) would otherwise freeze the
+        # whole UI *and* every bot's message handling until it finished.
+        def on_error(e):
+            self.run_btn.setEnabled(True)
+            QMessageBox.warning(self, "Не получилось", str(e))
+
+        task = fire(run_blocking(self.ctx.export_service.run, params), parent=self, on_error=on_error)
+
+        def _apply(t):
+            self.run_btn.setEnabled(True)
+            if t.cancelled() or t.exception() is not None:
+                return
+            result = t.result()
+            self.done_label.setText(
+                f"Готово. {result.row_count} сообщений сохранено в {len(result.output_paths)} файл(ов) — "
+                f'<a href="#">открыть папку</a>.'
+            )
+            self.done_label.linkActivated.connect(lambda _: self._open_folder())
+            self.done_label.show()
+            self._populate_log()
+
+        task.add_done_callback(_apply)
 
     def _open_folder(self) -> None:
         folder = self.folder_input.text().strip() or str(self.ctx.paths.exports_dir)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..db.database import Database, now_iso
 from ..paths import Paths
+from ..services.xlsx_safety import excel_safe
 
 _STATUS_LABELS = {"new": "новая", "in_progress": "в работе", "closed": "закрыта"}
 
@@ -34,12 +35,18 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         telegram_id = contact["telegram_id"] if contact else ""
         try:
             content = json.loads(lead["content"])
-            summary = "; ".join(f"{k}: {v}" for k, v in content.items()) if content else ""
+            # Each value comes straight from a Telegram message (scenario
+            # answer or raw text) — excel_safe() per-value, not just on the
+            # joined summary, since the leading "field: " prefix that keeps
+            # the joined string itself safe today is an implementation
+            # detail this shouldn't have to keep relying on.
+            summary = "; ".join(f"{k}: {excel_safe(v)}" for k, v in content.items()) if content else ""
         except (json.JSONDecodeError, TypeError):
             summary = ""
         ws.append([
-            lead["created_at"], bot["name"] if bot else f"бот {lead['bot_id']}", handle, telegram_id,
-            _STATUS_LABELS.get(lead["status"], lead["status"]), lead["manager"] or "", summary,
+            lead["created_at"], excel_safe(bot["name"]) if bot else f"бот {lead['bot_id']}",
+            excel_safe(handle), telegram_id,
+            _STATUS_LABELS.get(lead["status"], lead["status"]), excel_safe(lead["manager"] or ""), summary,
         ])
         row_idx = ws.max_row
         for col in range(1, len(headers) + 1):
