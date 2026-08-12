@@ -82,7 +82,7 @@ class ExportScreen(QWidget):
         self.fmt_group = QButtonGroup(self)
         self.fmt_group.setExclusive(True)
         self.fmt_buttons: dict[str, QPushButton] = {}
-        for key, label_, hint in [("csv", "CSV", "таблица для Excel"),
+        for key, label_, hint in [("xlsx", "Excel (.xlsx)", "таблица по колонкам"),
                                    ("jsonl", "JSONL", "по записи в строке"),
                                    ("markdown", "Markdown", "дайджест по дням")]:
             btn = _pill_button(label_, hint)
@@ -90,7 +90,7 @@ class ExportScreen(QWidget):
             self.fmt_group.addButton(btn)
             self.fmt_buttons[key] = btn
             fmt_row.addWidget(btn)
-        self.fmt_buttons["jsonl"].setChecked(True)
+        self.fmt_buttons["xlsx"].setChecked(True)
         left.addLayout(fmt_row)
 
         # ---- dates ------------------------------------------------------
@@ -386,9 +386,14 @@ class ExportScreen(QWidget):
     def _apply_params(self, params: ExportParams) -> None:
         for cid, cb in self.chat_checks.items():
             cb.setChecked(cid in params.chat_ids)
-        self.fmt_buttons[params.format].setChecked(True)
+        # "csv" was retired in favor of "xlsx" — fall back gracefully so
+        # an old export_log entry / preset from before that change can
+        # still be repeated instead of crashing on an unknown key.
+        fmt_key = params.format if params.format in self.fmt_buttons else "xlsx"
+        self.fmt_buttons[fmt_key].setChecked(True)
         self.merge_cb.setChecked(params.merge)
-        self.split_buttons[params.split_mode].setChecked(True)
+        split_key = params.split_mode if params.split_mode in self.split_buttons else "tokens"
+        self.split_buttons[split_key].setChecked(True)
         self.token_limit_spin.setValue(params.token_limit)
         self.date_from.setText(params.date_from or "")
         self.date_to.setText(params.date_to or "")

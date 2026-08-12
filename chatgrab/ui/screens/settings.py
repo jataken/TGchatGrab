@@ -54,7 +54,18 @@ class SettingsScreen(QWidget):
         grid.addWidget(QLabel("Секрет приложения (api_hash)"), 3, 0)
         self.api_hash_input = QLineEdit(self.ctx.config.api_hash)
         self.api_hash_input.setEchoMode(QLineEdit.Password)
-        grid.addWidget(self.api_hash_input, 4, 0)
+        hash_row = QHBoxLayout()
+        hash_row.setContentsMargins(0, 0, 0, 0)
+        hash_row.addWidget(self.api_hash_input, 1)
+        hash_toggle_btn = button("Показать", "secondary")
+        hash_toggle_btn.setCheckable(True)
+        hash_toggle_btn.clicked.connect(
+            lambda checked: self._toggle_field_visibility(self.api_hash_input, hash_toggle_btn, checked)
+        )
+        hash_row.addWidget(hash_toggle_btn)
+        hash_row_w = QWidget()
+        hash_row_w.setLayout(hash_row)
+        grid.addWidget(hash_row_w, 4, 0)
         grid.addWidget(QLabel("Файл входа в аккаунт"), 5, 0)
         session_row = QHBoxLayout()
         self.session_path_input = QLineEdit(self.ctx.config.session_path)
@@ -316,6 +327,11 @@ class SettingsScreen(QWidget):
         self._refresh_db_size()
 
     # ---- actions -----------------------------------------------------
+    @staticmethod
+    def _toggle_field_visibility(field: QLineEdit, toggle_btn, checked: bool) -> None:
+        field.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        toggle_btn.setText("Скрыть" if checked else "Показать")
+
     def _browse_session(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Файл входа", self.session_path_input.text())
         if path:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE
+from ..paths import resource_path
 from .context import AppContext
 from .util import fire
 from .screens.browse import BrowseScreen
@@ -32,6 +34,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ctx = ctx
         self.setWindowTitle(APP_TITLE)
+        icon_path = resource_path("resources", "icon.png")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1320, 860)
         self.setMinimumSize(980, 620)
 

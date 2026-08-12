@@ -6,13 +6,14 @@ import asyncio
 import sys
 
 import qasync
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from . import APP_NAME
 from . import safety_net
 from .config import AppConfig
 from .db.database import Database
-from .paths import PATHS
+from .paths import PATHS, resource_path
 from .services.backup_service import BackupService
 from .services.export_service import ExportService
 from .services.ignore_service import IgnoreService
@@ -31,6 +32,9 @@ def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyleSheet(build_qss())
+    icon_path = resource_path("resources", "icon.png")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)

@@ -298,8 +298,14 @@ class Database:
         if not include_hidden:
             clauses.append("m.is_hidden = 0")
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        # Pure chronological order — not grouped by chat first — so a
+        # merged multi-chat export reads as one continuous timeline
+        # (old to new) instead of one chat's whole history, then the
+        # next chat's from its own beginning. Per-chat file splitting
+        # groups these afterward without disturbing the relative order,
+        # so single-chat output stays date-sorted too.
         return self.query(
-            f"SELECT m.* {from_sql}{where} ORDER BY m.chat_id, m.date ASC", params
+            f"SELECT m.* {from_sql}{where} ORDER BY m.date ASC", params
         )
 
     # ---- export log / presets ----------------------------------------

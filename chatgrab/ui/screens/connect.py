@@ -48,6 +48,19 @@ class ConnectScreen(QWidget):
         self._build_code_page()
         self._build_pwd_page()
 
+        # QStackedLayout only sizes its container to the *currently shown*
+        # page's own size hint, not the tallest of all of them — combined
+        # with a stretch inside every page competing against the one
+        # already in `outer` below, that made the container shrink out
+        # from under whichever page happened to be showing (observed: the
+        # password field's bottom few pixels clipped by its own
+        # container). Pin the container to the tallest page once, up
+        # front, so every page always gets enough room no matter which is
+        # current.
+        pages = (self.authed_page, self.phone_page, self.code_page, self.pwd_page)
+        tallest = max(p.sizeHint().height() for p in pages)
+        stack_widget.setMinimumHeight(tallest + 24)
+
         self.stack.setCurrentWidget(self.phone_page)
 
     # ---- pages ---------------------------------------------------------

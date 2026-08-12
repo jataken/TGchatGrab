@@ -15,6 +15,17 @@ def base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def resource_path(*parts: str) -> Path:
+    """Bundled read-only assets (icons, etc.) — these ship *inside* the
+    onefile exe and are unpacked to PyInstaller's temp extraction dir at
+    runtime (sys._MEIPASS), unlike user data which lives next to the exe."""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", base_dir()))
+    else:
+        base = Path(__file__).resolve().parent.parent
+    return base.joinpath(*parts)
+
+
 class Paths:
     def __init__(self, root: Path | None = None):
         self.root = root or base_dir()

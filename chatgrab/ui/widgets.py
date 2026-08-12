@@ -46,7 +46,9 @@ def hline() -> QFrame:
 
 
 class FieldRow(QWidget):
-    """Labeled input, matching the mockup's .field pattern."""
+    """Labeled input, matching the mockup's .field pattern. Password
+    fields get a "Показать"/"Скрыть" toggle next to them, so what was
+    typed can be checked before submitting."""
 
     def __init__(self, caption: str, placeholder: str = "", password: bool = False):
         super().__init__()
@@ -58,7 +60,22 @@ class FieldRow(QWidget):
         self.input.setPlaceholderText(placeholder)
         if password:
             self.input.setEchoMode(QLineEdit.Password)
-        lay.addWidget(self.input)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            row.addWidget(self.input, 1)
+            self.toggle_btn = button("Показать", "secondary")
+            self.toggle_btn.setCheckable(True)
+            self.toggle_btn.clicked.connect(self._toggle_visibility)
+            row.addWidget(self.toggle_btn)
+            lay.addLayout(row)
+        else:
+            self.toggle_btn = None
+            lay.addWidget(self.input)
+
+    def _toggle_visibility(self, checked: bool) -> None:
+        self.input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        self.toggle_btn.setText("Скрыть" if checked else "Показать")
 
     def text(self) -> str:
         return self.input.text()
