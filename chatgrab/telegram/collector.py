@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -27,6 +28,8 @@ from ..services.ignore_service import IgnoreService
 DEFAULT_DELAY_BOUNDS = {"min": 0.2, "max": 4.0, "current": 1.0}
 DEFAULT_SCHEDULE = {"enabled": False, "start": "23:00", "end": "08:00",
                      "days": [0, 1, 2, 3, 4, 5, 6]}
+
+_logger = logging.getLogger("chatgrab")
 
 
 def _display_name(entity) -> str:
@@ -122,6 +125,12 @@ class Collector(QObject):
         self.log_entries.insert(0, entry)
         self.log_entries = self.log_entries[:300]
         self.log_event.emit(entry)
+        # Errors caught and handled right here (e.g. a bad message while
+        # backfilling a chat) never reach the safety net's exception
+        # handlers — without this they'd show up in the in-app log but
+        # leave no trace in data/chatgrab.log for a support request.
+        if tone == "warn":
+            _logger.warning("[%s] %s", chat_title, text)
 
     # ---- chat management ----------------------------------------------
     def refresh_listen_filter(self) -> None:
@@ -305,12 +314,19 @@ class Collector(QObject):
             return fwd.from_name
         if fwd.sender_id:
             try:
-                entity = await self._get_entity(fwd.sender_id)
+                entity = fwd.sender or await self._get_entity(fwd.sender_id)
                 return f"@{entity.username}" if getattr(entity, "username", None) else _display_name(entity)
             except Exception:
                 return f"id{fwd.sender_id}"
-        if fwd.channel_id:
-            return f"канал id{fwd.channel_id}"
+        # Forwarded from a channel/chat rather than a user — Forward (via
+        # ChatGetter) exposes this as chat_id/chat, not channel_id (which
+        # never existed on this class and always raised AttributeError).
+        if fwd.chat_id:
+            try:
+                entity = fwd.chat or await self._get_entity(fwd.chat_id)
+                return f"@{entity.username}" if getattr(entity, "username", None) else _display_name(entity)
+            except Exception:
+                return f"канал id{fwd.chat_id}"
         return "переслано"
 
     async def _download_photo(self, message, chat) -> str | None:
