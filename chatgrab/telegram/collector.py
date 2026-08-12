@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 import shutil
 import time
 from pathlib import Path
@@ -43,6 +44,19 @@ def _display_name(entity) -> str:
         return f"@{entity.username}" if entity.username else str(entity.id)
     title = getattr(entity, "title", None)
     return title or str(getattr(entity, "id", ""))
+
+
+_UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _sanitize_filename(name: str, max_len: int = 120) -> str:
+    """Documents carry a filename the *sender* chose — strip anything that
+    could escape the target folder (path separators) or break on Windows
+    (reserved characters), and cap the length."""
+    name = name.strip().replace("..", "_")
+    name = _UNSAFE_FILENAME_RE.sub("_", name)
+    name = name.lstrip(". ") or "файл"
+    return name[:max_len]
 
 
 def build_link(username: str | None, chat_id: int, message_id: int) -> str:
@@ -281,9 +295,7 @@ class Collector(QObject):
             media_type = "document"
         elif message.media:
             media_type = "media"
-        photo_path = None
-        if media_type == "photo" and self.config.photos_enabled:
-            photo_path = await self._download_photo(message, chat)
+        media_path = await self._download_media(message, chat, media_type)
         forwarded_from = await self._forward_label(message)
         is_hidden = self.ignore_service.matches(chat_id, sender_username, _display_name(sender), text)
         return {
@@ -301,7 +313,7 @@ class Collector(QObject):
             "forwarded_from": forwarded_from,
             "media_type": media_type,
             "media_caption": text if media_type else None,
-            "photo_path": photo_path,
+            "media_path": media_path,
             "views": getattr(message, "views", None),
             "link": build_link(chat["username"], chat_id, message.id),
         }
@@ -329,19 +341,59 @@ class Collector(QObject):
                 return f"канал id{fwd.chat_id}"
         return "переслано"
 
-    async def _download_photo(self, message, chat) -> str | None:
-        path = self.paths.photo_path(chat["chat_id"], message.id)
+    def _media_enabled(self, media_type: str) -> bool:
+        return {
+            "photo": self.config.photos_enabled,
+            "video": self.config.videos_enabled,
+            "voice": self.config.voice_enabled,
+            "document": self.config.documents_enabled,
+        }.get(media_type, False)
+
+    def _media_target_path(self, message, chat_id: int, media_type: str) -> Path:
+        if media_type == "photo":
+            return self.paths.photo_path(chat_id, message.id)
+        file = message.file
+        ext = (file.ext if file else None) or {"video": ".mp4", "voice": ".ogg"}.get(media_type, "")
+        if media_type == "video":
+            return self.paths.video_path(chat_id, message.id, ext)
+        if media_type == "voice":
+            return self.paths.voice_path(chat_id, message.id, ext)
+        # document — keep the sender's filename where we have one, so the
+        # file is still recognizable outside the app (PDF, spreadsheet, …)
+        name = (file.name if file and file.name else None) or f"файл{ext}"
+        return self.paths.document_path(chat_id, message.id, _sanitize_filename(name))
+
+    async def _download_media(self, message, chat, media_type: str | None) -> str | None:
+        if media_type not in ("photo", "video", "voice", "document"):
+            return None
+        if not self._media_enabled(media_type):
+            return None
+
+        if media_type != "photo":
+            size = message.file.size if message.file else None
+            max_bytes = self.config.max_media_size_mb * 1024 * 1024
+            if size and size > max_bytes:
+                self._log(
+                    chat["title"],
+                    f"файл пропущен — {size / (1024 * 1024):.1f} МБ больше лимита "
+                    f"{self.config.max_media_size_mb} МБ",
+                )
+                return None
+
+        path = self._media_target_path(message, chat["chat_id"], media_type)
         path.parent.mkdir(parents=True, exist_ok=True)
+        label = {"photo": "фото", "video": "видео", "voice": "голосовое", "document": "документ"}[media_type]
         for _ in range(3):
             try:
                 result = await message.download_media(file=str(path))
                 if not result:
                     return None
-                self._log(chat["title"], f"фото сохранено → photos\\{chat['chat_id']}\\{message.id}.jpg")
-                return str(Path(result).relative_to(self.paths.data_dir))
+                rel = str(Path(result).relative_to(self.paths.data_dir))
+                self._log(chat["title"], f"{label} сохранён(о) → {rel}")
+                return rel
             except FloodWaitError as e:
                 self.health.note_flood_wait(e.seconds)
-                self._log(chat["title"], f"Telegram попросил подождать {e.seconds} с (скачивание фото), продолжу сам", "warn")
+                self._log(chat["title"], f"Telegram попросил подождать {e.seconds} с (скачивание {label}), продолжу сам", "warn")
                 await asyncio.sleep(e.seconds + 1)
             except Exception:
                 return None

@@ -114,7 +114,7 @@ class ExportScreen(QWidget):
         left.addWidget(self.merge_cb)
         self.incremental_cb = QCheckBox("Только новое с прошлой выгрузки")
         left.addWidget(self.incremental_cb)
-        self.zip_cb = QCheckBox("Приложить папку с фотографиями (zip рядом с выгрузкой)")
+        self.zip_cb = QCheckBox("Приложить папку с медиафайлами (zip рядом с выгрузкой)")
         self.zip_cb.setChecked(True)
         left.addWidget(self.zip_cb)
         self.include_hidden_cb = QCheckBox("Включить скрытые правилами игнора записи")
@@ -329,11 +329,13 @@ class ExportScreen(QWidget):
         self.estimate_label.setText(
             f"{est.row_count:,} сообщений · {est.file_count} файлов".replace(",", " ")
         )
+        cfg = self.ctx.config
+        media_enabled = cfg.photos_enabled or cfg.videos_enabled or cfg.voice_enabled or cfg.documents_enabled
         self.export_note_label.setText(
-            "Фотографии не встраиваются в файл: в каждой записи будет путь вида "
-            "photos/<чат>/<номер>.jpg, а сами файлы остаются рядом с базой."
-            if self.ctx.config.photos_enabled else
-            "Скачивание фотографий выключено — в выгрузке будет только текст и сведения о сообщении."
+            "Медиафайлы не встраиваются в файл: в каждой записи будет путь вида "
+            "photos|videos|voice|documents/<чат>/<номер>, а сами файлы остаются рядом с базой."
+            if media_enabled else
+            "Скачивание медиафайлов выключено в Настройках — в выгрузке будет только текст и сведения о сообщении."
         )
 
     def _clear_preview(self) -> None:

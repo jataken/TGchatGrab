@@ -84,8 +84,8 @@ class SettingsScreen(QWidget):
         save_creds_btn.clicked.connect(self._save_credentials)
         grid.addWidget(save_creds_btn, 8, 0)
 
-        # ---- speed & photos ------------------------------------------------
-        grid.addWidget(muted("СКОРОСТЬ И ФОТОГРАФИИ"), 0, 1)
+        # ---- speed ------------------------------------------------------
+        grid.addWidget(muted("СКОРОСТЬ ЗАГРУЗКИ ИСТОРИИ"), 0, 1)
         grid.addWidget(QLabel("Пауза между запросами истории, с"), 1, 1)
         delay_row = QHBoxLayout()
         self.delay_min = QDoubleSpinBox()
@@ -108,37 +108,67 @@ class SettingsScreen(QWidget):
                       "Пауза подстраивается сама: растёт после отказа, плавно снижается при успешной серии.")
         hint.setWordWrap(True)
         grid.addWidget(hint, 3, 1)
+        save_speed_btn = button("Сохранить", "primary")
+        save_speed_btn.clicked.connect(self._save_speed_photos)
+        grid.addWidget(save_speed_btn, 4, 1)
 
-        photos_row = QHBoxLayout()
-        photos_col = QVBoxLayout()
-        photos_col.addWidget(QLabel("Скачивать фотографии из сообщений"))
-        photos_col.addWidget(muted("Видео, документы и голосовые не скачиваются никогда"))
-        photos_row.addLayout(photos_col)
-        photos_row.addStretch(1)
-        self.photos_cb = QCheckBox()
-        self.photos_cb.setChecked(self.ctx.config.photos_enabled)
-        photos_row.addWidget(self.photos_cb)
-        photos_row_w = QWidget()
-        photos_row_w.setLayout(photos_row)
-        grid.addWidget(photos_row_w, 4, 1)
+        outer.addSpacing(24)
 
-        grid.addWidget(QLabel("Папка для фотографий"), 5, 1)
+        # ---- media downloads -----------------------------------------------
+        media_card = card()
+        media_lay = QVBoxLayout(media_card)
+        media_lay.setContentsMargins(16, 14, 16, 14)
+        media_lay.addWidget(muted("КАКИЕ МЕДИАФАЙЛЫ СКАЧИВАТЬ"))
+        media_lay.addWidget(muted(
+            "По умолчанию скачиваются только фото — остальное включайте, если нужно "
+            "разобрать чат, где важны видео, голосовые или документы."
+        ))
+
+        self.photos_cb = self._media_toggle_row(
+            media_lay, "Фотографии", "photos/<chat_id>/<message_id>.jpg", self.ctx.config.photos_enabled,
+        )
+        self.videos_cb = self._media_toggle_row(
+            media_lay, "Видео", "videos/<chat_id>/<message_id>.mp4", self.ctx.config.videos_enabled,
+        )
+        self.voice_cb = self._media_toggle_row(
+            media_lay, "Голосовые сообщения", "voice/<chat_id>/<message_id>.ogg", self.ctx.config.voice_enabled,
+        )
+        self.documents_cb = self._media_toggle_row(
+            media_lay, "Документы", "documents/<chat_id>/<message_id>_<имя файла>", self.ctx.config.documents_enabled,
+        )
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(muted("Максимальный размер файла (кроме фото)"))
+        self.max_media_size_spin = QSpinBox()
+        self.max_media_size_spin.setRange(1, 2000)
+        self.max_media_size_spin.setSuffix(" МБ")
+        self.max_media_size_spin.setValue(self.ctx.config.max_media_size_mb)
+        size_row.addWidget(self.max_media_size_spin)
+        size_row.addStretch(1)
+        media_lay.addLayout(size_row)
+        size_hint = muted(
+            "Файлы крупнее лимита пропускаются (сохранятся только тип и подпись) — "
+            "видео и документы бывают очень большими, а скачивание идёт в той же "
+            "очереди, что и загрузка истории."
+        )
+        size_hint.setWordWrap(True)
+        media_lay.addWidget(size_hint)
+
+        media_lay.addWidget(QLabel("Папка для фотографий"))
         photos_dir_row = QHBoxLayout()
         self.photos_dir_input = QLineEdit(self.ctx.config.photos_dir)
         photos_dir_row.addWidget(self.photos_dir_input)
         photos_dir_browse = button("Обзор…", "secondary")
         photos_dir_browse.clicked.connect(self._browse_photos_dir)
         photos_dir_row.addWidget(photos_dir_browse)
-        photos_dir_row_w = QWidget()
-        photos_dir_row_w.setLayout(photos_dir_row)
-        grid.addWidget(photos_dir_row_w, 6, 1)
-        path_note = QLabel("photos/<chat_id>/<message_id>.jpg")
-        path_note.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #6c6c78;")
-        grid.addWidget(path_note, 7, 1)
-        save_speed_btn = button("Сохранить", "primary")
-        save_speed_btn.clicked.connect(self._save_speed_photos)
-        grid.addWidget(save_speed_btn, 8, 1)
+        media_lay.addLayout(photos_dir_row)
+        media_note = muted("Видео, голосовые и документы сохраняются рядом, в подпапках videos/voice/documents.")
+        media_lay.addWidget(media_note)
 
+        save_media_btn = button("Сохранить", "primary")
+        save_media_btn.clicked.connect(self._save_media_settings)
+        media_lay.addWidget(save_media_btn)
+        outer.addWidget(media_card)
         outer.addSpacing(24)
 
         # ---- master password -----------------------------------------------
@@ -362,6 +392,22 @@ class SettingsScreen(QWidget):
         if d:
             self.photos_dir_input.setText(d)
 
+    @staticmethod
+    def _media_toggle_row(parent_layout: QVBoxLayout, title: str, path_pattern: str, checked: bool) -> QCheckBox:
+        row = QHBoxLayout()
+        col = QVBoxLayout()
+        col.addWidget(QLabel(title))
+        path_label = QLabel(path_pattern)
+        path_label.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #6c6c78;")
+        col.addWidget(path_label)
+        row.addLayout(col)
+        row.addStretch(1)
+        cb = QCheckBox()
+        cb.setChecked(checked)
+        row.addWidget(cb)
+        parent_layout.addLayout(row)
+        return cb
+
     def _save_credentials(self) -> None:
         cfg = self.ctx.config
         new_api_id = self.api_id_input.text().strip()
@@ -449,12 +495,20 @@ class SettingsScreen(QWidget):
 
     def _save_speed_photos(self) -> None:
         self.ctx.collector.save_delay_bounds(self.delay_min.value(), self.delay_max.value())
-        self.ctx.config.photos_enabled = self.photos_cb.isChecked()
-        self.ctx.config.photos_dir = self.photos_dir_input.text().strip()
-        self.ctx.config.save()
-        self.ctx.paths.photos_dir = Path(self.ctx.config.photos_dir)
+        QMessageBox.information(self, "Сохранено", "Настройки скорости обновлены.")
+
+    def _save_media_settings(self) -> None:
+        cfg = self.ctx.config
+        cfg.photos_enabled = self.photos_cb.isChecked()
+        cfg.videos_enabled = self.videos_cb.isChecked()
+        cfg.voice_enabled = self.voice_cb.isChecked()
+        cfg.documents_enabled = self.documents_cb.isChecked()
+        cfg.max_media_size_mb = self.max_media_size_spin.value()
+        cfg.photos_dir = self.photos_dir_input.text().strip()
+        cfg.save()
+        self.ctx.paths.photos_dir = Path(cfg.photos_dir)
         self.ctx.paths.photos_dir.mkdir(parents=True, exist_ok=True)
-        QMessageBox.information(self, "Сохранено", "Настройки скорости и фотографий обновлены.")
+        QMessageBox.information(self, "Сохранено", "Настройки медиафайлов обновлены.")
 
     def _save_schedule(self) -> None:
         days = [i for i, cb in enumerate(self.day_checks) if cb.isChecked()]

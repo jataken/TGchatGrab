@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS messages (
     media_type TEXT,
     media_caption TEXT,
     photo_path TEXT,
+    media_path TEXT,
     views INTEGER,
     link TEXT,
     is_hidden INTEGER NOT NULL DEFAULT 0,
@@ -196,6 +197,16 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     conn.execute(_DDL_META)
     for ddl in _ALL_TABLE_DDL:
         conn.execute(ddl)
+
+    # media_path generalizes the old photo-only column to cover video/voice/
+    # document downloads too — added after photo_path existed in the wild,
+    # so an existing database needs it added and backfilled explicitly.
+    if not _column_exists(conn, "messages", "media_path"):
+        conn.execute("ALTER TABLE messages ADD COLUMN media_path TEXT;")
+        conn.execute(
+            "UPDATE messages SET media_path = photo_path WHERE photo_path IS NOT NULL AND photo_path != '';"
+        )
+
     for ddl in _DDL_INDEXES:
         conn.execute(ddl)
     conn.execute(_DDL_FTS)

@@ -26,6 +26,10 @@ class AppConfig:
     exports_dir: str = ""
     backups_dir: str = ""
     photos_enabled: bool = True
+    videos_enabled: bool = False
+    voice_enabled: bool = False
+    documents_enabled: bool = False
+    max_media_size_mb: int = 20
     master_password_enabled: bool = False
     kdf_salt: str = ""
     api_hash_enc: str = ""
@@ -48,6 +52,10 @@ class AppConfig:
             exports_dir=raw.get("exports_dir") or str(paths.exports_dir),
             backups_dir=raw.get("backups_dir") or str(paths.backups_dir),
             photos_enabled=bool(raw.get("photos_enabled", True)),
+            videos_enabled=bool(raw.get("videos_enabled", False)),
+            voice_enabled=bool(raw.get("voice_enabled", False)),
+            documents_enabled=bool(raw.get("documents_enabled", False)),
+            max_media_size_mb=int(raw.get("max_media_size_mb", 20)),
             master_password_enabled=bool(raw.get("master_password_enabled", False)),
             kdf_salt=str(raw.get("kdf_salt", "")),
             api_hash_enc=str(raw.get("api_hash_enc", "")),

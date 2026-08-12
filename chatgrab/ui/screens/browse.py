@@ -10,6 +10,11 @@ from PySide6.QtWidgets import (
 from ..context import AppContext
 from ..widgets import button, card, h1, muted
 
+_MEDIA_BADGE_LABELS = {
+    "photo": "▣ фото приложено", "video": "▣ видео приложено",
+    "voice": "▣ голосовое приложено", "document": "▣ документ приложен",
+}
+
 
 class MessageCard(QWidget):
     def __init__(self, ctx: AppContext, row):
@@ -47,15 +52,15 @@ class MessageCard(QWidget):
         lay.addWidget(text)
 
         badges = QHBoxLayout()
-        if row["photo_path"]:
-            photo_btn = QPushButton("▣ фото приложено")
-            photo_btn.setCursor(Qt.PointingHandCursor)
-            photo_btn.setStyleSheet(
+        if row["media_path"]:
+            media_btn = QPushButton(_MEDIA_BADGE_LABELS.get(row["media_type"], "▣ файл приложен"))
+            media_btn.setCursor(Qt.PointingHandCursor)
+            media_btn.setStyleSheet(
                 "QPushButton { background: rgba(145,132,217,36); color: #d2cefd; border: none; "
                 "border-radius: 6px; padding: 3px 9px; font-size: 11.5px; }"
             )
-            photo_btn.clicked.connect(self._open_photo)
-            badges.addWidget(photo_btn)
+            media_btn.clicked.connect(self._open_media)
+            badges.addWidget(media_btn)
         if row["is_forward"]:
             badges.addWidget(muted("переслано" + (f" от {row['forwarded_from']}" if row["forwarded_from"] else "")))
         if row["is_reply"]:
@@ -71,8 +76,8 @@ class MessageCard(QWidget):
         badges.addStretch(1)
         lay.addLayout(badges)
 
-    def _open_photo(self) -> None:
-        path = self.ctx.paths.data_dir / self.row["photo_path"]
+    def _open_media(self) -> None:
+        path = self.ctx.paths.data_dir / self.row["media_path"]
         if path.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 

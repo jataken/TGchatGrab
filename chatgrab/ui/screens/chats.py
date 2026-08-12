@@ -277,10 +277,10 @@ class ChatsScreen(QWidget):
         chats = db.list_chats()
         enabled_n = len([c for c in chats if c["enabled"]])
         total_msgs = sum(db.message_count(c["chat_id"]) for c in chats)
-        total_photos = sum(db.photo_count(c["chat_id"]) for c in chats)
+        total_media = sum(db.media_count(c["chat_id"]) for c in chats)
         self.summary_label.setText(
             f"{enabled_n} из {len(chats)} в работе · {total_msgs:,} сообщений в базе · "
-            f"{total_photos:,} фото".replace(",", " ")
+            f"{total_media:,} медиафайлов".replace(",", " ")
         )
 
         self.table.setRowCount(len(chats))

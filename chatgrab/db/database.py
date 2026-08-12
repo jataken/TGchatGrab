@@ -130,7 +130,7 @@ class Database:
         cols = ["chat_id", "message_id", "chat_title", "date", "edited_date",
                 "sender_id", "sender_username", "sender_display_name", "text",
                 "reply_to_message_id", "forwarded_from", "media_type",
-                "media_caption", "photo_path", "views", "link", "char_len",
+                "media_caption", "media_path", "views", "link", "char_len",
                 "is_reply", "is_forward", "is_hidden"]
         values = [m.get(c) for c in cols]
         with self._lock:
@@ -162,12 +162,15 @@ class Database:
             sql += " WHERE " + " AND ".join(clauses)
         return self.query_one(sql, params)["c"]
 
-    def photo_count(self, chat_id: int | None = None) -> int:
-        sql = "SELECT count(*) AS c FROM messages WHERE photo_path IS NOT NULL AND photo_path != ''"
+    def media_count(self, chat_id: int | None = None, media_type: str | None = None) -> int:
+        sql = "SELECT count(*) AS c FROM messages WHERE media_path IS NOT NULL AND media_path != ''"
         params: list[Any] = []
         if chat_id is not None:
             sql += " AND chat_id = ?"
             params.append(chat_id)
+        if media_type is not None:
+            sql += " AND media_type = ?"
+            params.append(media_type)
         return self.query_one(sql, params)["c"]
 
     def last_message_date(self, chat_id: int) -> str | None:
@@ -290,7 +293,7 @@ class Database:
             like = f"%{author.strip()}%"
             params += [like, like]
         if photos_only:
-            clauses.append("m.photo_path IS NOT NULL AND m.photo_path != ''")
+            clauses.append("m.media_type = 'photo' AND m.media_path IS NOT NULL AND m.media_path != ''")
         if forwards_only:
             clauses.append("m.is_forward = 1")
         if replies_only:
@@ -412,7 +415,7 @@ class Database:
             clauses.append("m.date <= ?")
             params.append(date_to)
         if photos_only:
-            clauses.append("m.photo_path IS NOT NULL AND m.photo_path != ''")
+            clauses.append("m.media_type = 'photo' AND m.media_path IS NOT NULL AND m.media_path != ''")
         if forwards_only:
             clauses.append("m.is_forward = 1")
         if replies_only:

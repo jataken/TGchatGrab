@@ -117,7 +117,7 @@ class OverviewScreen(QWidget):
 
         totals_row = QHBoxLayout()
         self.kv_messages = KeyValue("Сообщений в базе")
-        self.kv_photos = KeyValue("Фото на диске")
+        self.kv_photos = KeyValue("Медиафайлов на диске")
         self.kv_chats = KeyValue("Чатов в работе")
         self.kv_size = KeyValue("Размер базы")
         self.kv_export = KeyValue("Прошлая выгрузка")
@@ -147,7 +147,7 @@ class OverviewScreen(QWidget):
         chats = db.list_chats()
 
         total_msgs = sum(db.message_count(c["chat_id"]) for c in chats)
-        total_photos = sum(db.photo_count(c["chat_id"]) for c in chats)
+        total_photos = sum(db.media_count(c["chat_id"]) for c in chats)
         enabled_n = len([c for c in chats if c["enabled"]])
         size_mb = db.file_size() / (1024 * 1024)
         logs = db.list_export_log(limit=1)

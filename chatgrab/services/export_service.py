@@ -20,10 +20,12 @@ DEFAULT_MD_HEADER = (
     "Чаты: {chats}\n"
     "Период: {period}\n"
     "Сообщений: {count}\n\n"
-    "Поля: автор и его @ник, дата, текст, вложенное фото (путь рядом с базой, "
-    "не встроено в файл), ссылка на исходное сообщение в Telegram.\n"
-    "Фото лежат в подпапках photos/<chat_id>/<message_id>.jpg рядом с базой данных "
-    "(или в приложенном zip, если он был запрошен при выгрузке).\n\n---\n\n"
+    "Поля: автор и его @ник, дата, текст, вложенное медиа — фото/видео/голосовое/"
+    "документ (путь рядом с базой, не встроено в файл), ссылка на исходное "
+    "сообщение в Telegram.\n"
+    "Файлы лежат в подпапках photos|videos|voice|documents/<chat_id>/<message_id> "
+    "рядом с базой данных (или в приложенном zip, если он был запрошен при "
+    "выгрузке).\n\n---\n\n"
 )
 
 _SLUG_RE = re.compile(r"[^a-zA-Zа-яА-ЯёЁ0-9]+")
@@ -80,8 +82,10 @@ class ExportResult:
 ROW_COLUMNS = [
     "chat_title", "message_id", "date", "edited_date", "sender_display_name",
     "sender_username", "text", "reply_to_message_id", "forwarded_from",
-    "media_type", "media_caption", "photo_path", "views", "link",
+    "media_type", "media_caption", "media_path", "views", "link",
 ]
+
+_MEDIA_LABELS = {"photo": "фото", "video": "видео", "voice": "голосовое", "document": "документ"}
 
 
 def text_with_markers(r) -> str:
@@ -99,8 +103,11 @@ def text_with_markers(r) -> str:
     return f"_{'; '.join(marks)}_ {text}"
 
 
-def photo_marker(r) -> str:
-    return f"[фото: {r['photo_path']}]" if r["photo_path"] else ""
+def media_marker(r) -> str:
+    if not r["media_path"]:
+        return ""
+    label = _MEDIA_LABELS.get(r["media_type"], "файл")
+    return f"[{label}: {r['media_path']}]"
 
 
 class ExportService:
@@ -188,8 +195,8 @@ class ExportService:
                 base = self._base_name(params, chat_id)
                 for label, _ in self._chunk_rows(chat_rows, params):
                     names.append(f"{base}{'_' + label if label else ''}.{ext}")
-        if params.zip_photos and any(r["photo_path"] for r in rows):
-            names.append("chatgrab_photos.zip")
+        if params.zip_photos and any(r["media_path"] for r in rows):
+            names.append("chatgrab_media.zip")
         return names
 
     # ---- writers -----------------------------------------------------
@@ -201,7 +208,7 @@ class ExportService:
         wb = Workbook()
         ws = wb.active
         ws.title = "Сообщения"
-        headers = ["Дата и время", "Чат", "Автор", "Ник (@)", "Текст", "Фото"]
+        headers = ["Дата и время", "Чат", "Автор", "Ник (@)", "Текст", "Медиа"]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
@@ -211,19 +218,20 @@ class ExportService:
             username = f"@{r['sender_username']}" if r["sender_username"] else ""
             ws.append([
                 r["date"], r["chat_title"], r["sender_display_name"] or "",
-                username, text_with_markers(r), photo_marker(r),
+                username, text_with_markers(r), media_marker(r),
             ])
             row_idx = ws.max_row
             for col in range(1, 7):
                 ws.cell(row=row_idx, column=col).alignment = wrap
-            if r["photo_path"]:
-                photo_cell = ws.cell(row=row_idx, column=6)
+            if r["media_path"]:
+                media_cell = ws.cell(row=row_idx, column=6)
                 # Relative to the exported file — resolves whether the
-                # photos sit on disk as-is next to the export, or the
+                # media files sit on disk as-is next to the export, or the
                 # accompanying zip gets extracted into the same folder
-                # (it preserves this same photos/<chat_id>/<id>.jpg layout).
-                photo_cell.hyperlink = r["photo_path"].replace("\\", "/")
-                photo_cell.style = "Hyperlink"
+                # (it preserves this same photos|videos|voice|documents/
+                # <chat_id>/<id> layout).
+                media_cell.hyperlink = r["media_path"].replace("\\", "/")
+                media_cell.style = "Hyperlink"
 
         widths = {1: 24, 2: 30, 3: 20, 4: 18, 5: 90, 6: 32}
         for col, width in widths.items():
@@ -259,8 +267,8 @@ class ExportService:
             if r["reply_to_message_id"]:
                 buf.write(f"_ответ на сообщение {r['reply_to_message_id']}_\n\n")
             buf.write(f"{r['text'] or ''}\n\n")
-            if r["photo_path"]:
-                buf.write(f"[фото: {r['photo_path']}]\n\n")
+            if r["media_path"]:
+                buf.write(f"{media_marker(r)}\n\n")
             buf.write(f"<{r['link']}>\n\n---\n\n")
         path.write_text(buf.getvalue(), encoding="utf-8")
 
@@ -298,14 +306,14 @@ class ExportService:
                     output_paths.append(str(path))
 
         if params.zip_photos:
-            photo_rows = [r for r in rows if r["photo_path"]]
-            if photo_rows:
-                zip_path = folder / "chatgrab_photos.zip"
+            media_rows = [r for r in rows if r["media_path"]]
+            if media_rows:
+                zip_path = folder / "chatgrab_media.zip"
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for r in photo_rows:
-                        src = self.paths.data_dir / r["photo_path"]
+                    for r in media_rows:
+                        src = self.paths.data_dir / r["media_path"]
                         if src.exists():
-                            zf.write(src, arcname=r["photo_path"])
+                            zf.write(src, arcname=r["media_path"])
                 output_paths.append(str(zip_path))
 
         max_id_by_chat: dict[str, int] = {}
