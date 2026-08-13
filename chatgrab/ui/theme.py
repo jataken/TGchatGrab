@@ -78,11 +78,14 @@ def build_qss() -> str:
     /* Block switcher (Сбор / Боты) and filter chips — a checkable pill,
        plain text so an unread-count badge can be appended to it. */
     QPushButton[class="blocktab"] {{
-        border-radius: 7px; padding: 6px 4px; font-size: 12.5px; font-weight: 500;
-        color: rgba(233,233,237,0.72); background: transparent; border: none;
+        border-radius: 7px; padding: 7px 4px; font-size: 12.5px; font-weight: 500;
+        color: {TEXT_MUTED}; background: transparent; border: 1px solid transparent;
     }}
-    QPushButton[class="blocktab"]:hover {{ background: rgba(233,233,237,10); }}
-    QPushButton[class="blocktab"]:checked {{ color: {TEXT}; background: rgba(145,132,217,56); }}
+    QPushButton[class="blocktab"]:hover {{ background: rgba(233,233,237,16); color: {TEXT}; }}
+    QPushButton[class="blocktab"]:checked {{
+        color: {ACCENT_200}; background: rgba(145,132,217,72);
+        border: 1px solid {ACCENT};
+    }}
     QPushButton[class="chip"] {{
         border-radius: 7px; padding: 5px 11px; font-size: 12.5px;
         color: rgba(233,233,237,0.7); background: rgba(233,233,237,8);

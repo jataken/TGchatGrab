@@ -28,8 +28,12 @@ class StepRow(QFrame):
         self.index = index
         color = "rgba(145,132,217,46)" if selected else "rgba(233,233,237,8)"
         ring = "#5d5294" if selected else "#33354a"
+        # Scoped by object name: QLabel is a QFrame subclass, so an
+        # unscoped QFrame rule would repaint every child label's box too.
+        self.setObjectName("stepRow")
         self.setStyleSheet(
-            f"QFrame {{ background: {color}; border-radius: 10px; border: 1px solid {ring}; }}"
+            f"QFrame#stepRow {{ background: {color}; border-radius: 10px; "
+            f"border: 1px solid {ring}; }}"
         )
         self.setCursor(Qt.PointingHandCursor)
         lay = QHBoxLayout(self)
@@ -68,17 +72,13 @@ class StepRow(QFrame):
             lay.addWidget(warn, alignment=Qt.AlignTop)
 
         move_col = QVBoxLayout()
-        move_col.setSpacing(2)
-        up_btn = button("↑", "ghost")
-        up_btn.setFixedSize(22, 20)
-        up_btn.clicked.connect(lambda: on_move(index, -1))
-        up_btn.setEnabled(index > 0)
-        down_btn = button("↓", "ghost")
-        down_btn.setFixedSize(22, 20)
-        down_btn.clicked.connect(lambda: on_move(index, 1))
-        down_btn.setEnabled(can_move_down)
-        move_col.addWidget(up_btn)
-        move_col.addWidget(down_btn)
+        move_col.setSpacing(3)
+        for arrow, delta, enabled in (("↑", -1, index > 0), ("↓", 1, can_move_down)):
+            btn = button(arrow, "secondary")
+            btn.setFixedSize(28, 24)
+            btn.setEnabled(enabled)
+            btn.clicked.connect(lambda _c, d=delta: on_move(index, d))
+            move_col.addWidget(btn)
         lay.addLayout(move_col)
 
         self._on_select = on_select
@@ -108,6 +108,23 @@ class ScenarioScreen(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(40, 24, 40, 22)
         outer.setSpacing(0)
+
+        # The mode badge is the design's answer to "незамеченный режим —
+        # источник самых дорогих ошибок": edits here save themselves, and
+        # that has to be visible where the eye already is.
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(10)
+        self.mode_badge = label("●  Черновик · правки сохраняются сами")
+        self.mode_badge.setStyleSheet(
+            "background: rgba(145,132,217,36); color: #d2cefd; border: 1px solid rgba(145,132,217,102); "
+            "border-radius: 8px; padding: 5px 12px; font-size: 12.5px;"
+        )
+        mode_row.addWidget(self.mode_badge)
+        mode_row.addStretch(1)
+        self.saved_label = muted("")
+        mode_row.addWidget(self.saved_label)
+        outer.addLayout(mode_row)
+        outer.addSpacing(12)
 
         top_row = QHBoxLayout()
         top_row.addWidget(muted("Бот"))
@@ -213,6 +230,15 @@ class ScenarioScreen(QWidget):
         self.validation_hint = muted("")
         self.validation_hint.setWordWrap(True)
         props_lay.addWidget(self.validation_hint)
+
+        props_lay.addSpacing(6)
+        props_lay.addWidget(muted("Так это увидит контакт:"))
+        self.preview_bubble = label("")
+        self.preview_bubble.setWordWrap(True)
+        self.preview_bubble.setStyleSheet(
+            "background: #12141d; border-radius: 10px; padding: 9px 12px; font-size: 13px;"
+        )
+        props_lay.addWidget(self.preview_bubble)
         props_lay.addStretch(1)
         self.remove_step_btn = button("Удалить шаг", "danger")
         self.remove_step_btn.clicked.connect(self._on_remove_step)
@@ -259,6 +285,7 @@ class ScenarioScreen(QWidget):
 
     def _save_steps(self, steps: list[dict]) -> None:
         self.ctx.db.update_scenario(self.selected_scenario_id, steps=steps)
+        self.saved_label.setText("сохранено только что")
         self._reload_steps()
 
     def _reload_steps(self) -> None:
@@ -314,6 +341,7 @@ class ScenarioScreen(QWidget):
         if btn is not None:
             btn.setChecked(True)
         self.validation_hint.setText(_VALIDATION_HINTS.get(validation, ""))
+        self.preview_bubble.setText(step.get("question", "") or "(вопрос пока пустой)")
 
     def _on_props_changed(self) -> None:
         steps = self._steps()
@@ -375,6 +403,20 @@ class ScenarioScreen(QWidget):
         self.test_open = not self.test_open
         self.test_panel.setVisible(self.test_open)
         self.test_btn.setText("Выйти из теста" if self.test_open else "Прогнать сценарий")
+        if self.test_open:
+            self.mode_badge.setText("●  Тестовый прогон — ничего не отправляется")
+            self.mode_badge.setStyleSheet(
+                "background: rgba(220,150,90,40); color: #f0c6a0; "
+                "border: 1px solid rgba(240,198,160,115); border-radius: 8px; "
+                "padding: 5px 12px; font-size: 12.5px;"
+            )
+        else:
+            self.mode_badge.setText("●  Черновик · правки сохраняются сами")
+            self.mode_badge.setStyleSheet(
+                "background: rgba(145,132,217,36); color: #d2cefd; "
+                "border: 1px solid rgba(145,132,217,102); border-radius: 8px; "
+                "padding: 5px 12px; font-size: 12.5px;"
+            )
 
     def _on_run_test(self) -> None:
         if self.selected_scenario_id is None:

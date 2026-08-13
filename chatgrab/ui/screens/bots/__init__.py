@@ -32,7 +32,7 @@ class BotsScreen(QWidget):
         outer = QVBoxLayout(container)
         outer.setContentsMargins(40, 28, 40, 30)
 
-        self.list_tab = BotsListTab(ctx)
+        self.list_tab = BotsListTab(ctx, navigate)
         outer.addWidget(self.list_tab)
 
         outer.addSpacing(18)

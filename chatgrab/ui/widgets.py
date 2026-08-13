@@ -10,6 +10,25 @@ from PySide6.QtWidgets import (
 from . import theme
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Russian noun agreement: one form for 1, another for 2–4, a third
+    for 5+ and for the whole 11–14 range."""
+    a = abs(n) % 100
+    b = a % 10
+    if 10 < a < 20:
+        return many
+    if 1 < b < 5:
+        return few
+    if b == 1:
+        return one
+    return many
+
+
+def fmt_int(n: int) -> str:
+    """Thousands separated by a space, the Russian convention."""
+    return f"{n:,}".replace(",", " ")
+
+
 def label(text: str, cls: str = "") -> QLabel:
     lbl = QLabel(text)
     # QLabel auto-detects rich text (Qt.AutoText default) — a chat title,
@@ -148,6 +167,122 @@ class ToggleSwitch(QWidget):
         p.setBrush(knob_color)
         p.setPen(Qt.NoPen)
         p.drawEllipse(knob_x, 2, 15, 15)
+
+
+class ActivityBars(QWidget):
+    """Small bar chart of per-day message counts, painted directly. Used on
+    Сегодня to make each block's recent volume readable at a glance."""
+
+    def __init__(self, values: list[int] | None = None, height: int = 44):
+        super().__init__()
+        self._values = values or []
+        self.setMinimumHeight(height)
+        self.setMinimumWidth(120)
+
+    def set_values(self, values: list[int]) -> None:
+        self._values = values
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        values = self._values or [0]
+        vmax = max(values) or 1
+        w, h = self.width(), self.height()
+        n = len(values)
+        gap = 3
+        bar_w = max(2.0, (w - gap * (n - 1)) / n)
+        for i, v in enumerate(values):
+            bar_h = max(2, (v / vmax) * (h - 4)) if vmax else 2
+            x = i * (bar_w + gap)
+            # The last three days read brighter — "what just happened" is
+            # the part of the chart a user actually scans for.
+            color = QColor(theme.ACCENT_400) if i >= n - 3 else QColor(theme.ACCENT)
+            color.setAlpha(235 if i >= n - 3 else 140)
+            p.setBrush(color)
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(int(x), int(h - bar_h), int(bar_w), int(bar_h), 2, 2)
+
+
+class LiveChart(QWidget):
+    """A rolling line chart of collection speed (messages per sample tick).
+    Values are pushed by the screen from a client-side ring buffer, so it
+    costs nothing in the database even while a backfill is running."""
+
+    def __init__(self, capacity: int = 60, height: int = 92):
+        super().__init__()
+        self._values: list[float] = []
+        self._capacity = capacity
+        self.setMinimumHeight(height)
+
+    def push(self, value: float) -> None:
+        self._values.append(max(0.0, value))
+        if len(self._values) > self._capacity:
+            del self._values[: len(self._values) - self._capacity]
+        self.update()
+
+    def reset(self) -> None:
+        self._values.clear()
+        self.update()
+
+    def values(self) -> list[float]:
+        return list(self._values)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        pad = 4
+
+        grid = QColor(theme.DIVIDER)
+        grid.setAlpha(110)
+        p.setPen(grid)
+        for i in range(1, 4):
+            y = pad + (h - 2 * pad) * i / 4
+            p.drawLine(0, int(y), w, int(y))
+
+        if len(self._values) < 2:
+            p.setPen(QColor(theme.TEXT_FAINT))
+            p.drawText(self.rect(), Qt.AlignCenter, "ждём первых сообщений…")
+            return
+
+        vmax = max(self._values) or 1.0
+        n = len(self._values)
+        step = w / max(1, self._capacity - 1)
+        # Right-align the trace so a partially filled buffer still grows
+        # from the right edge like a live monitor, not from the left.
+        x0 = w - (n - 1) * step
+
+        points = []
+        for i, v in enumerate(self._values):
+            x = x0 + i * step
+            y = pad + (1 - v / vmax) * (h - 2 * pad)
+            points.append((x, y))
+
+        fill = QPainterPath()
+        fill.moveTo(points[0][0], h)
+        for x, y in points:
+            fill.lineTo(x, y)
+        fill.lineTo(points[-1][0], h)
+        fill.closeSubpath()
+        fill_color = QColor(theme.ACCENT)
+        fill_color.setAlpha(46)
+        p.fillPath(fill, fill_color)
+
+        line = QPainterPath()
+        line.moveTo(*points[0])
+        for pt in points[1:]:
+            line.lineTo(*pt)
+        pen = p.pen()
+        pen.setColor(QColor(theme.ACCENT_400))
+        pen.setWidth(2)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(line)
+
+        p.setBrush(QColor(theme.ACCENT_400))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(int(points[-1][0]) - 3, int(points[-1][1]) - 3, 6, 6)
 
 
 class KeyValue(QWidget):

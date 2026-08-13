@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QDate, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QProgressBar, QVBoxLayout, QWidget,
+    QComboBox, QDateEdit, QGridLayout, QHBoxLayout, QLabel, QListWidget,
+    QListWidgetItem, QMessageBox, QProgressBar, QRadioButton, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
-from ..widgets import KeyValue, StatusPill, button, card, h1, label, muted
+from ..widgets import KeyValue, LiveChart, StatusPill, button, card, h1, label, muted
 
 
 class CollectScreen(QWidget):
@@ -16,6 +16,8 @@ class CollectScreen(QWidget):
     their turn on the left, the shared event log on the right — chats
     load one at a time because Telegram's rate limit is per-account, not
     per-chat, so seeing the queue next to the active job matters."""
+
+    SPEED_SAMPLE_MS = 2000
 
     def __init__(self, ctx: AppContext, navigate):
         super().__init__()
@@ -99,15 +101,60 @@ class CollectScreen(QWidget):
         self.kv_count = KeyValue("Собрано")
         self.kv_photos = KeyValue("Медиафайлов на диске")
         self.kv_last = KeyValue("Последнее сообщение")
-        self.kv_depth = KeyValue("Глубина истории")
+        self.kv_speed = KeyValue("Скорость")
         stats_row.addWidget(self.kv_count, 0, 0)
         stats_row.addWidget(self.kv_photos, 0, 1)
         stats_row.addWidget(self.kv_last, 1, 0)
-        stats_row.addWidget(self.kv_depth, 1, 1)
+        stats_row.addWidget(self.kv_speed, 1, 1)
         stats_row.setColumnStretch(0, 1)
         stats_row.setColumnStretch(1, 1)
         cur_lay.addLayout(stats_row)
         left_col.addWidget(cur_frame)
+
+        # ---- live speed chart ----
+        chart_frame = card()
+        chart_lay = QVBoxLayout(chart_frame)
+        chart_lay.setContentsMargins(16, 12, 16, 12)
+        chart_lay.setSpacing(6)
+        chart_head = QHBoxLayout()
+        chart_head.addWidget(label("СКОРОСТЬ СБОРА", "kicker"))
+        chart_head.addStretch(1)
+        self.chart_now_label = muted("")
+        chart_head.addWidget(self.chart_now_label)
+        chart_lay.addLayout(chart_head)
+        self.speed_chart = LiveChart()
+        chart_lay.addWidget(self.speed_chart)
+        self.chart_foot_label = muted("сообщений в секунду · последние 2 минуты, по всем чатам")
+        chart_lay.addWidget(self.chart_foot_label)
+        left_col.addWidget(chart_frame)
+
+        # ---- history depth (date range) ----
+        depth_frame = card()
+        depth_lay = QVBoxLayout(depth_frame)
+        depth_lay.setContentsMargins(16, 12, 16, 14)
+        depth_lay.setSpacing(8)
+        depth_lay.addWidget(label("ЗА КАКОЙ ПЕРИОД СОБИРАТЬ", "kicker"))
+        depth_row = QHBoxLayout()
+        depth_row.setSpacing(10)
+        self.depth_all = QRadioButton("Всю историю с начала чата")
+        self.depth_all.toggled.connect(self._on_depth_mode_changed)
+        depth_row.addWidget(self.depth_all)
+        self.depth_from = QRadioButton("Начиная с даты")
+        depth_row.addWidget(self.depth_from)
+        self.depth_date = QDateEdit()
+        self.depth_date.setCalendarPopup(True)
+        self.depth_date.setDisplayFormat("dd.MM.yyyy")
+        self.depth_date.setDate(QDate.currentDate().addMonths(-3))
+        depth_row.addWidget(self.depth_date)
+        depth_row.addStretch(1)
+        self.depth_save_btn = button("Применить", "primary")
+        self.depth_save_btn.clicked.connect(self._on_save_depth)
+        depth_row.addWidget(self.depth_save_btn)
+        depth_lay.addLayout(depth_row)
+        self.depth_hint = muted("")
+        self.depth_hint.setWordWrap(True)
+        depth_lay.addWidget(self.depth_hint)
+        left_col.addWidget(depth_frame)
 
         # ---- queue panel ----
         queue_frame = card()
@@ -170,8 +217,32 @@ class CollectScreen(QWidget):
         self._timer.timeout.connect(self._refresh_health)
         self._timer.start(2000)
 
+        # The speed chart samples the total message count on its own short
+        # tick and plots the delta — one cheap COUNT(*) every two seconds
+        # rather than any per-message signal wiring.
+        self._last_total: int | None = None
+        self._speed_timer = QTimer(self)
+        self._speed_timer.timeout.connect(self._sample_speed)
+        self._speed_timer.start(self.SPEED_SAMPLE_MS)
+
         self._reload_log()
         self._populate_picker()
+
+    def _sample_speed(self) -> None:
+        total = self.ctx.db.message_count()
+        if self._last_total is None:
+            self._last_total = total
+            return
+        delta = max(0, total - self._last_total)
+        self._last_total = total
+        per_second = delta / (self.SPEED_SAMPLE_MS / 1000)
+        self.speed_chart.push(per_second)
+
+        values = self.speed_chart.values()
+        recent = values[-5:] if values else [0.0]
+        avg = sum(recent) / len(recent)
+        self.chart_now_label.setText(f"сейчас {per_second:.1f}/с · в среднем {avg:.1f}/с")
+        self.kv_speed.set_value(f"{per_second:.1f} сообщ./с")
 
     def on_show(self, chat_id: int | None = None, **kwargs) -> None:
         self._populate_picker()
@@ -217,12 +288,12 @@ class CollectScreen(QWidget):
             "история собрана, идёт только приём новых сообщений"
         )
 
-        self.queue_count_label.setText(
-            f"{len(queued)}" if queued else "пусто"
-        )
         self.queue_list.clear()
         rows = ([{"title": loading["title"], "note": "грузится"}] if loading else []) + \
                [{"title": c["title"], "note": "ждёт"} for c in queued]
+        self.queue_count_label.setText(
+            f"{len(queued)} в очереди" if queued else ("грузится один" if loading else "пусто")
+        )
         for r in rows:
             item = QListWidgetItem(f"{r['title']}   —   {r['note']}")
             if r["note"] == "грузится":
@@ -244,10 +315,7 @@ class CollectScreen(QWidget):
         self.kv_photos.set_value(f"{media:,}".replace(",", " ") if media_enabled else "выключено")
         last = db.last_message_date(chat["chat_id"])
         self.kv_last.set_value(str(last)[:19].replace("T", " ") if last else "—")
-        depth = "вся история" if chat["depth_mode"] == "all" else f"с {chat['depth_from_date']}"
-        if chat["history_done"]:
-            depth += " · собрана"
-        self.kv_depth.set_value(depth)
+        self._sync_depth_controls(chat)
 
         chat_loading = chat["status"] == "loading"
         self.load_btn.setText("Приостановить загрузку" if chat_loading else
@@ -270,6 +338,73 @@ class CollectScreen(QWidget):
             self.prog_label.setText("Загрузка не запущена")
 
         self._refresh_health()
+
+    # ---- history depth ------------------------------------------------
+    def _sync_depth_controls(self, chat) -> None:
+        """Mirror the stored depth into the radio/date pair without
+        echoing back a change signal (which would immediately re-save)."""
+        from_date = chat["depth_from_date"]
+        is_from = chat["depth_mode"] == "from_date" and bool(from_date)
+        for w in (self.depth_all, self.depth_from, self.depth_date):
+            w.blockSignals(True)
+        self.depth_all.setChecked(not is_from)
+        self.depth_from.setChecked(is_from)
+        if is_from:
+            parsed = QDate.fromString(str(from_date)[:10], "yyyy-MM-dd")
+            if parsed.isValid():
+                self.depth_date.setDate(parsed)
+        for w in (self.depth_all, self.depth_from, self.depth_date):
+            w.blockSignals(False)
+        self.depth_date.setEnabled(is_from)
+
+        if is_from:
+            hint = f"Сейчас собирается всё, что новее {self.depth_date.date().toString('dd.MM.yyyy')}."
+        else:
+            hint = "Сейчас собирается вся доступная история чата с самого начала."
+        if chat["history_done"]:
+            hint += " История уже дочитана до этой границы — после смены периода нажмите «Догрузить историю»."
+        self.depth_hint.setText(hint)
+
+    def _on_depth_mode_changed(self, _checked: bool) -> None:
+        self.depth_date.setEnabled(self.depth_from.isChecked())
+
+    def _on_save_depth(self) -> None:
+        if self.selected_chat_id is None:
+            return
+        db = self.ctx.db
+        chat = db.get_chat(self.selected_chat_id)
+        if not chat:
+            return
+        if self.depth_from.isChecked():
+            mode, from_date = "from_date", self.depth_date.date().toString("yyyy-MM-dd")
+        else:
+            mode, from_date = "all", None
+
+        # Widening the window (an earlier start, or "all") means there is
+        # older history to fetch again, so history_done has to be cleared
+        # or the backfill worker would consider the chat finished and skip
+        # it. Narrowing needs no such reset — already-stored messages stay.
+        old_mode = chat["depth_mode"]
+        old_from = str(chat["depth_from_date"])[:10] if chat["depth_from_date"] else None
+        if mode == "all":
+            widened = old_mode != "all"
+        elif old_mode == "all":
+            widened = False  # adding a cutoff only narrows
+        else:
+            widened = bool(old_from) and from_date < old_from
+
+        fields = {"depth_mode": mode, "depth_from_date": from_date}
+        if widened:
+            fields["history_done"] = 0
+        db.set_chat_field(self.selected_chat_id, **fields)
+
+        note = "Период обновлён."
+        if widened:
+            note += " Нужно догрузить более старые сообщения — нажмите «Догрузить историю»."
+        else:
+            note += " Уже собранные сообщения остаются в базе."
+        QMessageBox.information(self, "Период сбора", note)
+        self.refresh()
 
     def _refresh_health(self) -> None:
         h = self.ctx.collector.health

@@ -1,65 +1,159 @@
 """«Сегодня» — the app's home screen. Answers the question a user wants
-answered in the first five seconds after opening the app: is anything
-wrong, and if so, what's the one thing to do about it. Everything here
-is a link to somewhere else — no widgets that don't lead to an action."""
+answered in the first five seconds after opening the app: how are the two
+halves of the app doing right now, and is there one thing to go fix.
+
+The screen is two parallel columns — Парсер on the left, Боты on the
+right — so the state of both blocks is readable side by side without
+switching anywhere. Each column carries its own headline state, a chart
+of the last 16 days, its own totals, and a short list of rows that are
+each a link to the screen that acts on them."""
 from __future__ import annotations
 
 import datetime as dt
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
-from ..widgets import KeyValue, button, h1, label, muted
+from ..widgets import ActivityBars, fmt_int as _fmt, h1, label, muted, plural as _plural
 
 _TONE_COLORS = {
     "accent": "#9184d9",
     "good": "#7fc79b",
     "warn": "#f0c6a0",
     "bad": "#c98a9a",
+    "faint": "#6c6c78",
 }
 
 
-def _plural(n: int, one: str, few: str, many: str) -> str:
-    a = abs(n) % 100
-    b = a % 10
-    if 10 < a < 20:
-        return many
-    if 1 < b < 5:
-        return few
-    if b == 1:
-        return one
-    return many
+class StatCell(QWidget):
+    """Uppercase kicker over a tabular-figure value — the column's own
+    small totals row."""
 
-
-class AttentionRow(QFrame):
-    def __init__(self, title: str, detail: str, action_text: str, on_act, tone: str = "accent"):
+    def __init__(self, key: str, value: str = "", tone: str = ""):
         super().__init__()
-        color = _TONE_COLORS.get(tone, _TONE_COLORS["accent"])
-        self.setStyleSheet(
-            f"QFrame {{ background: #232532; border-radius: 10px; "
-            f"border-left: 3px solid {color}; }}"
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        lay.addWidget(label(key, "kicker"))
+        self.value_label = label(value)
+        color = _TONE_COLORS.get(tone, "")
+        self.value_label.setStyleSheet(
+            f"font-size: 18px;" + (f" color: {color};" if color else "")
         )
+        lay.addWidget(self.value_label)
+
+    def set_value(self, value: str, tone: str = "") -> None:
+        self.value_label.setText(value)
+        color = _TONE_COLORS.get(tone, "")
+        self.value_label.setStyleSheet(
+            f"font-size: 18px;" + (f" color: {color};" if color else "")
+        )
+
+
+class ActionRow(QFrame):
+    """One line inside a column: a status dot, a title + detail, and the
+    action that resolves it. Clicking anywhere on the row does the same
+    thing as the action link — the whole row is the target."""
+
+    def __init__(self, title: str, detail: str, action_text: str, on_act, tone: str = "faint"):
+        super().__init__()
+        color = _TONE_COLORS.get(tone, _TONE_COLORS["faint"])
+        # QLabel subclasses QFrame, so a bare `QFrame { background: … }`
+        # rule would paint behind every child label too — scope the rule
+        # to this widget by object name.
+        self.setObjectName("actionRow")
+        self.setStyleSheet(
+            "QFrame#actionRow { background: rgba(233,233,237,8); border-radius: 9px; }"
+            "QFrame#actionRow:hover { background: rgba(233,233,237,18); }"
+        )
+        self.setCursor(Qt.PointingHandCursor)
+        self._on_act = on_act
+
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(16, 13, 16, 13)
-        lay.setSpacing(16)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(11)
+
+        dot = label("●")
+        dot.setStyleSheet(f"color: {color}; font-size: 11px;")
+        lay.addWidget(dot, alignment=Qt.AlignTop)
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(3)
+        text_col.setSpacing(2)
         title_label = label(title)
-        title_label.setStyleSheet("font-size: 14.5px;")
         title_label.setWordWrap(True)
+        title_label.setStyleSheet("font-size: 13.5px;")
         text_col.addWidget(title_label)
         detail_label = muted(detail)
         detail_label.setWordWrap(True)
         text_col.addWidget(detail_label)
         lay.addLayout(text_col, 1)
 
-        act_btn = button(action_text, "primary")
-        act_btn.clicked.connect(on_act)
-        lay.addWidget(act_btn, alignment=Qt.AlignVCenter)
+        act = label(action_text)
+        act.setStyleSheet("color: #b5abfc; font-size: 12px;")
+        lay.addWidget(act, alignment=Qt.AlignVCenter)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._on_act()
+
+
+class BlockColumn(QFrame):
+    """One of the two panels. Holds a header (title + live state), a
+    16-day chart, a totals row, and the rows list."""
+
+    def __init__(self, title: str, chart_caption: str):
+        super().__init__()
+        self.setProperty("class", "card")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(0)
+
+        head = QHBoxLayout()
+        head.addWidget(label(title.upper(), "kicker"))
+        head.addStretch(1)
+        self.state_label = label("")
+        self.state_label.setStyleSheet("font-size: 12px;")
+        head.addWidget(self.state_label)
+        lay.addLayout(head)
+        lay.addSpacing(12)
+
+        self.chart = ActivityBars(height=56)
+        lay.addWidget(self.chart)
+        self.chart_caption = muted(chart_caption)
+        lay.addWidget(self.chart_caption)
+        lay.addSpacing(14)
+
+        self.stats_row = QHBoxLayout()
+        self.stats_row.setSpacing(22)
+        lay.addLayout(self.stats_row)
+        lay.addSpacing(16)
+
+        self.rows_lay = QVBoxLayout()
+        self.rows_lay.setSpacing(6)
+        lay.addLayout(self.rows_lay)
+        lay.addStretch(1)
+
+        self._rows: list[QWidget] = []
+
+    def set_state(self, text: str, tone: str = "faint") -> None:
+        self.state_label.setText(text)
+        self.state_label.setStyleSheet(
+            f"font-size: 12px; color: {_TONE_COLORS.get(tone, _TONE_COLORS['faint'])};"
+        )
+
+    def clear_rows(self) -> None:
+        for w in self._rows:
+            w.setParent(None)
+            w.deleteLater()
+        self._rows.clear()
+
+    def add_row(self, title: str, detail: str, action: str, on_act, tone: str = "faint") -> None:
+        row = ActionRow(title, detail, action, on_act, tone)
+        self.rows_lay.addWidget(row)
+        self._rows.append(row)
 
 
 class TodayScreen(QWidget):
@@ -77,9 +171,10 @@ class TodayScreen(QWidget):
         wrap.addWidget(outer_scroll)
 
         outer = QVBoxLayout(container)
-        outer.setContentsMargins(40, 28, 40, 32)
+        outer.setContentsMargins(40, 28, 40, 30)
 
         head = QHBoxLayout()
+        head.setSpacing(14)
         head.addWidget(h1("Сегодня"))
         self.date_label = muted("")
         head.addWidget(self.date_label)
@@ -87,38 +182,28 @@ class TodayScreen(QWidget):
         outer.addLayout(head)
         outer.addSpacing(18)
 
-        self.feed_lay = QVBoxLayout()
-        self.feed_lay.setSpacing(8)
-        outer.addLayout(self.feed_lay)
-
-        self.nothing_wrong = muted(
-            "Всё идёт своим ходом: история собрана, боты отвечают, заявки разобраны. "
-            "Следующая проверка сама себя покажет здесь."
-        )
-        self.nothing_wrong.setWordWrap(True)
-        self.nothing_wrong.setStyleSheet(
-            "background: #232532; border-radius: 10px; padding: 24px 16px; font-size: 13.5px;"
-        )
-        outer.addWidget(self.nothing_wrong)
-
-        outer.addSpacing(22)
-        pulse_wrap = QWidget()
-        pulse_wrap.setStyleSheet("border-top: 1px solid #33354a;")
-        self.pulse_lay = QHBoxLayout(pulse_wrap)
-        self.pulse_lay.setContentsMargins(0, 16, 0, 0)
-        self.pulse_lay.setSpacing(28)
-        self.kv_messages = KeyValue("Сообщений в базе")
-        self.kv_chats = KeyValue("Чатов слушаем")
-        self.kv_bots = KeyValue("Ботов работает")
-        self.kv_leads = KeyValue("Заявок всего")
-        self.kv_export = KeyValue("Прошлая выгрузка")
-        for kv in (self.kv_messages, self.kv_chats, self.kv_bots, self.kv_leads, self.kv_export):
-            self.pulse_lay.addWidget(kv)
-        self.pulse_lay.addStretch(1)
-        outer.addWidget(pulse_wrap)
+        columns = QHBoxLayout()
+        columns.setSpacing(18)
+        self.collect_col = BlockColumn("Сбор", "сообщений в день, последние 16 суток")
+        self.bots_col = BlockColumn("Боты", "заявок в день, последние 16 суток")
+        columns.addWidget(self.collect_col, 1)
+        columns.addWidget(self.bots_col, 1)
+        outer.addLayout(columns)
         outer.addStretch(1)
 
-        self._rows: list[QWidget] = []
+        self.collect_msgs = StatCell("Сообщений")
+        self.collect_chats = StatCell("Чатов в работе")
+        self.collect_media = StatCell("Медиафайлов")
+        for cell in (self.collect_msgs, self.collect_chats, self.collect_media):
+            self.collect_col.stats_row.addWidget(cell)
+        self.collect_col.stats_row.addStretch(1)
+
+        self.bots_running = StatCell("Ботов работает")
+        self.bots_new = StatCell("Новых заявок")
+        self.bots_total = StatCell("Заявок всего")
+        for cell in (self.bots_running, self.bots_new, self.bots_total):
+            self.bots_col.stats_row.addWidget(cell)
+        self.bots_col.stats_row.addStretch(1)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -130,88 +215,155 @@ class TodayScreen(QWidget):
     def on_show(self, **kwargs) -> None:
         self.refresh()
 
-    def _clear_feed(self) -> None:
-        for w in self._rows:
-            w.setParent(None)
-            w.deleteLater()
-        self._rows.clear()
-
-    def _add_row(self, title: str, detail: str, action_text: str, on_act, tone: str = "accent") -> None:
-        row = AttentionRow(title, detail, action_text, on_act, tone)
-        self.feed_lay.addWidget(row)
-        self._rows.append(row)
-
     def refresh(self) -> None:
-        db = self.ctx.db
-        chats = db.list_chats()
-        bots = db.list_bots()
-        leads = db.list_leads()
-        new_leads = [l for l in leads if l["status"] == "new"]
-
         now = dt.datetime.now()
         month_name = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
                       "августа", "сентября", "октября", "ноября", "декабря"][now.month - 1]
         self.date_label.setText(f"{now.day} {month_name}")
 
-        self._clear_feed()
+        self._refresh_collect()
+        self._refresh_bots()
+
+    # ---- left column: the parser ------------------------------------
+    def _refresh_collect(self) -> None:
+        db = self.ctx.db
+        chats = db.list_chats()
+        col = self.collect_col
+        col.clear_rows()
+
         loading = next((c for c in chats if c["status"] == "loading"), None)
         queued = [c for c in chats if c["status"] == "queued"]
+        silent = [c for c in chats if c["status"] == "off"]
+        listening = [c for c in chats if c["status"] == "listening"]
+
+        if loading:
+            col.set_state("грузит историю", "accent")
+        elif listening:
+            col.set_state("слушает новые", "good")
+        elif not chats:
+            col.set_state("нет источников", "warn")
+        else:
+            col.set_state("простаивает", "faint")
+
+        # Sum the per-chat 16-day activity series into one block-level chart.
+        series = [0] * 16
+        for c in chats:
+            bars = db.activity_bars(c["chat_id"])
+            for i, v in enumerate(bars[-16:]):
+                series[i] += v
+        col.chart.set_values(series)
+
+        total_msgs = sum(db.message_count(c["chat_id"]) for c in chats)
+        total_media = sum(db.media_count(c["chat_id"]) for c in chats)
+        enabled_n = len([c for c in chats if c["enabled"]])
+        self.collect_msgs.set_value(_fmt(total_msgs))
+        self.collect_chats.set_value(f"{enabled_n} / {len(chats)}")
+        self.collect_media.set_value(_fmt(total_media))
+
+        if not chats:
+            col.add_row(
+                "Пока нет ни одного источника",
+                "Добавьте чат — история встанет в очередь и начнёт собираться.",
+                "добавить", lambda: self.navigate("chats"), "warn",
+            )
+            return
+
         if loading:
             count = db.message_count(loading["chat_id"])
             approx = loading["approx_total"]
-            pct = min(100, round(100 * count / max(approx, 1))) if approx else 0
-            detail = f"Собрано {count:,}".replace(",", " ")
-            detail += f" из ≈{approx:,}".replace(",", " ") if approx else ""
-            detail += f" сообщений, в очереди ещё {len(queued)}." if queued else " сообщений."
-            self._add_row(
-                f"История «{loading['title']}» ещё грузится", detail,
-                "Открыть сбор", lambda cid=loading["chat_id"]: self.navigate("collect", chat_id=cid),
+            detail = f"Собрано {_fmt(count)}"
+            detail += f" из ≈{_fmt(approx)}" if approx else ""
+            detail += f", в очереди ещё {len(queued)}" if queued else ""
+            col.add_row(loading["title"], detail, "открыть",
+                        lambda cid=loading["chat_id"]: self.navigate("collect", chat_id=cid), "accent")
+
+        for c in silent:
+            last = db.last_message_date(c["chat_id"])
+            detail = "сбор выключен вручную"
+            detail += f", с {str(last)[:16].replace('T', ' ')}" if last else ""
+            col.add_row(c["title"], detail, "включить",
+                        (lambda cid=c["chat_id"]: self.ctx.collector.set_chat_enabled(cid, True)), "warn")
+
+        errored = [c for c in chats if c["last_error"]]
+        for c in errored[:2]:
+            col.add_row(c["title"], f"чат стал недоступен: {c['last_error']}", "открыть",
+                        lambda cid=c["chat_id"]: self.navigate("collect", chat_id=cid), "bad")
+
+        col.add_row(
+            "Собранное", f"{_fmt(total_msgs)} " +
+            _plural(total_msgs, "сообщение готово", "сообщения готовы", "сообщений готовы") + " к выгрузке",
+            "открыть", lambda: self.navigate("browse"),
+        )
+
+    # ---- right column: the bots --------------------------------------
+    def _refresh_bots(self) -> None:
+        db = self.ctx.db
+        bots = db.list_bots()
+        leads = db.list_leads()
+        new_leads = [l for l in leads if l["status"] == "new"]
+        bad_bots = [b for b in bots if b["status"] == "error"]
+        running = [b for b in bots if b["status"] == "running"]
+        col = self.bots_col
+        col.clear_rows()
+
+        if bad_bots:
+            col.set_state("есть ошибка", "bad")
+        elif running:
+            col.set_state("работают", "good")
+        elif not bots:
+            col.set_state("ботов нет", "faint")
+        else:
+            col.set_state("остановлены", "faint")
+
+        col.chart.set_values(self._leads_series(leads))
+
+        self.bots_running.set_value(f"{len(running)} / {len(bots)}")
+        self.bots_new.set_value(_fmt(len(new_leads)), "good" if new_leads else "")
+        self.bots_total.set_value(_fmt(len(leads)))
+
+        if not bots:
+            col.add_row(
+                "Ботов пока нет",
+                "Бот может ловить ключевые слова в собираемых чатах и складывать находки в заявки.",
+                "создать", lambda: self.navigate("bots"), "faint",
             )
+            return
 
         if new_leads:
             latest = new_leads[0]
             contact = db.get_contact(latest["contact_id"])
             handle = f"@{contact['username']}" if contact and contact["username"] else "контакта"
-            self._add_row(
+            col.add_row(
                 f"{len(new_leads)} " +
-                _plural(len(new_leads), "новая заявка ждёт", "новые заявки ждут", "новых заявок ждут") +
-                " разбора",
-                f"Самая свежая — от {handle}.",
-                "Разобрать", lambda: self.navigate("leads"), tone="good",
+                _plural(len(new_leads), "новая заявка", "новые заявки", "новых заявок"),
+                f"самая свежая — от {handle}", "разобрать",
+                lambda: self.navigate("leads"), "good",
             )
 
-        for c in chats:
-            if c["status"] == "off":
-                last_txt = db.last_message_date(c["chat_id"])
-                detail = "Сбор выключен вручную"
-                detail += f", новые сообщения не пишутся с {str(last_txt)[:16].replace('T', ' ')}." \
-                    if last_txt else "."
-                detail += " Данные в базе целы."
-                self._add_row(
-                    f"Чат «{c['title']}» замолчал", detail, "Включить сбор",
-                    (lambda cid=c["chat_id"]: self.ctx.collector.set_chat_enabled(cid, True)),
-                    tone="warn",
-                )
+        for b in bad_bots:
+            col.add_row(b["name"], b["last_error"] or "бот остановился с ошибкой",
+                        "починить", lambda: self.navigate("bots"), "bad")
 
-        for b in bots:
-            if b["status"] == "error":
-                self._add_row(
-                    f"Бот «{b['name']}» остановился",
-                    b["last_error"] or "Причина не указана — загляните в журнал бота.",
-                    "Починить", lambda: self.navigate("bots"), tone="bad",
-                )
+        in_progress = [l for l in leads if l["status"] == "in_progress"]
+        if in_progress:
+            col.add_row(
+                f"{len(in_progress)} " + _plural(len(in_progress), "заявка", "заявки", "заявок") + " в работе",
+                "уже разбираются менеджером", "смотреть", lambda: self.navigate("leads"),
+            )
 
-        has_rows = bool(self._rows)
-        self.nothing_wrong.setVisible(not has_rows)
+        col.add_row("Правила", "что бот делает, когда что-то происходит",
+                    "настроить", lambda: self.navigate("rules"))
 
-        total_msgs = sum(db.message_count(c["chat_id"]) for c in chats)
-        enabled_n = len([c for c in chats if c["enabled"]])
-        running_bots = len([b for b in bots if b["status"] == "running"])
-        logs = db.list_export_log(limit=1)
-        last_export = logs[0]["created_at"][:16].replace("T", " ") if logs else "ещё не было"
-
-        self.kv_messages.set_value(f"{total_msgs:,}".replace(",", " "))
-        self.kv_chats.set_value(f"{enabled_n} / {len(chats)}")
-        self.kv_bots.set_value(f"{running_bots} / {len(bots)}")
-        self.kv_leads.set_value(f"{len(leads):,}".replace(",", " "))
-        self.kv_export.set_value(last_export)
+    def _leads_series(self, leads) -> list[int]:
+        """Leads per day over the last 16 days — the bots column's
+        counterpart to the parser's message volume."""
+        today = dt.date.today()
+        buckets = {today - dt.timedelta(days=i): 0 for i in range(16)}
+        for lead in leads:
+            try:
+                created = dt.datetime.fromisoformat(str(lead["created_at"])).date()
+            except (ValueError, TypeError):
+                continue
+            if created in buckets:
+                buckets[created] += 1
+        return [buckets[today - dt.timedelta(days=i)] for i in range(15, -1, -1)]
