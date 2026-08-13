@@ -97,7 +97,7 @@ class BotApiRunner:
         self._on_status(self.bot_id, "stopped", None)
         self._log("бот остановлен", "")
 
-    async def _send_dm(self, target: int | str, text: str) -> None:
+    async def send_dm(self, target: int | str, text: str) -> None:
         if not text:
             return
         if isinstance(target, str) and not target.startswith("@"):
@@ -140,11 +140,11 @@ class BotApiRunner:
         )
 
         if not is_command and self.rules.has_active_scenario(self.bot_id, contact_telegram_id):
-            await self.rules.continue_scenario(self.bot_id, event, self._send_dm, self._log)
+            await self.rules.continue_scenario(self.bot_id, event, self.send_dm, self._log)
             return
 
         triggers = self.rules.triggers_for(self.bot_id, event)
         for trigger in triggers:
-            await self.rules.fire(self.bot_id, trigger, event, self._send_dm, self._log)
+            await self.rules.fire(self.bot_id, trigger, event, self.send_dm, self._log)
         if not triggers:
             self._log(f"сообщение от {contact_telegram_id} не совпало ни с одним правилом")

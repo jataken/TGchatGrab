@@ -39,14 +39,23 @@ def _status_pill(status: str) -> QWidget:
 
 class LeadsTab(QWidget):
     """Minimal ticket-tracker: no full CRM, just enough that a manager
-    doesn't lose an inbound lead. Clicking a row advances its status
-    (новая → в работе → закрыта) — the frequent action, in reach; the rare
-    one (reassigning to a named manager) lives in the context menu."""
+    doesn't lose an inbound lead.
+
+    Status advances (новая → в работе → закрыта) on a click in the status
+    column only — not anywhere on the row. This screen is the one a
+    manager lives in all day, and a whole-row hit target turns every
+    mis-aimed click into a silent state change on someone else's lead.
+    The last change is undoable for the same reason; reassigning to a
+    named manager is rarer, so it sits in the context menu."""
 
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.ctx = ctx
         self.status_filter = "all"
+        # (lead_id, previous_status) of the last status change, so it can
+        # be put back — cheaper for the user than a confirmation on every
+        # click, and this is a reversible action.
+        self._undo: tuple[int, str] | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -56,6 +65,10 @@ class LeadsTab(QWidget):
         self.summary_label = muted("")
         head.addWidget(self.summary_label)
         head.addStretch(1)
+        self.undo_btn = button("Отменить изменение", "ghost")
+        self.undo_btn.clicked.connect(self._on_undo)
+        self.undo_btn.setVisible(False)
+        head.addWidget(self.undo_btn)
         export_btn = button("Выгрузить в Excel", "secondary")
         export_btn.clicked.connect(self._on_export)
         head.addWidget(export_btn)
@@ -84,7 +97,7 @@ class LeadsTab(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.cellClicked.connect(self._on_row_clicked)
+        self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_context_menu)
         outer.addWidget(self.table, 1)
@@ -112,6 +125,7 @@ class LeadsTab(QWidget):
             f"{n_new} новых · {n_prog} в работе · {len(all_leads)} заявок всего"
             if all_leads else "заявок пока нет — они появятся, когда сработает правило бота"
         )
+        self.undo_btn.setVisible(self._undo is not None)
 
         self.table.setRowCount(len(leads))
         for row, lead in enumerate(leads):
@@ -153,14 +167,25 @@ class LeadsTab(QWidget):
         item = self.table.item(row, 0)
         return item.data(Qt.UserRole) if item else None
 
-    def _on_row_clicked(self, row: int, _col: int) -> None:
+    def _on_cell_clicked(self, row: int, col: int) -> None:
+        if col != 4:  # status column only — see the class docstring
+            return
         lead_id = self._lead_id_at(row)
         if lead_id is None:
             return
         lead = self.ctx.db.get_lead(lead_id)
         if not lead:
             return
+        self._undo = (lead_id, lead["status"])
         self.ctx.db.set_lead_field(lead_id, status=_NEXT_STATUS.get(lead["status"], "new"))
+        self.refresh()
+
+    def _on_undo(self) -> None:
+        if not self._undo:
+            return
+        lead_id, previous = self._undo
+        self._undo = None
+        self.ctx.db.set_lead_field(lead_id, status=previous)
         self.refresh()
 
     def _on_context_menu(self, pos) -> None:

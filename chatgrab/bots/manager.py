@@ -18,6 +18,7 @@ from .bot_api_runner import BotApiRunner
 from .crypto import decrypt_token, encrypt_token
 from .presets import apply_preset
 from .rules_engine import RulesEngine
+from .scheduler import TriggerScheduler
 from .userbot_runner import UserbotRunner
 
 _logger = logging.getLogger("chatgrab")
@@ -37,6 +38,9 @@ class BotManager(QObject):
         self._bot_api_runners: dict[int, BotApiRunner] = {}
         self.log_entries: list[dict] = []
         self._running = False
+        # Evaluates the trigger types that no incoming message can match —
+        # inactivity reminders and schedules. See bots/scheduler.py.
+        self.scheduler = TriggerScheduler(db, self.rules, self._send_for_bot, self._on_log)
         # One lock per bot_id — serializes start_bot()/stop_bot() for that
         # bot so a rapid double-click (or any other concurrent caller)
         # can't create two BotApiRunner instances polling the same token
@@ -65,6 +69,15 @@ class BotManager(QObject):
         self.db.set_bot_field(bot_id, status=status, last_error=error)
         self.bots_changed.emit()
 
+    def _send_for_bot(self, bot_id: int):
+        """The send path for a bot, whichever runner owns it — so the
+        scheduler inherits the userbot's per-contact cooldown and
+        FloodWait handling instead of reimplementing them."""
+        runner = self._bot_api_runners.get(bot_id)
+        if runner is not None:
+            return runner.send_dm
+        return self.userbot_runner.make_send(bot_id)
+
     # ---- lifecycle -------------------------------------------------------
     async def start(self) -> None:
         """Called once the Telegram session is authorized — mirrors
@@ -92,9 +105,11 @@ class BotManager(QObject):
                 except Exception as e:
                     _logger.warning("bot %s failed to start", bot["id"], exc_info=True)
                     self._on_status(bot["id"], "error", str(e))
+        self.scheduler.start()
         self.bots_changed.emit()
 
     async def stop(self) -> None:
+        self.scheduler.stop()
         self.userbot_runner.unregister()
         for runner in list(self._bot_api_runners.values()):
             await runner.stop()

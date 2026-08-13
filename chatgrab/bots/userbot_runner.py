@@ -94,7 +94,7 @@ class UserbotRunner:
             try:
                 incoming = IncomingEvent(contact_telegram_id=contact_telegram_id, username=username,
                                           text=text, chat_id=chat_id, chat_type=chat_type)
-                send_dm = self._make_send(bot_id)
+                send_dm = self.make_send(bot_id)
                 if chat_type == "dm" and self.rules.has_active_scenario(bot_id, contact_telegram_id):
                     await self.rules.continue_scenario(bot_id, incoming, send_dm, log)
                     continue
@@ -106,7 +106,7 @@ class UserbotRunner:
                 # not stop the rest of `running` from seeing this message.
                 log(f"ошибка обработки сообщения: {e}", "warn")
 
-    def _make_send(self, bot_id: int):
+    def make_send(self, bot_id: int):
         async def send_dm(target: int | str, text: str) -> None:
             if not text:
                 return

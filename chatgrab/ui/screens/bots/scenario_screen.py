@@ -199,6 +199,28 @@ class ScenarioScreen(QWidget):
         self.test_panel.setVisible(False)
         left_col.addWidget(self.test_panel)
 
+        # ---- completion message + funnel ----
+        tail = card()
+        tail_lay = QVBoxLayout(tail)
+        tail_lay.setContentsMargins(16, 12, 16, 14)
+        tail_lay.setSpacing(8)
+        done_row = QHBoxLayout()
+        done_row.addWidget(muted("Что отправить, когда контакт ответил на всё"))
+        self.done_template_combo = QComboBox()
+        self.done_template_combo.currentIndexChanged.connect(self._on_done_template_changed)
+        done_row.addWidget(self.done_template_combo, 1)
+        tail_lay.addLayout(done_row)
+
+        tail_lay.addWidget(label("ГДЕ КОНТАКТЫ ОТВАЛИВАЮТСЯ", "kicker"))
+        self.funnel_lay = QVBoxLayout()
+        self.funnel_lay.setSpacing(4)
+        tail_lay.addLayout(self.funnel_lay)
+        self.funnel_empty = muted("Пока никто не проходил этот сценарий — воронка появится после первых диалогов.")
+        self.funnel_empty.setWordWrap(True)
+        tail_lay.addWidget(self.funnel_empty)
+        self._funnel_rows: list[QWidget] = []
+        left_col.addWidget(tail)
+
         body.addLayout(left_col, 60)
 
         self.props_panel = card()
@@ -270,11 +292,13 @@ class ScenarioScreen(QWidget):
         self.scenario_picker.blockSignals(False)
         self.selected_scenario_id = self.scenario_picker.currentData()
         self.step_sel = 0
+        self._reload_done_template()
         self._reload_steps()
 
     def _on_scenario_changed(self, _index: int) -> None:
         self.selected_scenario_id = self.scenario_picker.currentData()
         self.step_sel = 0
+        self._reload_done_template()
         self._reload_steps()
 
     def _steps(self) -> list[dict]:
@@ -310,6 +334,75 @@ class ScenarioScreen(QWidget):
             self.steps_lay.insertWidget(i, row)
 
         self._sync_props()
+        self._reload_funnel()
+
+    def _reload_funnel(self) -> None:
+        """Where contacts stop answering — the question the design brief
+        asks of scenario analytics, computed from accumulated session
+        history rather than a message counter."""
+        for w in self._funnel_rows:
+            w.setParent(None)
+            w.deleteLater()
+        self._funnel_rows.clear()
+
+        funnel = self.ctx.db.scenario_funnel(self.selected_scenario_id) \
+            if self.selected_scenario_id is not None else []
+        has_data = any(row["reached"] for row in funnel)
+        self.funnel_empty.setVisible(not has_data)
+        if not has_data:
+            return
+
+        top = funnel[0]["reached"] or 1
+        for row in funnel:
+            host = QWidget()
+            lay = QHBoxLayout(host)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(10)
+
+            num = label(str(row["index"] + 1))
+            num.setFixedWidth(16)
+            num.setStyleSheet("color: #6c6c78; font-size: 11.5px;")
+            lay.addWidget(num)
+
+            bar = QWidget()
+            share = row["reached"] / top
+            bar.setFixedHeight(8)
+            bar.setMinimumWidth(max(4, int(220 * share)))
+            bar.setMaximumWidth(max(4, int(220 * share)))
+            bar.setStyleSheet("background: #9184d9; border-radius: 4px;")
+            lay.addWidget(bar)
+
+            caption = muted(
+                f"{row['reached']} дошли"
+                + (f" · {row['dropped']} остановились здесь" if row["dropped"] else "")
+                + f" — {row['field']}"
+            )
+            lay.addWidget(caption, 1)
+            self.funnel_lay.addWidget(host)
+            self._funnel_rows.append(host)
+
+    def _reload_done_template(self) -> None:
+        self.done_template_combo.blockSignals(True)
+        self.done_template_combo.clear()
+        self.done_template_combo.addItem("ничего не отправлять", None)
+        if self.selected_bot_id is not None:
+            for tpl in self.ctx.db.list_templates(self.selected_bot_id):
+                self.done_template_combo.addItem(tpl["name"], tpl["id"])
+        scenario = self.ctx.db.get_scenario(self.selected_scenario_id) \
+            if self.selected_scenario_id is not None else None
+        current = scenario["done_template_id"] if scenario else None
+        idx = self.done_template_combo.findData(current)
+        self.done_template_combo.setCurrentIndex(max(0, idx))
+        self.done_template_combo.blockSignals(False)
+
+    def _on_done_template_changed(self, _index: int) -> None:
+        if self.selected_scenario_id is None:
+            return
+        self.ctx.db.update_scenario(
+            self.selected_scenario_id,
+            done_template_id=self.done_template_combo.currentData(),
+        )
+        self.saved_label.setText("сохранено только что")
 
     def _select_step(self, index: int) -> None:
         self.step_sel = index

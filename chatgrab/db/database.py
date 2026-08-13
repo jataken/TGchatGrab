@@ -648,6 +648,38 @@ class Database:
             (contact_id, bot_id, chat_id, message_id, now_iso(), chat_type, kind),
         )
 
+    def contacts_silent_since(self, bot_id: int, cutoff_iso: str) -> list[sqlite3.Row]:
+        """Contacts this bot has actually interacted with whose last
+        activity predates the cutoff — the candidate set for an
+        inactivity trigger. Scoped by bot so one bot's reminders don't
+        reach into another bot's audience."""
+        return self.query(
+            """
+            SELECT c.* FROM bot_contacts c
+            WHERE c.last_active < ?
+              AND EXISTS (SELECT 1 FROM bot_activity_log a
+                          WHERE a.contact_id = c.id AND a.bot_id = ?)
+            ORDER BY c.last_active
+            """,
+            (cutoff_iso, bot_id),
+        )
+
+    def has_activity_since(self, contact_id: int, kind: str, since_iso: str) -> bool:
+        row = self.query_one(
+            "SELECT 1 FROM bot_activity_log WHERE contact_id = ? AND kind = ? "
+            "AND timestamp >= ? LIMIT 1",
+            (contact_id, kind, since_iso),
+        )
+        return row is not None
+
+    def has_trigger_activity_since(self, bot_id: int, kind: str, since_iso: str) -> bool:
+        row = self.query_one(
+            "SELECT 1 FROM bot_activity_log WHERE bot_id = ? AND kind = ? "
+            "AND timestamp >= ? LIMIT 1",
+            (bot_id, kind, since_iso),
+        )
+        return row is not None
+
     def activity_for_contact(self, contact_id: int, limit: int = 200) -> list[sqlite3.Row]:
         return self.query(
             "SELECT * FROM bot_activity_log WHERE contact_id = ? ORDER BY timestamp DESC LIMIT ?",
@@ -744,7 +776,7 @@ class Database:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO bot_scenarios(bot_id, name, steps, created_at) VALUES (?, ?, ?, ?)",
-                (bot_id, name, json.dumps(steps, ensure_ascii=False), now_iso()),
+                (bot_id, name, json.dumps(_with_step_ids(steps), ensure_ascii=False), now_iso()),
             )
             self._conn.commit()
             return cur.lastrowid
@@ -760,7 +792,7 @@ class Database:
             return
         fields = dict(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
-            fields["steps"] = json.dumps(fields["steps"], ensure_ascii=False)
+            fields["steps"] = json.dumps(_with_step_ids(fields["steps"]), ensure_ascii=False)
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.execute(f"UPDATE bot_scenarios SET {cols} WHERE id = ?", (*fields.values(), scenario_id))
 
@@ -768,6 +800,52 @@ class Database:
         self.execute("DELETE FROM bot_scenarios WHERE id = ?", (scenario_id,))
 
     # ---- bot scenario sessions (FSM state) --------------------------------
+    def last_finished_session(self, bot_id: int, contact_telegram_id: int) -> sqlite3.Row | None:
+        """The most recently completed run for this contact — used to find
+        which scenario they just finished, since the active session row is
+        already marked done by the time the confirmation is sent."""
+        return self.query_one(
+            "SELECT * FROM bot_scenario_sessions WHERE bot_id = ? AND contact_telegram_id = ? "
+            "AND status = 'done' ORDER BY updated_at DESC, id DESC LIMIT 1",
+            (bot_id, contact_telegram_id),
+        )
+
+    def scenario_funnel(self, scenario_id: int) -> list[dict]:
+        """How far contacts got through a scenario: for each step, how many
+        runs reached it and how many stopped there.
+
+        Reads the accumulated session history — which only became possible
+        once schema v3 stopped collapsing every contact to one row per
+        status. `step_index` is where a run stopped, so a run that reached
+        step N passed through every step before it."""
+        scenario = self.get_scenario(scenario_id)
+        if not scenario:
+            return []
+        steps = json.loads(scenario["steps"])
+        if not steps:
+            return []
+        rows = self.query(
+            "SELECT step_index, status FROM bot_scenario_sessions WHERE scenario_id = ?",
+            (scenario_id,),
+        )
+        total = len(rows)
+        funnel = []
+        for i, step in enumerate(steps):
+            reached = sum(1 for r in rows if r["step_index"] >= i or r["status"] == "done")
+            dropped = sum(
+                1 for r in rows
+                if r["status"] in ("abandoned", "active") and r["step_index"] == i
+            )
+            funnel.append({
+                "index": i,
+                "question": step.get("question", ""),
+                "field": step.get("field", ""),
+                "reached": reached,
+                "dropped": dropped,
+                "share": (reached / total) if total else 0.0,
+            })
+        return funnel
+
     def get_active_scenario_session(self, bot_id: int, contact_telegram_id: int) -> sqlite3.Row | None:
         return self.query_one(
             "SELECT * FROM bot_scenario_sessions WHERE bot_id = ? AND contact_telegram_id = ? AND status = 'active'",
@@ -800,6 +878,31 @@ class Database:
         fields.setdefault("updated_at", now_iso())
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.execute(f"UPDATE bot_scenario_sessions SET {cols} WHERE id = ?", (*fields.values(), session_id))
+
+
+def _with_step_ids(steps: list[dict]) -> list[dict]:
+    """Give every scenario step a stable `id`, assigned once and preserved
+    across edits.
+
+    The engine walks steps by position and doesn't read this yet. It exists
+    so that when branching lands, a jump can name its destination by id
+    instead of by index — otherwise inserting a step in the middle of a
+    live scenario would silently repoint every existing branch, and fixing
+    that later would mean migrating real customer data. Cheap now,
+    expensive to retrofit.
+    """
+    used = {s["id"] for s in steps if isinstance(s, dict) and s.get("id")}
+    out = []
+    for step in steps:
+        step = dict(step)
+        if not step.get("id"):
+            n = len(used) + 1
+            while f"s{n}" in used:
+                n += 1
+            step["id"] = f"s{n}"
+            used.add(step["id"])
+        out.append(step)
+    return out
 
 
 def _fts_query(text: str) -> str:

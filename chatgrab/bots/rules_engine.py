@@ -14,6 +14,7 @@ from typing import Awaitable, Callable
 
 from ..db.database import Database
 from .scenario_engine import ScenarioEngine
+from .templating import context_for, render, resolve_action_text
 
 _logger = logging.getLogger("chatgrab")
 
@@ -98,7 +99,10 @@ class RulesEngine:
         atype = action_row["type"]
 
         if atype == "send_dm":
-            text = cfg.get("text", "")
+            text = resolve_action_text(self.db, cfg, bot_id, self._values(bot_id, contact_id, event))
+            if not text:
+                log("действие «отправить сообщение» пропущено — пустой текст и не выбран шаблон", "warn")
+                return
             await send_dm(event.contact_telegram_id, text)
             log(f"отправлено личное сообщение контакту {event.contact_telegram_id}", "ok")
 
@@ -139,13 +143,22 @@ class RulesEngine:
                 log(f"контакту проставлен тег «{tag}»", "ok")
 
         elif atype == "notify":
-            # Generic manager notification with a fixed template, distinct
-            # from notify_manager's auto-built "new inquiry" message.
-            text = cfg.get("text", "")
+            # Generic manager notification with the user's own wording,
+            # distinct from notify_manager's auto-built "new inquiry" text.
+            text = resolve_action_text(self.db, cfg, bot_id, self._values(bot_id, contact_id, event))
             bot = self.db.get_bot(bot_id)
             manager = bot["manager_chat_id"] if bot else None
             if manager and text:
                 await send_dm(manager, text)
+                log("менеджер уведомлён", "ok")
+            elif not manager:
+                log("у бота не задан менеджер — уведомление пропущено", "warn")
+
+    def _values(self, bot_id: int, contact_id: int, event: IncomingEvent,
+                 answers: dict | None = None) -> dict:
+        """What `{variables}` in this bot's templates can refer to right now."""
+        return context_for(self.db, bot_id, self.db.get_contact(contact_id),
+                           answers=answers, event_text=event.text)
 
     def _save_lead_from_answers(self, bot_id: int, contact_id: int, answers: dict) -> None:
         self.db.add_lead(contact_id, bot_id, answers, status="new")
@@ -165,6 +178,13 @@ class RulesEngine:
             return
         if result.done and result.answers is not None:
             self._save_lead_from_answers(bot_id, contact_id, result.answers)
+
+            # Confirm to the contact first — they're the one waiting on a
+            # reply — then hand the summary to the manager.
+            await self._send_scenario_confirmation(
+                bot_id, contact_id, event, result, send_dm, log,
+            )
+
             bot = self.db.get_bot(bot_id)
             manager = bot["manager_chat_id"] if bot else None
             if manager:
@@ -173,3 +193,19 @@ class RulesEngine:
                 summary = "; ".join(f"{k}: {v}" for k, v in result.answers.items())
                 await send_dm(manager, f"Новая заявка от {handle}\n{summary}")
             log("сценарий завершён, заявка сохранена", "ok")
+
+    async def _send_scenario_confirmation(self, bot_id: int, contact_id: int, event: IncomingEvent,
+                                           result, send_dm: SendFn, log) -> None:
+        session = self.db.last_finished_session(bot_id, event.contact_telegram_id)
+        scenario = self.db.get_scenario(session["scenario_id"]) if session else None
+        template_id = scenario["done_template_id"] if scenario else None
+        if template_id is None:
+            return
+        template = self.db.get_template(template_id)
+        if template is None:
+            log("сценарий завершён, но выбранный шаблон подтверждения удалён", "warn")
+            return
+        values = self._values(bot_id, contact_id, event, answers=result.answers)
+        text = render(template["text"], values)
+        if text:
+            await send_dm(event.contact_telegram_id, text)

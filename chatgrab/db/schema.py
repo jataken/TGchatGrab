@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 _DDL_META = """
 CREATE TABLE IF NOT EXISTS app_meta (
@@ -225,7 +225,8 @@ CREATE TABLE IF NOT EXISTS bot_scenarios (
     bot_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     steps TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    done_template_id INTEGER          -- confirmation sent once all steps are answered
 );
 """
 
@@ -233,6 +234,15 @@ CREATE TABLE IF NOT EXISTS bot_scenarios (
 # in the original spec's table list, but required for it to actually work:
 # without persisted step/answer state, restarting the app mid-conversation
 # would silently lose where a contact was in the scenario.
+#
+# Uniqueness is deliberately NOT a table constraint here. Schema v2 carried
+# UNIQUE(bot_id, contact_telegram_id, status), which allowed only one row
+# per status per contact: a contact going through a scenario a *second*
+# time collided with their own earlier 'done' row on the final step, the
+# write failed, and their finished answers never became a lead. What the
+# rule actually needs to say is "at most one *active* dialog per contact" —
+# expressed as the partial unique index below, leaving finished runs free
+# to accumulate as the per-contact history the funnel is computed from.
 _DDL_BOT_SCENARIO_SESSIONS = """
 CREATE TABLE IF NOT EXISTS bot_scenario_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,8 +253,7 @@ CREATE TABLE IF NOT EXISTS bot_scenario_sessions (
     answers TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'active',    -- active | done | abandoned
     started_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(bot_id, contact_telegram_id, status)
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -260,6 +269,10 @@ _DDL_BOT_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_bot_contacts_telegram_id ON bot_contacts(telegram_id);",
     "CREATE INDEX IF NOT EXISTS idx_bot_scenario_sessions_lookup "
     "ON bot_scenario_sessions(bot_id, contact_telegram_id, status);",
+    # The real invariant: one active dialog per contact per bot. Finished
+    # ('done'/'abandoned') runs are unconstrained history.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_scenario_sessions_one_active "
+    "ON bot_scenario_sessions(bot_id, contact_telegram_id) WHERE status = 'active';",
 ]
 
 _DDL_FTS = """
@@ -318,6 +331,58 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(r[1] == column for r in rows)
 
 
+def _migrate_scenario_sessions_unique(conn: sqlite3.Connection) -> None:
+    """Drop schema v2's UNIQUE(bot_id, contact_telegram_id, status) from
+    bot_scenario_sessions.
+
+    That constraint made a returning contact's second run through a
+    scenario fail on its last step (their own earlier 'done' row was in the
+    way), losing the collected answers instead of filing a lead. SQLite
+    cannot drop a table constraint in place, so the table is rebuilt: the
+    12-step dance is unnecessary here since there are no foreign keys or
+    views pointing at it — copy, drop, rename, reindex.
+
+    Detected from the stored DDL rather than a version number, so a
+    database that skipped versions (or was created by a build in between)
+    is still repaired exactly once.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bot_scenario_sessions'"
+    ).fetchone()
+    if not row or not row[0] or "UNIQUE" not in row[0].upper():
+        return
+
+    conn.execute("DROP TABLE IF EXISTS bot_scenario_sessions_new;")
+    conn.execute(
+        """
+        CREATE TABLE bot_scenario_sessions_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id INTEGER NOT NULL,
+            scenario_id INTEGER NOT NULL,
+            contact_telegram_id INTEGER NOT NULL,
+            step_index INTEGER NOT NULL DEFAULT 0,
+            answers TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'active',
+            started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO bot_scenario_sessions_new
+            (id, bot_id, scenario_id, contact_telegram_id, step_index,
+             answers, status, started_at, updated_at)
+        SELECT id, bot_id, scenario_id, contact_telegram_id, step_index,
+               answers, status, started_at, updated_at
+        FROM bot_scenario_sessions;
+        """
+    )
+    conn.execute("DROP TABLE bot_scenario_sessions;")
+    conn.execute("ALTER TABLE bot_scenario_sessions_new RENAME TO bot_scenario_sessions;")
+    conn.commit()
+
+
 def _fts_needs_build(conn: sqlite3.Connection) -> bool:
     fts_count = conn.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
     msg_count = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
@@ -343,6 +408,15 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
             "UPDATE messages SET media_path = photo_path WHERE photo_path IS NOT NULL AND photo_path != '';"
         )
 
+    # The confirmation a contact gets once they've answered every step.
+    # Added after bot_scenarios shipped, so existing databases need it.
+    if not _column_exists(conn, "bot_scenarios", "done_template_id"):
+        conn.execute("ALTER TABLE bot_scenarios ADD COLUMN done_template_id INTEGER;")
+
+    # Must run before the bot indexes below: the partial unique index they
+    # create belongs on the rebuilt table, not the old constrained one.
+    _migrate_scenario_sessions_unique(conn)
+
     for ddl in _DDL_INDEXES:
         conn.execute(ddl)
     for ddl in _DDL_BOT_INDEXES:
@@ -357,8 +431,11 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     if _fts_needs_build(conn):
         _build_fts_index(conn, on_progress=on_fts_progress)
 
+    # Migrations above are all detected from the actual schema rather than
+    # this number, so the stored version is a record of what ran, not the
+    # gate for it — a database that skipped a release still gets repaired.
     version = _get_meta(conn, "schema_version")
-    if version is None:
+    if version != str(CURRENT_SCHEMA_VERSION):
         _set_meta(conn, "schema_version", str(CURRENT_SCHEMA_VERSION))
         conn.commit()
 
