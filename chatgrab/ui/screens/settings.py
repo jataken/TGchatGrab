@@ -4,13 +4,14 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
-    QScrollArea, QSpinBox, QTableWidget,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPlainTextEdit, QScrollArea, QSpinBox, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
 from ..widgets import button, card, h1, muted
+from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
 from ...services.export_service import DEFAULT_MD_HEADER
 from ...telegram.collector import DEFAULT_SCHEDULE
@@ -54,7 +55,18 @@ class SettingsScreen(QWidget):
         grid.addWidget(QLabel("Секрет приложения (api_hash)"), 3, 0)
         self.api_hash_input = QLineEdit(self.ctx.config.api_hash)
         self.api_hash_input.setEchoMode(QLineEdit.Password)
-        grid.addWidget(self.api_hash_input, 4, 0)
+        hash_row = QHBoxLayout()
+        hash_row.setContentsMargins(0, 0, 0, 0)
+        hash_row.addWidget(self.api_hash_input, 1)
+        hash_toggle_btn = button("Показать", "secondary")
+        hash_toggle_btn.setCheckable(True)
+        hash_toggle_btn.clicked.connect(
+            lambda checked: self._toggle_field_visibility(self.api_hash_input, hash_toggle_btn, checked)
+        )
+        hash_row.addWidget(hash_toggle_btn)
+        hash_row_w = QWidget()
+        hash_row_w.setLayout(hash_row)
+        grid.addWidget(hash_row_w, 4, 0)
         grid.addWidget(QLabel("Файл входа в аккаунт"), 5, 0)
         session_row = QHBoxLayout()
         self.session_path_input = QLineEdit(self.ctx.config.session_path)
@@ -72,8 +84,8 @@ class SettingsScreen(QWidget):
         save_creds_btn.clicked.connect(self._save_credentials)
         grid.addWidget(save_creds_btn, 8, 0)
 
-        # ---- speed & photos ------------------------------------------------
-        grid.addWidget(muted("СКОРОСТЬ И ФОТОГРАФИИ"), 0, 1)
+        # ---- speed ------------------------------------------------------
+        grid.addWidget(muted("СКОРОСТЬ ЗАГРУЗКИ ИСТОРИИ"), 0, 1)
         grid.addWidget(QLabel("Пауза между запросами истории, с"), 1, 1)
         delay_row = QHBoxLayout()
         self.delay_min = QDoubleSpinBox()
@@ -96,37 +108,84 @@ class SettingsScreen(QWidget):
                       "Пауза подстраивается сама: растёт после отказа, плавно снижается при успешной серии.")
         hint.setWordWrap(True)
         grid.addWidget(hint, 3, 1)
+        save_speed_btn = button("Сохранить", "primary")
+        save_speed_btn.clicked.connect(self._save_speed_photos)
+        grid.addWidget(save_speed_btn, 4, 1)
 
-        photos_row = QHBoxLayout()
-        photos_col = QVBoxLayout()
-        photos_col.addWidget(QLabel("Скачивать фотографии из сообщений"))
-        photos_col.addWidget(muted("Видео, документы и голосовые не скачиваются никогда"))
-        photos_row.addLayout(photos_col)
-        photos_row.addStretch(1)
-        self.photos_cb = QCheckBox()
-        self.photos_cb.setChecked(self.ctx.config.photos_enabled)
-        photos_row.addWidget(self.photos_cb)
-        photos_row_w = QWidget()
-        photos_row_w.setLayout(photos_row)
-        grid.addWidget(photos_row_w, 4, 1)
+        outer.addSpacing(24)
 
-        grid.addWidget(QLabel("Папка для фотографий"), 5, 1)
+        # ---- media downloads -----------------------------------------------
+        media_card = card()
+        media_lay = QVBoxLayout(media_card)
+        media_lay.setContentsMargins(16, 14, 16, 14)
+        media_lay.addWidget(muted("КАКИЕ МЕДИАФАЙЛЫ СКАЧИВАТЬ"))
+        media_lay.addWidget(muted(
+            "По умолчанию скачиваются только фото — остальное включайте, если нужно "
+            "разобрать чат, где важны видео, голосовые или документы."
+        ))
+
+        self.photos_cb = self._media_toggle_row(
+            media_lay, "Фотографии", "photos/<chat_id>/<message_id>.jpg", self.ctx.config.photos_enabled,
+        )
+        self.videos_cb = self._media_toggle_row(
+            media_lay, "Видео", "videos/<chat_id>/<message_id>.mp4", self.ctx.config.videos_enabled,
+        )
+        self.voice_cb = self._media_toggle_row(
+            media_lay, "Голосовые сообщения", "voice/<chat_id>/<message_id>.ogg", self.ctx.config.voice_enabled,
+        )
+        self.documents_cb = self._media_toggle_row(
+            media_lay, "Документы", "documents/<chat_id>/<message_id>_<имя файла>", self.ctx.config.documents_enabled,
+        )
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(muted("Максимальный размер файла (кроме фото)"))
+        self.max_media_size_spin = QSpinBox()
+        self.max_media_size_spin.setRange(1, 2000)
+        self.max_media_size_spin.setSuffix(" МБ")
+        self.max_media_size_spin.setValue(self.ctx.config.max_media_size_mb)
+        size_row.addWidget(self.max_media_size_spin)
+        size_row.addStretch(1)
+        media_lay.addLayout(size_row)
+        size_hint = muted(
+            "Файлы крупнее лимита пропускаются (сохранятся только тип и подпись) — "
+            "видео и документы бывают очень большими, а скачивание идёт в той же "
+            "очереди, что и загрузка истории."
+        )
+        size_hint.setWordWrap(True)
+        media_lay.addWidget(size_hint)
+
+        media_lay.addWidget(QLabel("Папка для фотографий"))
         photos_dir_row = QHBoxLayout()
         self.photos_dir_input = QLineEdit(self.ctx.config.photos_dir)
         photos_dir_row.addWidget(self.photos_dir_input)
         photos_dir_browse = button("Обзор…", "secondary")
         photos_dir_browse.clicked.connect(self._browse_photos_dir)
         photos_dir_row.addWidget(photos_dir_browse)
-        photos_dir_row_w = QWidget()
-        photos_dir_row_w.setLayout(photos_dir_row)
-        grid.addWidget(photos_dir_row_w, 6, 1)
-        path_note = QLabel("photos/<chat_id>/<message_id>.jpg")
-        path_note.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #6c6c78;")
-        grid.addWidget(path_note, 7, 1)
-        save_speed_btn = button("Сохранить", "primary")
-        save_speed_btn.clicked.connect(self._save_speed_photos)
-        grid.addWidget(save_speed_btn, 8, 1)
+        media_lay.addLayout(photos_dir_row)
+        media_note = muted("Видео, голосовые и документы сохраняются рядом, в подпапках videos/voice/documents.")
+        media_lay.addWidget(media_note)
 
+        save_media_btn = button("Сохранить", "primary")
+        save_media_btn.clicked.connect(self._save_media_settings)
+        media_lay.addWidget(save_media_btn)
+        outer.addWidget(media_card)
+        outer.addSpacing(24)
+
+        # ---- master password -----------------------------------------------
+        self.security_card = card()
+        sec_lay = QVBoxLayout(self.security_card)
+        sec_lay.setContentsMargins(16, 14, 16, 14)
+        sec_lay.addWidget(muted("ЗАЩИТА МАСТЕР-ПАРОЛЕМ"))
+        self.security_status_label = QLabel("")
+        self.security_status_label.setWordWrap(True)
+        sec_lay.addWidget(self.security_status_label)
+        sec_btn_row = QHBoxLayout()
+        self.security_toggle_btn = button("", "primary")
+        self.security_toggle_btn.clicked.connect(self._on_toggle_security)
+        sec_btn_row.addWidget(self.security_toggle_btn)
+        sec_btn_row.addStretch(1)
+        sec_lay.addLayout(sec_btn_row)
+        outer.addWidget(self.security_card)
         outer.addSpacing(24)
 
         # ---- schedule ------------------------------------------------------
@@ -309,13 +368,20 @@ class SettingsScreen(QWidget):
         self._refresh_rules()
         self._refresh_authors()
         self._refresh_db_size()
+        self._refresh_security_section()
 
     def on_show(self, **kwargs) -> None:
         self._refresh_rules()
         self._refresh_authors()
         self._refresh_db_size()
+        self._refresh_security_section()
 
     # ---- actions -----------------------------------------------------
+    @staticmethod
+    def _toggle_field_visibility(field: QLineEdit, toggle_btn, checked: bool) -> None:
+        field.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        toggle_btn.setText("Скрыть" if checked else "Показать")
+
     def _browse_session(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Файл входа", self.session_path_input.text())
         if path:
@@ -326,25 +392,123 @@ class SettingsScreen(QWidget):
         if d:
             self.photos_dir_input.setText(d)
 
+    @staticmethod
+    def _media_toggle_row(parent_layout: QVBoxLayout, title: str, path_pattern: str, checked: bool) -> QCheckBox:
+        row = QHBoxLayout()
+        col = QVBoxLayout()
+        col.addWidget(QLabel(title))
+        path_label = QLabel(path_pattern)
+        path_label.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #6c6c78;")
+        col.addWidget(path_label)
+        row.addLayout(col)
+        row.addStretch(1)
+        cb = QCheckBox()
+        cb.setChecked(checked)
+        row.addWidget(cb)
+        parent_layout.addLayout(row)
+        return cb
+
     def _save_credentials(self) -> None:
         cfg = self.ctx.config
-        cfg.api_id = self.api_id_input.text().strip()
-        cfg.api_hash = self.api_hash_input.text().strip()
-        cfg.session_path = self.session_path_input.text().strip()
-        cfg.save()
+        new_api_id = self.api_id_input.text().strip()
+        new_api_hash = self.api_hash_input.text().strip()
+        new_session_path = self.session_path_input.text().strip()
+
+        if self.ctx.security.enabled and new_api_hash != cfg.api_hash:
+            pwd, ok = QInputDialog.getText(
+                self, "Мастер-пароль",
+                "Ключ защищён мастер-паролем — введите его, чтобы сохранить новое значение:",
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
+            try:
+                self.ctx.security.unlock(pwd)
+            except WrongPasswordError:
+                QMessageBox.warning(self, "Неверный пароль", "Не удалось сохранить — пароль неверен.")
+                return
+            cfg.api_id = new_api_id
+            cfg.session_path = new_session_path
+            cfg.api_hash = new_api_hash
+            self.ctx.security.enable(pwd)
+        else:
+            cfg.api_id = new_api_id
+            cfg.api_hash = new_api_hash
+            cfg.session_path = new_session_path
+            cfg.save()
+
         QMessageBox.information(
             self, "Сохранено",
             "Ключи сохранены. Если менялся файл входа — перезапустите приложение, чтобы применить."
         )
 
+    def _refresh_security_section(self) -> None:
+        if self.ctx.security.enabled:
+            self.security_status_label.setText(
+                "Файл входа в Telegram и ключ приложения зашифрованы мастер-паролем. "
+                "Он нигде не хранится — забыв его, нужно будет войти в Telegram заново."
+            )
+            self.security_toggle_btn.setText("Выключить защиту")
+        else:
+            self.security_status_label.setText(
+                "Файл входа в Telegram и ключ приложения сейчас хранятся на диске "
+                "открытым текстом. Мастер-пароль шифрует их — без пароля эти файлы "
+                "бесполезны, даже если их скопировать с этого компьютера."
+            )
+            self.security_toggle_btn.setText("Включить защиту мастер-паролем")
+
+    def _on_toggle_security(self) -> None:
+        if self.ctx.security.enabled:
+            self._disable_security()
+        else:
+            self._enable_security()
+
+    def _enable_security(self) -> None:
+        pwd, ok = QInputDialog.getText(self, "Мастер-пароль", "Придумайте мастер-пароль:", QLineEdit.Password)
+        if not ok or not pwd:
+            return
+        pwd2, ok2 = QInputDialog.getText(self, "Мастер-пароль", "Повторите пароль:", QLineEdit.Password)
+        if not ok2:
+            return
+        if pwd != pwd2:
+            QMessageBox.warning(self, "Не совпадает", "Пароли не совпадают — попробуйте ещё раз.")
+            return
+        self.ctx.security.enable(pwd)
+        self._refresh_security_section()
+        QMessageBox.information(
+            self, "Готово",
+            "Защита включена. Пароль нигде не сохранён — не забудьте его: восстановить "
+            "нельзя, только сбросить вход и начать заново."
+        )
+
+    def _disable_security(self) -> None:
+        pwd, ok = QInputDialog.getText(self, "Мастер-пароль", "Введите текущий мастер-пароль:", QLineEdit.Password)
+        if not ok or not pwd:
+            return
+        try:
+            self.ctx.security.disable(pwd)
+        except WrongPasswordError:
+            QMessageBox.warning(self, "Неверный пароль", "Не удалось выключить защиту — пароль неверен.")
+            return
+        self._refresh_security_section()
+        QMessageBox.information(self, "Готово", "Защита выключена.")
+
     def _save_speed_photos(self) -> None:
         self.ctx.collector.save_delay_bounds(self.delay_min.value(), self.delay_max.value())
-        self.ctx.config.photos_enabled = self.photos_cb.isChecked()
-        self.ctx.config.photos_dir = self.photos_dir_input.text().strip()
-        self.ctx.config.save()
-        self.ctx.paths.photos_dir = Path(self.ctx.config.photos_dir)
+        QMessageBox.information(self, "Сохранено", "Настройки скорости обновлены.")
+
+    def _save_media_settings(self) -> None:
+        cfg = self.ctx.config
+        cfg.photos_enabled = self.photos_cb.isChecked()
+        cfg.videos_enabled = self.videos_cb.isChecked()
+        cfg.voice_enabled = self.voice_cb.isChecked()
+        cfg.documents_enabled = self.documents_cb.isChecked()
+        cfg.max_media_size_mb = self.max_media_size_spin.value()
+        cfg.photos_dir = self.photos_dir_input.text().strip()
+        cfg.save()
+        self.ctx.paths.photos_dir = Path(cfg.photos_dir)
         self.ctx.paths.photos_dir.mkdir(parents=True, exist_ok=True)
-        QMessageBox.information(self, "Сохранено", "Настройки скорости и фотографий обновлены.")
+        QMessageBox.information(self, "Сохранено", "Настройки медиафайлов обновлены.")
 
     def _save_schedule(self) -> None:
         days = [i for i, cb in enumerate(self.day_checks) if cb.isChecked()]

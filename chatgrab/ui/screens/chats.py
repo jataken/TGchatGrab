@@ -13,7 +13,8 @@ from ..widgets import StatusPill, ToggleSwitch, button, h1, muted
 
 
 class AddChatDialog(QDialog):
-    def __init__(self, ctx: AppContext, parent=None):
+    def __init__(self, ctx: AppContext, dialogs: list | None = None,
+                 dialogs_error: str | None = None, parent=None):
         super().__init__(parent)
         self.ctx = ctx
         self.setWindowTitle("Добавить чат")
@@ -23,7 +24,7 @@ class AddChatDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Ссылка или имя чата"))
         self.link_input = QLineEdit()
-        self.link_input.setPlaceholderText("t.me/имя_чата или @имя_чата")
+        self.link_input.setPlaceholderText("t.me/имя_чата, t.me/+инвайт-код или @имя_чата")
         self.link_input.textChanged.connect(lambda: setattr(self, "chosen_dialog", None))
         lay.addWidget(self.link_input)
 
@@ -40,7 +41,18 @@ class AddChatDialog(QDialog):
         self.depth_from.toggled.connect(self.depth_date.setEnabled)
         lay.addWidget(self.depth_date)
 
-        lay.addWidget(QLabel("Или выберите из своих чатов"))
+        picker_row = QHBoxLayout()
+        picker_row.addWidget(QLabel("Или выберите из своих чатов"))
+        picker_row.addStretch(1)
+        self.refresh_dialogs_btn = button("Обновить список", "ghost")
+        self.refresh_dialogs_btn.clicked.connect(self._reload_dialogs)
+        picker_row.addWidget(self.refresh_dialogs_btn)
+        lay.addLayout(picker_row)
+
+        self.dialogs_status = QLabel("")
+        self.dialogs_status.setWordWrap(True)
+        lay.addWidget(self.dialogs_status)
+
         self.dialog_list = QListWidget()
         self.dialog_list.setMaximumHeight(210)
         self.dialog_list.itemClicked.connect(self._on_pick)
@@ -48,7 +60,8 @@ class AddChatDialog(QDialog):
 
         self.hint = QLabel(
             "История нового чата встанет в общую очередь — чаты грузятся по одному, "
-            "чтобы Telegram не останавливал сбор."
+            "чтобы Telegram не останавливал сбор. Для приватных чатов по ссылке-приглашению "
+            "(t.me/+…) приложение присоединится к чату от вашего имени — иначе историю не прочитать."
         )
         self.hint.setWordWrap(True)
         self.hint.setProperty("class", "muted")
@@ -64,16 +77,53 @@ class AddChatDialog(QDialog):
         btn_row.addWidget(self.confirm_btn)
         lay.addLayout(btn_row)
 
-        self._dialogs = []
-        fire(self._load_dialogs(), parent=self)
+        self._dialogs: list = []
+        if dialogs_error:
+            self._show_dialogs_error(dialogs_error)
+        else:
+            self._populate_dialogs(dialogs or [])
 
-    async def _load_dialogs(self) -> None:
-        try:
-            self._dialogs = await self.ctx.tg.list_dialogs()
-        except Exception:
-            self._dialogs = []
+    def _reload_dialogs(self) -> None:
+        self.dialogs_status.setText("Загружаю список ваших чатов…")
+        self.dialogs_status.setStyleSheet("color: #9a9aa3; font-size: 12px;")
+        self.refresh_dialogs_btn.setEnabled(False)
+
+        async def go():
+            return await self.ctx.tg.list_dialogs()
+
+        def on_error(e):
+            self.refresh_dialogs_btn.setEnabled(True)
+            from ...telegram.errors import humanize_error
+            self._show_dialogs_error(humanize_error(e))
+
+        task = fire(go(), parent=self, on_error=on_error)
+
+        def _apply(t):
+            self.refresh_dialogs_btn.setEnabled(True)
+            if not t.cancelled() and t.exception() is None:
+                self._populate_dialogs(t.result())
+
+        task.add_done_callback(_apply)
+
+    def _show_dialogs_error(self, message: str) -> None:
+        self.dialogs_status.setText(
+            f"Не удалось получить список ваших чатов: {message} "
+            "Можно добавить чат вручную по ссылке выше."
+        )
+        self.dialogs_status.setStyleSheet("color: #f0c6a0; font-size: 12px;")
         self.dialog_list.clear()
-        for d in self._dialogs:
+
+    def _populate_dialogs(self, dialogs: list) -> None:
+        self._dialogs = dialogs
+        self.dialog_list.clear()
+        if not dialogs:
+            self.dialogs_status.setText(
+                "Среди ваших диалогов не нашлось групп или каналов — добавьте чат вручную по ссылке выше."
+            )
+            self.dialogs_status.setStyleSheet("color: #9a9aa3; font-size: 12px;")
+            return
+        self.dialogs_status.setText("")
+        for d in dialogs:
             members = f"{d.members} участников" if d.members else ""
             item = QListWidgetItem(f"{d.title}   —   {members}")
             item.setData(Qt.UserRole, d)
@@ -117,6 +167,9 @@ class RemoveChatDialog(QDialog):
         self.result_purge: bool | None = None
         lay = QVBoxLayout(self)
         body = QLabel(f"«{title}» перестанет отслеживаться. Что сделать с уже собранными сообщениями?")
+        # `title` is the chat's own Telegram title (admin-controlled) —
+        # keep it literal, not auto-detected as rich text.
+        body.setTextFormat(Qt.PlainText)
         body.setWordWrap(True)
         lay.addWidget(body)
         row = QHBoxLayout()
@@ -157,9 +210,9 @@ class ChatsScreen(QWidget):
         title_col.addWidget(self.summary_label)
         header.addLayout(title_col)
         header.addStretch(1)
-        add_btn = button("＋ Добавить чат", "primary")
-        add_btn.clicked.connect(self._on_add_chat)
-        header.addWidget(add_btn, alignment=Qt.AlignBottom)
+        self.add_chat_btn = button("＋ Добавить чат", "primary")
+        self.add_chat_btn.clicked.connect(self._on_add_chat)
+        header.addWidget(self.add_chat_btn, alignment=Qt.AlignBottom)
         outer.addLayout(header)
         outer.addSpacing(16)
 
@@ -187,8 +240,35 @@ class ChatsScreen(QWidget):
         self.refresh()
 
     def _on_add_chat(self) -> None:
-        dlg = AddChatDialog(self.ctx, parent=self)
-        dlg.exec()
+        # Fetch the account's dialogs *before* opening the modal dialog —
+        # QDialog.exec() starts a nested Qt event loop, and depending on
+        # the Qt/qasync combination that can delay or starve pending
+        # asyncio callbacks, which used to leave the "your chats" list
+        # stuck empty with no explanation. Loading first sidesteps that
+        # entirely and lets us show a real error if it fails.
+        self.add_chat_btn.setEnabled(False)
+
+        async def go():
+            return await self.ctx.tg.list_dialogs()
+
+        def on_error(e):
+            self.add_chat_btn.setEnabled(True)
+            from ...telegram.errors import humanize_error
+            dlg = AddChatDialog(self.ctx, dialogs_error=humanize_error(e), parent=self)
+            if dlg.exec() == QDialog.Accepted:
+                self.refresh()
+
+        task = fire(go(), parent=self, on_error=on_error)
+
+        def _open(t):
+            self.add_chat_btn.setEnabled(True)
+            if t.cancelled() or t.exception() is not None:
+                return
+            dlg = AddChatDialog(self.ctx, dialogs=t.result(), parent=self)
+            if dlg.exec() == QDialog.Accepted:
+                self.refresh()
+
+        task.add_done_callback(_open)
 
     def _on_row_open(self, row: int, _col: int) -> None:
         item = self.table.item(row, 0)
@@ -200,10 +280,10 @@ class ChatsScreen(QWidget):
         chats = db.list_chats()
         enabled_n = len([c for c in chats if c["enabled"]])
         total_msgs = sum(db.message_count(c["chat_id"]) for c in chats)
-        total_photos = sum(db.photo_count(c["chat_id"]) for c in chats)
+        total_media = sum(db.media_count(c["chat_id"]) for c in chats)
         self.summary_label.setText(
             f"{enabled_n} из {len(chats)} в работе · {total_msgs:,} сообщений в базе · "
-            f"{total_photos:,} фото".replace(",", " ")
+            f"{total_media:,} медиафайлов".replace(",", " ")
         )
 
         self.table.setRowCount(len(chats))

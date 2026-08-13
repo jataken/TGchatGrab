@@ -28,6 +28,10 @@ class ChatTile(QWidget):
 
         top = QHBoxLayout()
         self.title_label = QLabel("")
+        # Chat titles come from Telegram (any group admin/channel owner
+        # controls them) — plain text only, so one that looks like markup
+        # can't get rendered as real HTML by QLabel's rich-text autodetect.
+        self.title_label.setTextFormat(Qt.PlainText)
         self.title_label.setWordWrap(True)
         self.title_label.setStyleSheet("font-size: 14.5px;")
         top.addWidget(self.title_label, 1)
@@ -50,6 +54,7 @@ class ChatTile(QWidget):
         lay.addLayout(bottom)
 
         self.warn_label = QLabel("")
+        self.warn_label.setTextFormat(Qt.PlainText)
         self.warn_label.setStyleSheet("color: #f0c6a0; font-size: 11.5px;")
         self.warn_label.setWordWrap(True)
         lay.addWidget(self.warn_label)
@@ -117,7 +122,7 @@ class OverviewScreen(QWidget):
 
         totals_row = QHBoxLayout()
         self.kv_messages = KeyValue("Сообщений в базе")
-        self.kv_photos = KeyValue("Фото на диске")
+        self.kv_photos = KeyValue("Медиафайлов на диске")
         self.kv_chats = KeyValue("Чатов в работе")
         self.kv_size = KeyValue("Размер базы")
         self.kv_export = KeyValue("Прошлая выгрузка")
@@ -147,7 +152,7 @@ class OverviewScreen(QWidget):
         chats = db.list_chats()
 
         total_msgs = sum(db.message_count(c["chat_id"]) for c in chats)
-        total_photos = sum(db.photo_count(c["chat_id"]) for c in chats)
+        total_photos = sum(db.media_count(c["chat_id"]) for c in chats)
         enabled_n = len([c for c in chats if c["enabled"]])
         size_mb = db.file_size() / (1024 * 1024)
         logs = db.list_export_log(limit=1)

@@ -3,6 +3,11 @@
 Kept in a plain JSON file next to the executable, separate from the code
 and separate from the SQLite database, per the "не хранить в коде"
 requirement. Never logged, never included in exports.
+
+When master-password protection is on (see security.py), api_hash is
+encrypted at rest (api_hash_enc) and the plaintext api_hash field is
+never written to this file — only ever held in memory for the running
+session, after the vault has been unlocked.
 """
 from __future__ import annotations
 
@@ -21,6 +26,14 @@ class AppConfig:
     exports_dir: str = ""
     backups_dir: str = ""
     photos_enabled: bool = True
+    videos_enabled: bool = False
+    voice_enabled: bool = False
+    documents_enabled: bool = False
+    max_media_size_mb: int = 20
+    master_password_enabled: bool = False
+    kdf_salt: str = ""
+    kdf_iterations: int = 0
+    api_hash_enc: str = ""
 
     @classmethod
     def load(cls, paths: Paths = PATHS) -> "AppConfig":
@@ -40,16 +53,32 @@ class AppConfig:
             exports_dir=raw.get("exports_dir") or str(paths.exports_dir),
             backups_dir=raw.get("backups_dir") or str(paths.backups_dir),
             photos_enabled=bool(raw.get("photos_enabled", True)),
+            videos_enabled=bool(raw.get("videos_enabled", False)),
+            voice_enabled=bool(raw.get("voice_enabled", False)),
+            documents_enabled=bool(raw.get("documents_enabled", False)),
+            max_media_size_mb=int(raw.get("max_media_size_mb", 20)),
+            master_password_enabled=bool(raw.get("master_password_enabled", False)),
+            kdf_salt=str(raw.get("kdf_salt", "")),
+            kdf_iterations=int(raw.get("kdf_iterations", 0) or 0),
+            api_hash_enc=str(raw.get("api_hash_enc", "")),
         )
         cfg.save(paths)
         return cfg
 
     def save(self, paths: Paths = PATHS) -> None:
+        data = asdict(self)
+        if self.master_password_enabled:
+            # The plaintext value only ever exists in memory for the
+            # running session (populated by SecurityService.unlock) —
+            # never let it reach disk once a master password is set.
+            data["api_hash"] = ""
         paths.config_path.write_text(
-            json.dumps(asdict(self), ensure_ascii=False, indent=2),
+            json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_id and self.api_hash)
+        api_hash_present = bool(self.api_hash or self.api_hash_enc) if self.master_password_enabled \
+            else bool(self.api_hash)
+        return bool(self.api_id) and api_hash_present

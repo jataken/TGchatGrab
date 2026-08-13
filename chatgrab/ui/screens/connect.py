@@ -48,6 +48,19 @@ class ConnectScreen(QWidget):
         self._build_code_page()
         self._build_pwd_page()
 
+        # QStackedLayout only sizes its container to the *currently shown*
+        # page's own size hint, not the tallest of all of them — combined
+        # with a stretch inside every page competing against the one
+        # already in `outer` below, that made the container shrink out
+        # from under whichever page happened to be showing (observed: the
+        # password field's bottom few pixels clipped by its own
+        # container). Pin the container to the tallest page once, up
+        # front, so every page always gets enough room no matter which is
+        # current.
+        pages = (self.authed_page, self.phone_page, self.code_page, self.pwd_page)
+        tallest = max(p.sizeHint().height() for p in pages)
+        stack_widget.setMinimumHeight(tallest + 24)
+
         self.stack.setCurrentWidget(self.phone_page)
 
     # ---- pages ---------------------------------------------------------
@@ -105,6 +118,10 @@ class ConnectScreen(QWidget):
         self.send_code_btn = button("Получить код", "primary")
         self.send_code_btn.clicked.connect(self._on_send_code)
         row.addWidget(self.send_code_btn)
+        self.goto_settings_btn = button("Перейти в настройки", "secondary")
+        self.goto_settings_btn.clicked.connect(lambda: self.navigate("settings"))
+        self.goto_settings_btn.hide()
+        row.addWidget(self.goto_settings_btn)
         row.addStretch(1)
         lay.addLayout(row)
         lay.addStretch(1)
@@ -174,8 +191,10 @@ class ConnectScreen(QWidget):
                 "Сначала укажите ключ приложения (api_id) и секрет (api_hash) на экране «Настройки» — "
                 "их выдаёт my.telegram.org."
             )
+            self.goto_settings_btn.show()
             self.stack.setCurrentWidget(self.phone_page)
             return
+        self.goto_settings_btn.hide()
         fire(self._check_auth(), parent=self)
 
     async def _check_auth(self) -> None:
@@ -189,11 +208,19 @@ class ConnectScreen(QWidget):
             self.account_meta_label.setText(f"{phone} · вход выполнен {now}" if phone else f"вход выполнен {now}")
             self.stack.setCurrentWidget(self.authed_page)
             await self.ctx.collector.start()
+            await self.ctx.bot_manager.start()
         else:
             self.stack.setCurrentWidget(self.phone_page)
 
     # ---- actions ---------------------------------------------------------
     def _on_send_code(self) -> None:
+        if not self.ctx.config.is_configured:
+            self.phone_error.setText(
+                "Сначала укажите ключ приложения (api_id) и секрет (api_hash) на экране "
+                "«Настройки» — их выдаёт my.telegram.org."
+            )
+            self.goto_settings_btn.show()
+            return
         phone = self.phone_field.text().strip()
         if not phone:
             self.phone_error.setText("Введите номер телефона.")

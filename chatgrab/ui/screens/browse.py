@@ -10,6 +10,11 @@ from PySide6.QtWidgets import (
 from ..context import AppContext
 from ..widgets import button, card, h1, muted
 
+_MEDIA_BADGE_LABELS = {
+    "photo": "▣ фото приложено", "video": "▣ видео приложено",
+    "voice": "▣ голосовое приложено", "document": "▣ документ приложен",
+}
+
 
 class MessageCard(QWidget):
     def __init__(self, ctx: AppContext, row):
@@ -27,12 +32,23 @@ class MessageCard(QWidget):
         top = QHBoxLayout()
         author = row["sender_display_name"] or "—"
         handle = f"@{row['sender_username']}" if row["sender_username"] else ""
-        top.addWidget(QLabel(f"<b>{author}</b>"))
+        # Author, chat title and message text below all come straight from
+        # Telegram — any sender/admin controls them. QLabel auto-detects
+        # rich text, so without an explicit PlainText format a name or
+        # message that merely looks like a tag would render as real HTML.
+        # Bold styling for the author is done via QSS, not an f-string
+        # "<b>" wrapper, so there's no interpolated markup to reason about.
+        author_label = QLabel(author)
+        author_label.setTextFormat(Qt.PlainText)
+        author_label.setStyleSheet("font-weight: 600;")
+        top.addWidget(author_label)
         if handle:
             h = QLabel(handle)
+            h.setTextFormat(Qt.PlainText)
             h.setProperty("class", "faint")
             top.addWidget(h)
         chat = QLabel(row["chat_title"] or "")
+        chat.setTextFormat(Qt.PlainText)
         chat.setStyleSheet("color: #b5abfc; font-size: 11.5px;")
         top.addWidget(chat)
         top.addStretch(1)
@@ -42,20 +58,21 @@ class MessageCard(QWidget):
         lay.addLayout(top)
 
         text = QLabel(row["text"] or "")
+        text.setTextFormat(Qt.PlainText)
         text.setWordWrap(True)
         text.setStyleSheet("font-size: 13.5px;")
         lay.addWidget(text)
 
         badges = QHBoxLayout()
-        if row["photo_path"]:
-            photo_btn = QPushButton("▣ фото приложено")
-            photo_btn.setCursor(Qt.PointingHandCursor)
-            photo_btn.setStyleSheet(
+        if row["media_path"]:
+            media_btn = QPushButton(_MEDIA_BADGE_LABELS.get(row["media_type"], "▣ файл приложен"))
+            media_btn.setCursor(Qt.PointingHandCursor)
+            media_btn.setStyleSheet(
                 "QPushButton { background: rgba(145,132,217,36); color: #d2cefd; border: none; "
                 "border-radius: 6px; padding: 3px 9px; font-size: 11.5px; }"
             )
-            photo_btn.clicked.connect(self._open_photo)
-            badges.addWidget(photo_btn)
+            media_btn.clicked.connect(self._open_media)
+            badges.addWidget(media_btn)
         if row["is_forward"]:
             badges.addWidget(muted("переслано" + (f" от {row['forwarded_from']}" if row["forwarded_from"] else "")))
         if row["is_reply"]:
@@ -71,8 +88,8 @@ class MessageCard(QWidget):
         badges.addStretch(1)
         lay.addLayout(badges)
 
-    def _open_photo(self) -> None:
-        path = self.ctx.paths.data_dir / self.row["photo_path"]
+    def _open_media(self) -> None:
+        path = self.ctx.paths.data_dir / self.row["media_path"]
         if path.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 

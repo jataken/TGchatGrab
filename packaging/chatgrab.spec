@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_all
 
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
-datas = []
+datas = [(os.path.join(ROOT, "resources", "icon.png"), "resources")]
 binaries = []
 hiddenimports = ["telethon.tl.alltlobjects"]
 
@@ -15,6 +15,8 @@ for pkg in ("telethon",):
     datas += d
     binaries += b
     hiddenimports += h
+
+ICON = os.path.join(ROOT, "resources", "icon.ico")
 
 a = Analysis(
     [os.path.join(ROOT, "main.py")],
@@ -49,5 +51,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=ICON,
 )

@@ -51,7 +51,7 @@ class CollectScreen(QWidget):
 
         stats_row = QHBoxLayout()
         self.kv_count = KeyValue("Собрано")
-        self.kv_photos = KeyValue("Фото на диске")
+        self.kv_photos = KeyValue("Медиафайлов на диске")
         self.kv_last = KeyValue("Последнее сообщение")
         self.kv_depth = KeyValue("Глубина истории")
         for kv in (self.kv_count, self.kv_photos, self.kv_last, self.kv_depth):
@@ -158,8 +158,10 @@ class CollectScreen(QWidget):
         self.status_pill.set_status(chat["status"])
         count = db.message_count(chat["chat_id"])
         self.kv_count.set_value(f"{count:,}".replace(",", " "))
-        photos = db.photo_count(chat["chat_id"]) if self.ctx.config.photos_enabled else 0
-        self.kv_photos.set_value(f"{photos:,}".replace(",", " ") if self.ctx.config.photos_enabled else "выключено")
+        cfg = self.ctx.config
+        media_enabled = cfg.photos_enabled or cfg.videos_enabled or cfg.voice_enabled or cfg.documents_enabled
+        media = db.media_count(chat["chat_id"]) if media_enabled else 0
+        self.kv_photos.set_value(f"{media:,}".replace(",", " ") if media_enabled else "выключено")
         last = db.last_message_date(chat["chat_id"])
         self.kv_last.set_value(str(last)[:19].replace("T", " ") if last else "—")
         depth = "вся история" if chat["depth_mode"] == "all" else f"с {chat['depth_from_date']}"

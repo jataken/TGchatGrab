@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE
+from ..paths import resource_path
 from .context import AppContext
+from .util import fire
+from .screens.bots import BotsScreen
 from .screens.browse import BrowseScreen
 from .screens.chats import ChatsScreen
 from .screens.collect import CollectScreen
@@ -22,6 +26,7 @@ NAV_ITEMS = [
     ("collect", "Сбор данных"),
     ("browse", "Поиск в собранном"),
     ("export", "Экспорт"),
+    ("bots", "Боты"),
     ("settings", "Настройки"),
 ]
 
@@ -31,6 +36,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ctx = ctx
         self.setWindowTitle(APP_TITLE)
+        icon_path = resource_path("resources", "icon.png")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1320, 860)
         self.setMinimumSize(980, 620)
 
@@ -88,6 +96,7 @@ class MainWindow(QMainWindow):
             "collect": CollectScreen(ctx, self.navigate),
             "browse": BrowseScreen(ctx, self.navigate),
             "export": ExportScreen(ctx, self.navigate),
+            "bots": BotsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
         for key, _ in NAV_ITEMS:
@@ -101,6 +110,18 @@ class MainWindow(QMainWindow):
         self._sidebar_timer.start(2000)
 
         self.navigate("overview")
+        self._refresh_sidebar()
+        fire(self._startup_autoconnect(), parent=self, on_error=lambda e: None)
+
+    async def _startup_autoconnect(self) -> None:
+        """Resume an already-authorized session automatically on launch —
+        without this, the account only (re)connected once the user
+        happened to open the Подключение screen, so a restart looked like
+        it had forgotten the login even with a valid saved session."""
+        if not self.ctx.config.is_configured:
+            return
+        connect_screen = self.screens["connect"]
+        await connect_screen._check_auth()
         self._refresh_sidebar()
 
     @staticmethod
@@ -146,11 +167,7 @@ class MainWindow(QMainWindow):
         else:
             self.queue_box.setText("История загружена, очередь пуста.")
 
-        try:
-            authed = self.ctx.tg.client is not None and self.ctx.tg.client.is_connected()
-        except Exception:
-            authed = False
-        if authed:
+        if self.ctx.tg.authorized:
             self.conn_label.setText("●  Аккаунт подключён")
             self.conn_label.setStyleSheet("font-size: 12px; color: #7fc79b; padding: 4px;")
         else:

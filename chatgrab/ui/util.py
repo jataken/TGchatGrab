@@ -31,3 +31,15 @@ def fire(coro: Coroutine, parent: QWidget | None = None,
 
     task.add_done_callback(_finished)
     return task
+
+
+def run_blocking(func: Callable, *args, **kwargs):
+    """Await-able wrapper for a synchronous, potentially slow call (writing
+    a large .xlsx export, etc.) on the event loop's default thread-pool
+    executor. qasync runs one shared loop for the whole app — Qt, Telethon,
+    and aiogram bot polling alike — so a call like this left running
+    directly on that loop would freeze the entire UI, and every bot's
+    message handling, until it finished. Database is explicitly safe to
+    call from a worker thread this way (see db/database.py)."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(None, lambda: func(*args, **kwargs))

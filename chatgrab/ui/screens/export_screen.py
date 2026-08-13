@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
-from ..util import fire
+from ..util import fire, run_blocking
 from ..widgets import button, card, h1, muted
 from ...services.export_service import DEFAULT_TOKEN_LIMIT, ExportParams
 
@@ -82,7 +82,7 @@ class ExportScreen(QWidget):
         self.fmt_group = QButtonGroup(self)
         self.fmt_group.setExclusive(True)
         self.fmt_buttons: dict[str, QPushButton] = {}
-        for key, label_, hint in [("csv", "CSV", "таблица для Excel"),
+        for key, label_, hint in [("xlsx", "Excel (.xlsx)", "таблица по колонкам"),
                                    ("jsonl", "JSONL", "по записи в строке"),
                                    ("markdown", "Markdown", "дайджест по дням")]:
             btn = _pill_button(label_, hint)
@@ -90,7 +90,7 @@ class ExportScreen(QWidget):
             self.fmt_group.addButton(btn)
             self.fmt_buttons[key] = btn
             fmt_row.addWidget(btn)
-        self.fmt_buttons["jsonl"].setChecked(True)
+        self.fmt_buttons["xlsx"].setChecked(True)
         left.addLayout(fmt_row)
 
         # ---- dates ------------------------------------------------------
@@ -114,7 +114,7 @@ class ExportScreen(QWidget):
         left.addWidget(self.merge_cb)
         self.incremental_cb = QCheckBox("Только новое с прошлой выгрузки")
         left.addWidget(self.incremental_cb)
-        self.zip_cb = QCheckBox("Приложить папку с фотографиями (zip рядом с выгрузкой)")
+        self.zip_cb = QCheckBox("Приложить папку с медиафайлами (zip рядом с выгрузкой)")
         self.zip_cb.setChecked(True)
         left.addWidget(self.zip_cb)
         self.include_hidden_cb = QCheckBox("Включить скрытые правилами игнора записи")
@@ -329,11 +329,13 @@ class ExportScreen(QWidget):
         self.estimate_label.setText(
             f"{est.row_count:,} сообщений · {est.file_count} файлов".replace(",", " ")
         )
+        cfg = self.ctx.config
+        media_enabled = cfg.photos_enabled or cfg.videos_enabled or cfg.voice_enabled or cfg.documents_enabled
         self.export_note_label.setText(
-            "Фотографии не встраиваются в файл: в каждой записи будет путь вида "
-            "photos/<чат>/<номер>.jpg, а сами файлы остаются рядом с базой."
-            if self.ctx.config.photos_enabled else
-            "Скачивание фотографий выключено — в выгрузке будет только текст и сведения о сообщении."
+            "Медиафайлы не встраиваются в файл: в каждой записи будет путь вида "
+            "photos|videos|voice|documents/<чат>/<номер>, а сами файлы остаются рядом с базой."
+            if media_enabled else
+            "Скачивание медиафайлов выключено в Настройках — в выгрузке будет только текст и сведения о сообщении."
         )
 
     def _clear_preview(self) -> None:
@@ -354,15 +356,30 @@ class ExportScreen(QWidget):
             QMessageBox.information(self, "Экспорт", "Выберите хотя бы один чат.")
             return
         self.run_btn.setEnabled(False)
-        result = self.ctx.export_service.run(params)
-        self.run_btn.setEnabled(True)
-        self.done_label.setText(
-            f"Готово. {result.row_count} сообщений сохранено в {len(result.output_paths)} файл(ов) — "
-            f'<a href="#">открыть папку</a>.'
-        )
-        self.done_label.linkActivated.connect(lambda _: self._open_folder())
-        self.done_label.show()
-        self._populate_log()
+
+        # Off the shared qasync loop, via a worker thread — a large export
+        # (openpyxl writing thousands of rows) would otherwise freeze the
+        # whole UI *and* every bot's message handling until it finished.
+        def on_error(e):
+            self.run_btn.setEnabled(True)
+            QMessageBox.warning(self, "Не получилось", str(e))
+
+        task = fire(run_blocking(self.ctx.export_service.run, params), parent=self, on_error=on_error)
+
+        def _apply(t):
+            self.run_btn.setEnabled(True)
+            if t.cancelled() or t.exception() is not None:
+                return
+            result = t.result()
+            self.done_label.setText(
+                f"Готово. {result.row_count} сообщений сохранено в {len(result.output_paths)} файл(ов) — "
+                f'<a href="#">открыть папку</a>.'
+            )
+            self.done_label.linkActivated.connect(lambda _: self._open_folder())
+            self.done_label.show()
+            self._populate_log()
+
+        task.add_done_callback(_apply)
 
     def _open_folder(self) -> None:
         folder = self.folder_input.text().strip() or str(self.ctx.paths.exports_dir)
@@ -386,9 +403,14 @@ class ExportScreen(QWidget):
     def _apply_params(self, params: ExportParams) -> None:
         for cid, cb in self.chat_checks.items():
             cb.setChecked(cid in params.chat_ids)
-        self.fmt_buttons[params.format].setChecked(True)
+        # "csv" was retired in favor of "xlsx" — fall back gracefully so
+        # an old export_log entry / preset from before that change can
+        # still be repeated instead of crashing on an unknown key.
+        fmt_key = params.format if params.format in self.fmt_buttons else "xlsx"
+        self.fmt_buttons[fmt_key].setChecked(True)
         self.merge_cb.setChecked(params.merge)
-        self.split_buttons[params.split_mode].setChecked(True)
+        split_key = params.split_mode if params.split_mode in self.split_buttons else "tokens"
+        self.split_buttons[split_key].setChecked(True)
         self.token_limit_spin.setValue(params.token_limit)
         self.date_from.setText(params.date_from or "")
         self.date_to.setText(params.date_to or "")

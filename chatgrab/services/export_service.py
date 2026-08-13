@@ -1,9 +1,8 @@
-"""Export engine: CSV / JSONL / Markdown, merged or per-chat, split by
-token budget / month / single file, incremental, with an optional zip of
-the photos referenced by the selection."""
+"""Export engine: Excel (.xlsx) / JSONL / Markdown, merged or per-chat,
+split by token budget / month / single file, incremental, with an
+optional zip of the photos referenced by the selection."""
 from __future__ import annotations
 
-import csv
 import io
 import json
 import re
@@ -14,6 +13,7 @@ from typing import Any
 
 from ..db.database import Database, now_iso
 from ..paths import Paths
+from .xlsx_safety import excel_safe
 
 DEFAULT_TOKEN_LIMIT = 180_000
 DEFAULT_MD_HEADER = (
@@ -21,10 +21,12 @@ DEFAULT_MD_HEADER = (
     "Чаты: {chats}\n"
     "Период: {period}\n"
     "Сообщений: {count}\n\n"
-    "Поля: автор и его @ник, дата, текст, вложенное фото (путь рядом с базой, "
-    "не встроено в файл), ссылка на исходное сообщение в Telegram.\n"
-    "Фото лежат в подпапках photos/<chat_id>/<message_id>.jpg рядом с базой данных "
-    "(или в приложенном zip, если он был запрошен при выгрузке).\n\n---\n\n"
+    "Поля: автор и его @ник, дата, текст, вложенное медиа — фото/видео/голосовое/"
+    "документ (путь рядом с базой, не встроено в файл), ссылка на исходное "
+    "сообщение в Telegram.\n"
+    "Файлы лежат в подпапках photos|videos|voice|documents/<chat_id>/<message_id> "
+    "рядом с базой данных (или в приложенном zip, если он был запрошен при "
+    "выгрузке).\n\n---\n\n"
 )
 
 _SLUG_RE = re.compile(r"[^a-zA-Zа-яА-ЯёЁ0-9]+")
@@ -44,7 +46,7 @@ def estimate_tokens(text: str) -> int:
 @dataclass
 class ExportParams:
     chat_ids: list[int]
-    format: str = "jsonl"          # csv | jsonl | markdown
+    format: str = "xlsx"          # xlsx | jsonl | markdown
     merge: bool = False
     split_mode: str = "tokens"     # tokens | month | none
     token_limit: int = DEFAULT_TOKEN_LIMIT
@@ -81,8 +83,32 @@ class ExportResult:
 ROW_COLUMNS = [
     "chat_title", "message_id", "date", "edited_date", "sender_display_name",
     "sender_username", "text", "reply_to_message_id", "forwarded_from",
-    "media_type", "media_caption", "photo_path", "views", "link",
+    "media_type", "media_caption", "media_path", "views", "link",
 ]
+
+_MEDIA_LABELS = {"photo": "фото", "video": "видео", "voice": "голосовое", "document": "документ"}
+
+
+def text_with_markers(r) -> str:
+    """Post text with a leading reply/forward marker, matching what a
+    human reading the export needs to make sense of it out of context —
+    e.g. "_ответ на сообщение 91713_ Тера поставляет..."."""
+    text = r["text"] or ""
+    marks = []
+    if r["is_reply"]:
+        marks.append(f"ответ на сообщение {r['reply_to_message_id']}")
+    if r["is_forward"]:
+        marks.append(f"переслано от {r['forwarded_from']}" if r["forwarded_from"] else "переслано")
+    if not marks:
+        return text
+    return f"_{'; '.join(marks)}_ {text}"
+
+
+def media_marker(r) -> str:
+    if not r["media_path"]:
+        return ""
+    label = _MEDIA_LABELS.get(r["media_type"], "файл")
+    return f"[{label}: {r['media_path']}]"
 
 
 class ExportService:
@@ -118,7 +144,7 @@ class ExportService:
         return f"chatgrab_{slugify(self._chat_title(chat_id))}"
 
     def _ext(self, params: ExportParams) -> str:
-        return {"csv": "csv", "jsonl": "jsonl", "markdown": "md"}[params.format]
+        return {"xlsx": "xlsx", "jsonl": "jsonl", "markdown": "md"}[params.format]
 
     # ---- chunking --------------------------------------------------------
     def _chunk_rows(self, rows: list, params: ExportParams) -> list[tuple[str, list]]:
@@ -170,17 +196,50 @@ class ExportService:
                 base = self._base_name(params, chat_id)
                 for label, _ in self._chunk_rows(chat_rows, params):
                     names.append(f"{base}{'_' + label if label else ''}.{ext}")
-        if params.zip_photos and any(r["photo_path"] for r in rows):
-            names.append("chatgrab_photos.zip")
+        if params.zip_photos and any(r["media_path"] for r in rows):
+            names.append("chatgrab_media.zip")
         return names
 
     # ---- writers -----------------------------------------------------
-    def _write_csv(self, path: Path, rows: list) -> None:
-        with path.open("w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f)
-            w.writerow(ROW_COLUMNS)
-            for r in rows:
-                w.writerow([r[c] for c in ROW_COLUMNS])
+    def _write_xlsx(self, path: Path, rows: list) -> None:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Сообщения"
+        headers = ["Дата и время", "Чат", "Автор", "Ник (@)", "Текст", "Медиа"]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+
+        wrap = Alignment(vertical="top", wrap_text=True)
+        for r in rows:
+            username = f"@{r['sender_username']}" if r["sender_username"] else ""
+            ws.append([
+                r["date"], excel_safe(r["chat_title"]), excel_safe(r["sender_display_name"] or ""),
+                excel_safe(username), excel_safe(text_with_markers(r)), excel_safe(media_marker(r)),
+            ])
+            row_idx = ws.max_row
+            for col in range(1, 7):
+                ws.cell(row=row_idx, column=col).alignment = wrap
+            if r["media_path"]:
+                media_cell = ws.cell(row=row_idx, column=6)
+                # Relative to the exported file — resolves whether the
+                # media files sit on disk as-is next to the export, or the
+                # accompanying zip gets extracted into the same folder
+                # (it preserves this same photos|videos|voice|documents/
+                # <chat_id>/<id> layout).
+                media_cell.hyperlink = r["media_path"].replace("\\", "/")
+                media_cell.style = "Hyperlink"
+
+        widths = {1: 24, 2: 30, 3: 20, 4: 18, 5: 90, 6: 32}
+        for col, width in widths.items():
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        wb.save(path)
 
     def _write_jsonl(self, path: Path, rows: list) -> None:
         with path.open("w", encoding="utf-8") as f:
@@ -209,14 +268,14 @@ class ExportService:
             if r["reply_to_message_id"]:
                 buf.write(f"_ответ на сообщение {r['reply_to_message_id']}_\n\n")
             buf.write(f"{r['text'] or ''}\n\n")
-            if r["photo_path"]:
-                buf.write(f"[фото: {r['photo_path']}]\n\n")
+            if r["media_path"]:
+                buf.write(f"{media_marker(r)}\n\n")
             buf.write(f"<{r['link']}>\n\n---\n\n")
         path.write_text(buf.getvalue(), encoding="utf-8")
 
     def _write_chunk(self, path: Path, rows: list, params: ExportParams, chats_label: str) -> None:
-        if params.format == "csv":
-            self._write_csv(path, rows)
+        if params.format == "xlsx":
+            self._write_xlsx(path, rows)
         elif params.format == "jsonl":
             self._write_jsonl(path, rows)
         else:
@@ -248,14 +307,14 @@ class ExportService:
                     output_paths.append(str(path))
 
         if params.zip_photos:
-            photo_rows = [r for r in rows if r["photo_path"]]
-            if photo_rows:
-                zip_path = folder / "chatgrab_photos.zip"
+            media_rows = [r for r in rows if r["media_path"]]
+            if media_rows:
+                zip_path = folder / "chatgrab_media.zip"
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for r in photo_rows:
-                        src = self.paths.data_dir / r["photo_path"]
+                    for r in media_rows:
+                        src = self.paths.data_dir / r["media_path"]
                         if src.exists():
-                            zf.write(src, arcname=r["photo_path"])
+                            zf.write(src, arcname=r["media_path"])
                 output_paths.append(str(zip_path))
 
         max_id_by_chat: dict[str, int] = {}
