@@ -148,11 +148,10 @@ class TodayScreen(QWidget):
         leads = db.list_leads()
         new_leads = [l for l in leads if l["status"] == "new"]
 
-        self.date_label.setText(
-            dt.datetime.now().strftime("%-d ").lstrip() +
-            ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
-             "августа", "сентября", "октября", "ноября", "декабря"][dt.datetime.now().month - 1]
-        )
+        now = dt.datetime.now()
+        month_name = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+                      "августа", "сентября", "октября", "ноября", "декабря"][now.month - 1]
+        self.date_label.setText(f"{now.day} {month_name}")
 
         self._clear_feed()
         loading = next((c for c in chats if c["status"] == "loading"), None)
