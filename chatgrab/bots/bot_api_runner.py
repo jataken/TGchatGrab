@@ -127,24 +127,50 @@ class BotApiRunner:
             self._log(_redact(f"ошибка обработки входящего сообщения: {e}"), "warn")
 
     async def _handle_message(self, message) -> None:
+        if message.from_user is None:
+            return  # channel post or service message — no author to answer
+
         text = message.text or message.caption or ""
         contact_telegram_id = message.from_user.id
         username = message.from_user.username
         self.db.upsert_contact(contact_telegram_id, username)
 
+        # Where this arrived actually matters. Until this was read, every
+        # message was labelled a DM — so a bot added to a group treated
+        # group chatter as private conversation: «написали в личку» rules
+        # fired on it and scenarios started with whoever happened to post.
+        chat_type, chat_id = self._classify(message)
+
         is_command = text.startswith("/")
         command = text.split()[0][1:].split("@")[0] if is_command else None
         event = IncomingEvent(
             contact_telegram_id=contact_telegram_id, username=username, text=text,
-            is_command=is_command, command=command, chat_type="dm",
+            is_command=is_command, command=command, chat_type=chat_type, chat_id=chat_id,
         )
 
-        if not is_command and self.rules.has_active_scenario(self.bot_id, contact_telegram_id):
+        # A scripted dialog is a private, one-to-one thing: continuing one
+        # in a group would answer a member's unrelated message with the
+        # next question and put the group's words into their lead.
+        if chat_type == "dm" and not is_command \
+                and self.rules.has_active_scenario(self.bot_id, contact_telegram_id):
             await self.rules.continue_scenario(self.bot_id, event, self.send_dm, self._log)
             return
 
         triggers = self.rules.triggers_for(self.bot_id, event)
         for trigger in triggers:
             await self.rules.fire(self.bot_id, trigger, event, self.send_dm, self._log)
-        if not triggers:
+        if not triggers and chat_type == "dm":
+            # Only worth logging for DMs — in a busy group this would be
+            # one log line per unrelated message.
             self._log(f"сообщение от {contact_telegram_id} не совпало ни с одним правилом")
+
+    @staticmethod
+    def _classify(message) -> tuple[str, int | None]:
+        """Telegram's chat type mapped onto the engine's vocabulary."""
+        raw = getattr(message.chat, "type", None)
+        raw = getattr(raw, "value", raw)  # aiogram may hand back an enum
+        if raw in ("group", "supergroup"):
+            return "group", message.chat.id
+        if raw == "channel":
+            return "channel", message.chat.id
+        return "dm", None

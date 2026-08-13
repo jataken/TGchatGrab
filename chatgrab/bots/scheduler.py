@@ -25,6 +25,7 @@ import json
 import logging
 
 from ..db.database import Database
+from . import settings as bot_settings
 from .rules_engine import IncomingEvent, RulesEngine
 
 _logger = logging.getLogger("chatgrab")
@@ -117,11 +118,21 @@ class TriggerScheduler:
             return 0
 
         send = self._send_for_bot(bot_id)
+        limits = bot_settings.load(self.db.get_bot(bot_id))
+        cap = int(limits["max_reminders_per_tick"])
         fired = 0
+        skipped_by_cap = 0
+
         for contact in contacts:
             # Already nudged since they last spoke? Then this trigger has
             # done its job for this silence; don't repeat every tick.
             if self.db.has_activity_since(contact["id"], REMINDER_KIND, contact["last_active"]):
+                continue
+            if fired >= cap:
+                # Leave the rest for the next tick rather than emptying a
+                # backlog of hundreds in one go — the account sending them
+                # is an ordinary user account, not a bot.
+                skipped_by_cap += 1
                 continue
             event = IncomingEvent(
                 contact_telegram_id=contact["telegram_id"],
@@ -135,8 +146,11 @@ class TriggerScheduler:
             fired += 1
 
         if fired:
-            self._on_log(bot_id, f"напоминание отправлено {fired} молчащим контактам "
-                                  f"(тишина дольше {days} сут.)", "ok")
+            note = (f"напоминание отправлено {fired} молчащим контактам "
+                    f"(тишина дольше {days} сут.)")
+            if skipped_by_cap:
+                note += f"; ещё {skipped_by_cap} — в следующий заход, чтобы не слать пачкой"
+            self._on_log(bot_id, note, "ok")
         return fired
 
     # ---- schedule ---------------------------------------------------------

@@ -16,24 +16,39 @@ from telethon.errors import FloodWaitError
 
 from ..db.database import Database
 from ..telegram.service import TelegramService
+from . import settings as bot_settings
 from .rules_engine import IncomingEvent, RulesEngine
 
 _logger = logging.getLogger("chatgrab")
-DEFAULT_COOLDOWN_SECONDS = 30
 
 
 class UserbotRunner:
-    def __init__(self, tg: TelegramService, db: Database, rules: RulesEngine, on_log, on_status,
-                 cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS):
+    def __init__(self, tg: TelegramService, db: Database, rules: RulesEngine, on_log, on_status):
         self.tg = tg
         self.db = db
         self.rules = rules
         self._on_log = on_log        # (bot_id, text, tone) -> None
         self._on_status = on_status  # (bot_id, status, error) -> None
-        self.cooldown_seconds = cooldown_seconds
         self._entity_cache: dict[int, object] = {}
+        # (bot_id, target) -> monotonic time of the last message to that
+        # contact; enforces the per-contact cooldown.
         self._cooldowns: dict[tuple[int, int | str], float] = {}
+        # bot_id -> monotonic time of that bot's last send of any kind.
+        # This is the burst guard: the per-contact cooldown above never
+        # spaced out a sweep across *different* contacts.
+        self._last_send: dict[int, float] = {}
+        # One lock per bot so concurrent senders (a reminder sweep and an
+        # incoming message arriving together) queue on the gap instead of
+        # both reading a stale timestamp and firing at once.
+        self._send_locks: dict[int, asyncio.Lock] = {}
         self._registered = False
+
+    def _send_lock(self, bot_id: int) -> asyncio.Lock:
+        lock = self._send_locks.get(bot_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[bot_id] = lock
+        return lock
 
     def _log_for(self, bot_id: int):
         def log(text: str, tone: str = "") -> None:
@@ -110,32 +125,51 @@ class UserbotRunner:
         async def send_dm(target: int | str, text: str) -> None:
             if not text:
                 return
+            limits = bot_settings.load(self.db.get_bot(bot_id))
             key = (bot_id, target)
-            now = time.monotonic()
+            log = self._log_for(bot_id)
+
+            cooldown = limits["dm_cooldown_seconds"]
             last = self._cooldowns.get(key)
-            if last is not None and now - last < self.cooldown_seconds:
-                self._log_for(bot_id)(
-                    f"пропущено сообщение {target} — действует пауза после предыдущего "
-                    f"({self.cooldown_seconds} с)", "warn")
+            if last is not None and time.monotonic() - last < cooldown:
+                log(f"пропущено сообщение {target} — действует пауза после предыдущего "
+                    f"({cooldown:g} с)", "warn")
                 return
+
             entity = await self._resolve(target)
             if entity is None:
-                self._log_for(bot_id)(
-                    f"не удалось отправить сообщение {target} — аккаунт ещё не видел этого пользователя "
+                log(f"не удалось отправить сообщение {target} — аккаунт ещё не видел этого пользователя "
                     "(нужен @username или предыдущий контакт)", "warn")
                 return
-            for _ in range(3):
-                try:
-                    await self.tg.client.send_message(entity, text)
-                    self._cooldowns[key] = time.monotonic()
-                    return
-                except FloodWaitError as e:
-                    self._log_for(bot_id)(
-                        f"Telegram попросил подождать {e.seconds} с перед отправкой, продолжу сам", "warn")
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    self._log_for(bot_id)(f"не удалось отправить сообщение {target}: {e}", "warn")
-                    return
+
+            # Serialize this bot's sends and space them out. Holding the
+            # lock across the sleep is the point: it turns concurrent
+            # senders into a queue rather than letting them all wake at
+            # once and fire together.
+            async with self._send_lock(bot_id):
+                gap = limits["send_gap_seconds"]
+                previous = self._last_send.get(bot_id)
+                if previous is not None:
+                    wait = gap - (time.monotonic() - previous)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                for _ in range(3):
+                    try:
+                        await self.tg.client.send_message(entity, text)
+                        sent_at = time.monotonic()
+                        self._cooldowns[key] = sent_at
+                        self._last_send[bot_id] = sent_at
+                        return
+                    except FloodWaitError as e:
+                        log(f"Telegram попросил подождать {e.seconds} с перед отправкой, продолжу сам", "warn")
+                        await asyncio.sleep(e.seconds + 1)
+                    except Exception as e:
+                        log(f"не удалось отправить сообщение {target}: {e}", "warn")
+                        return
+                # Every attempt hit a flood wait — record the time anyway so
+                # the next send still respects the gap from this attempt.
+                self._last_send[bot_id] = time.monotonic()
+                log(f"не удалось отправить сообщение {target} — Telegram продолжает просить подождать", "warn")
         return send_dm
 
     async def _resolve(self, target: int | str):

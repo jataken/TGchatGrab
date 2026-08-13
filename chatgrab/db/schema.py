@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS bots (
     manager_chat_id TEXT,
     status TEXT NOT NULL DEFAULT 'stopped',   -- running | stopped | error
     last_error TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    settings TEXT NOT NULL DEFAULT '{}'       -- sending limits, see bots/settings.py
 );
 """
 
@@ -412,6 +413,13 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     # Added after bot_scenarios shipped, so existing databases need it.
     if not _column_exists(conn, "bot_scenarios", "done_template_id"):
         conn.execute("ALTER TABLE bot_scenarios ADD COLUMN done_template_id INTEGER;")
+
+    # Per-bot sending limits (cooldown, gap between sends, reminders per
+    # tick). Previously a module constant, which meant the one setting
+    # protecting the user's phone number from a restriction was invisible
+    # and unchangeable.
+    if not _column_exists(conn, "bots", "settings"):
+        conn.execute("ALTER TABLE bots ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';")
 
     # Must run before the bot indexes below: the partial unique index they
     # create belongs on the rebuilt table, not the old constrained one.

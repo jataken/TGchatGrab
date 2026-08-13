@@ -2,16 +2,101 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget,
+    QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox, QSpinBox,
+    QVBoxLayout, QWidget,
 )
 
 from ...context import AppContext
 from ...util import fire
 from ...widgets import StatusPill, button, card, h1, label, muted, plural as _plural
+from ....bots import settings as bot_settings
 from .wizard import BotWizardDialog
 
 _TYPE_LABELS = {"bot_api": "отдельный бот-аккаунт", "userbot": "от вашего аккаунта"}
 _PRESET_LABELS = {"b2b": "B2B", "b2c": "B2C", "custom": "CUSTOM"}
+
+
+class SendLimitsDialog(QDialog):
+    """How fast this bot is allowed to send. For a userbot these are the
+    settings that keep the user's own phone number out of trouble, so they
+    live one click from the run/stop button rather than in app settings."""
+
+    def __init__(self, ctx: AppContext, bot_id: int, parent=None):
+        super().__init__(parent)
+        self.ctx = ctx
+        self.bot_id = bot_id
+        bot = ctx.db.get_bot(bot_id)
+        self.setWindowTitle("Ограничения отправки")
+        self.setMinimumWidth(520)
+        values = bot_settings.load(bot)
+
+        lay = QVBoxLayout(self)
+        intro = muted(
+            "Telegram ограничивает аккаунт за пачки исходящих сообщений. "
+            "Эти паузы — то, что отличает бота от человека, разбирающего список."
+            if bot and bot["type"] == "userbot" else
+            "Ограничения на скорость отправки сообщений этим ботом."
+        )
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        lay.addSpacing(8)
+
+        self.gap = QDoubleSpinBox()
+        self.gap.setRange(*bot_settings.BOUNDS["send_gap_seconds"])
+        self.gap.setDecimals(1)
+        self.gap.setSingleStep(0.5)
+        self.gap.setSuffix(" с")
+        self.gap.setValue(float(values["send_gap_seconds"]))
+        lay.addWidget(muted("Пауза между любыми двумя сообщениями этого бота"))
+        lay.addWidget(self.gap)
+
+        self.cooldown = QSpinBox()
+        self.cooldown.setRange(*[int(b) for b in bot_settings.BOUNDS["dm_cooldown_seconds"]])
+        self.cooldown.setSuffix(" с")
+        self.cooldown.setValue(int(values["dm_cooldown_seconds"]))
+        lay.addWidget(muted("Не писать одному и тому же человеку чаще, чем раз в"))
+        lay.addWidget(self.cooldown)
+
+        self.cap = QSpinBox()
+        self.cap.setRange(*[int(b) for b in bot_settings.BOUNDS["max_reminders_per_tick"]])
+        self.cap.setValue(int(values["max_reminders_per_tick"]))
+        lay.addWidget(muted("Максимум напоминаний за один заход (остальные — в следующий)"))
+        lay.addWidget(self.cap)
+
+        self.estimate = muted("")
+        self.estimate.setWordWrap(True)
+        lay.addWidget(self.estimate)
+        for w in (self.gap, self.cap):
+            w.valueChanged.connect(self._update_estimate)
+        self._update_estimate()
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = button("Отмена", "secondary")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        save = button("Сохранить", "primary")
+        save.clicked.connect(self._on_save)
+        row.addWidget(save)
+        lay.addLayout(row)
+
+    def _update_estimate(self) -> None:
+        gap = self.gap.value()
+        cap = self.cap.value()
+        seconds = gap * max(0, cap - 1)
+        minutes = seconds / 60
+        human = f"{seconds:.0f} с" if seconds < 90 else f"{minutes:.0f} мин"
+        self.estimate.setText(
+            f"При этих значениях полный заход напоминаний ({cap} шт.) растянется примерно на {human}."
+        )
+
+    def _on_save(self) -> None:
+        self.ctx.db.set_bot_field(self.bot_id, settings=bot_settings.dumps({
+            "send_gap_seconds": self.gap.value(),
+            "dm_cooldown_seconds": self.cooldown.value(),
+            "max_reminders_per_tick": self.cap.value(),
+        }))
+        self.accept()
 
 
 class StatCell(QWidget):
@@ -68,6 +153,9 @@ class BotRow(QWidget):
         self.rules_btn = button("Правила и сценарий", "secondary")
         self.rules_btn.clicked.connect(lambda: self.navigate("rules"))
         top.addWidget(self.rules_btn)
+        self.limits_btn = button("Отправка", "secondary")
+        self.limits_btn.clicked.connect(self._on_limits)
+        top.addWidget(self.limits_btn)
         self.toggle_btn = button("Запустить", "primary")
         self.toggle_btn.clicked.connect(self._on_toggle)
         top.addWidget(self.toggle_btn)
@@ -133,6 +221,10 @@ class BotRow(QWidget):
         self.toggle_btn.setProperty("class", "secondary" if running else "primary")
         self.toggle_btn.style().unpolish(self.toggle_btn)
         self.toggle_btn.style().polish(self.toggle_btn)
+
+    def _on_limits(self) -> None:
+        if SendLimitsDialog(self.ctx, self.bot_id, parent=self).exec() == QDialog.Accepted:
+            self.refresh()
 
     def _on_toggle(self) -> None:
         bot = self.ctx.db.get_bot(self.bot_id)
