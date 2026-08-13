@@ -24,6 +24,7 @@ from .screens.connect import ConnectScreen
 from .screens.export_screen import ExportScreen
 from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
+from .tray import TrayController
 
 # The app is two functional blocks — collecting from Telegram chats, and
 # running bots on top of the same account — switched with a segmented
@@ -190,6 +191,11 @@ class MainWindow(QMainWindow):
         self._sidebar_timer.timeout.connect(self._refresh_sidebar)
         self._sidebar_timer.start(2000)
 
+        # Set before the tray exists: quit_app flips it so closeEvent knows
+        # the close is a real exit rather than a minimise-to-tray.
+        self.allow_close = False
+        self.tray = TrayController(self, ctx)
+
         self._switch_block("collect", navigate_to="today")
         self._refresh_sidebar()
         fire(self._startup_autoconnect(), parent=self, on_error=lambda e: None)
@@ -305,6 +311,8 @@ class MainWindow(QMainWindow):
             self.conn_label.setText("●  Нет подключения")
             self.conn_label.setStyleSheet("font-size: 12px; color: #c98a9a; padding: 4px;")
 
+        self.tray.refresh()
+
         bots = db.list_bots()
         new_leads = len(db.list_leads(status="new"))
         bad_bots = len([b for b in bots if b["status"] == "error"])
@@ -332,4 +340,20 @@ class MainWindow(QMainWindow):
         btn.setText(f"{label}   {badge}" if badge else label)
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        event.accept()
+        """Closing the window hides it to the tray instead of quitting —
+        the app's whole job is to keep listening. Exiting for real happens
+        from the tray menu, and the first time we hide we say so, since a
+        window that vanishes without explanation reads as a crash."""
+        minimize = self.ctx.db.get_setting("tray_minimize_on_close", True)
+        if self.allow_close or self.tray.tray is None or not minimize:
+            event.accept()
+            return
+        event.ignore()
+        self.hide()
+        if not self.ctx.db.get_setting("tray_hint_shown", False):
+            self.ctx.db.set_setting("tray_hint_shown", True)
+            self.tray.notify(
+                "ChatGrab продолжает работать",
+                "Окно свёрнуто в область уведомлений — сбор сообщений идёт. "
+                "Чтобы выйти совсем, нажмите «Выйти» в меню значка."
+            )

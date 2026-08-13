@@ -4,11 +4,15 @@ from PySide6.QtCore import QDate, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox, QDateEdit, QGridLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QRadioButton, QVBoxLayout, QWidget,
+    QListWidgetItem, QMessageBox, QProgressBar, QRadioButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
-from ..widgets import KeyValue, LiveChart, StatusPill, button, card, h1, label, muted
+from ..util import fire
+from ..widgets import (
+    KeyValue, LiveChart, StatusPill, button, card, h1, label, muted, plural,
+)
 
 
 class CollectScreen(QWidget):
@@ -47,7 +51,18 @@ class CollectScreen(QWidget):
         outer.addLayout(body, 1)
 
         # ---- left column: current chat + queue ----
-        left_col = QVBoxLayout()
+        # Scrolled: this column carries five cards (chat, speed, integrity,
+        # depth, queue) and a short window would otherwise compress them
+        # until their numbers clipped each other.
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        # Never scroll sideways — the cards should reflow to the column's
+        # width, not slide out of it.
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_host = QWidget()
+        left_scroll.setWidget(left_host)
+        left_col = QVBoxLayout(left_host)
+        left_col.setContentsMargins(0, 0, 8, 0)
         left_col.setSpacing(12)
 
         cur_frame = card()
@@ -128,17 +143,36 @@ class CollectScreen(QWidget):
         chart_lay.addWidget(self.chart_foot_label)
         left_col.addWidget(chart_frame)
 
+        # ---- integrity: gaps in the collected id sequence ----
+        gaps_frame = card()
+        gaps_lay = QVBoxLayout(gaps_frame)
+        gaps_lay.setContentsMargins(16, 12, 16, 14)
+        gaps_lay.setSpacing(8)
+        gaps_head = QHBoxLayout()
+        gaps_head.addWidget(label("ЦЕЛОСТНОСТЬ СОБРАННОГО", "kicker"))
+        gaps_head.addStretch(1)
+        self.patch_btn = button("Залатать пропуски", "secondary")
+        self.patch_btn.clicked.connect(self._on_patch_gaps)
+        gaps_head.addWidget(self.patch_btn)
+        gaps_lay.addLayout(gaps_head)
+        self.gaps_label = muted("")
+        self.gaps_label.setWordWrap(True)
+        gaps_lay.addWidget(self.gaps_label)
+        left_col.addWidget(gaps_frame)
+
         # ---- history depth (date range) ----
         depth_frame = card()
         depth_lay = QVBoxLayout(depth_frame)
         depth_lay.setContentsMargins(16, 12, 16, 14)
         depth_lay.setSpacing(8)
         depth_lay.addWidget(label("ЗА КАКОЙ ПЕРИОД СОБИРАТЬ", "kicker"))
-        depth_row = QHBoxLayout()
-        depth_row.setSpacing(10)
+        # Two rows rather than one: the radio pair, the date field and the
+        # button together overflow a narrow column.
         self.depth_all = QRadioButton("Всю историю с начала чата")
         self.depth_all.toggled.connect(self._on_depth_mode_changed)
-        depth_row.addWidget(self.depth_all)
+        depth_lay.addWidget(self.depth_all)
+        depth_row = QHBoxLayout()
+        depth_row.setSpacing(10)
         self.depth_from = QRadioButton("Начиная с даты")
         depth_row.addWidget(self.depth_from)
         self.depth_date = QDateEdit()
@@ -177,15 +211,20 @@ class CollectScreen(QWidget):
         left_col.addWidget(queue_frame)
         left_col.addStretch(1)
 
+        # Account health stays outside the scroll area — it is a status
+        # line about the whole session, not one more card to scroll past.
+        left_wrap = QVBoxLayout()
+        left_wrap.setSpacing(8)
+        left_wrap.addWidget(left_scroll, 1)
         health_row = QHBoxLayout()
         self.health_label = muted("")
         health_row.addWidget(self.health_label)
         health_row.addStretch(1)
         self.delay_label = muted("")
         health_row.addWidget(self.delay_label)
-        left_col.addLayout(health_row)
+        left_wrap.addLayout(health_row)
 
-        body.addLayout(left_col, 55)
+        body.addLayout(left_wrap, 62)
 
         # ---- right column: log ----
         log_panel = QWidget()
@@ -208,7 +247,7 @@ class CollectScreen(QWidget):
             "QListWidget::item { padding: 4px 12px; }"
         )
         log_lay.addWidget(self.log_list, 1)
-        body.addWidget(log_panel, 45)
+        body.addWidget(log_panel, 38)
 
         ctx.collector.chats_changed.connect(self.refresh)
         ctx.collector.log_event.connect(self._on_log_event)
@@ -316,6 +355,7 @@ class CollectScreen(QWidget):
         last = db.last_message_date(chat["chat_id"])
         self.kv_last.set_value(str(last)[:19].replace("T", " ") if last else "—")
         self._sync_depth_controls(chat)
+        self._refresh_gaps(chat)
 
         chat_loading = chat["status"] == "loading"
         self.load_btn.setText("Приостановить загрузку" if chat_loading else
@@ -338,6 +378,76 @@ class CollectScreen(QWidget):
             self.prog_label.setText("Загрузка не запущена")
 
         self._refresh_health()
+
+    # ---- integrity ----------------------------------------------------
+    def _refresh_gaps(self, chat) -> None:
+        summary = self.ctx.db.gap_summary(chat["chat_id"])
+        gaps, missing = summary["gaps"], summary["missing"]
+        if not gaps:
+            self.gaps_label.setText(
+                "Разрывов в собранной последовательности нет — между самым старым "
+                "и самым новым сообщением ничего не пропущено."
+            )
+            self.patch_btn.setEnabled(False)
+            return
+        self.gaps_label.setText(
+            f"Найдено {gaps} {plural(gaps, 'разрыв', 'разрыва', 'разрывов')} "
+            f"на {missing} {plural(missing, 'сообщение', 'сообщения', 'сообщений')}. "
+            "Такое остаётся после обрыва связи или остановки на середине загрузки. "
+            "Часть разрывов — удалённые в Telegram сообщения: их не вернуть, "
+            "и после проверки они останутся на месте."
+        )
+        self.patch_btn.setEnabled(True)
+
+    def _on_patch_gaps(self) -> None:
+        if self.selected_chat_id is None:
+            return
+        chat = self.ctx.db.get_chat(self.selected_chat_id)
+        if not chat:
+            return
+        summary = self.ctx.db.gap_summary(self.selected_chat_id)
+        if QMessageBox.question(
+            self, "Залатать пропуски",
+            f"Догрузить {summary['missing']} пропущенных сообщений в «{chat['title']}»?\n\n"
+            "Запросы пойдут в общую очередь и учитываются в лимите Telegram — "
+            "на время проверки загрузка истории других чатов подождёт."
+        ) != QMessageBox.Yes:
+            return
+
+        self.patch_btn.setEnabled(False)
+        self.patch_btn.setText("Проверяю…")
+
+        def restore() -> None:
+            self.patch_btn.setText("Залатать пропуски")
+            self.refresh()
+
+        def on_error(e) -> None:
+            restore()
+            from ...telegram.errors import humanize_error
+            QMessageBox.warning(self, "Не получилось проверить", humanize_error(e))
+
+        task = fire(self.ctx.collector.patch_gaps(self.selected_chat_id),
+                    parent=self, on_error=on_error)
+
+        def _done(t) -> None:
+            if t.cancelled() or t.exception() is not None:
+                return
+            restore()
+            patched = t.result()
+            after = self.ctx.db.gap_summary(self.selected_chat_id)
+            if patched:
+                text = f"Догружено {patched} " + plural(patched, "сообщение", "сообщения", "сообщений") + "."
+            else:
+                text = "Ни одного сообщения догрузить не удалось."
+            if after["gaps"]:
+                text += (f"\n\nОсталось {after['gaps']} "
+                          + plural(after["gaps"], "разрыв", "разрыва", "разрывов")
+                          + " — скорее всего, это удалённые в Telegram сообщения.")
+            else:
+                text += "\n\nРазрывов больше нет."
+            QMessageBox.information(self, "Проверка целостности", text)
+
+        task.add_done_callback(_done)
 
     # ---- history depth ------------------------------------------------
     def _sync_depth_controls(self, chat) -> None:

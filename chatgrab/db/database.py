@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import schema
+from .dedup import fingerprint
 
 
 def now_iso() -> str:
@@ -127,11 +128,14 @@ class Database:
         m["is_reply"] = 1 if m.get("reply_to_message_id") else 0
         m["is_forward"] = 1 if m.get("forwarded_from") else 0
         m["is_hidden"] = 1 if m.get("is_hidden") else 0
+        # Recomputed on edit too: an edited message is a different text and
+        # so a different repeat-group than the one it was posted as.
+        m["text_hash"] = fingerprint(m.get("text") or "")
         cols = ["chat_id", "message_id", "chat_title", "date", "edited_date",
                 "sender_id", "sender_username", "sender_display_name", "text",
                 "reply_to_message_id", "forwarded_from", "media_type",
                 "media_caption", "media_path", "views", "link", "char_len",
-                "is_reply", "is_forward", "is_hidden"]
+                "is_reply", "is_forward", "is_hidden", "text_hash"]
         values = [m.get(c) for c in cols]
         with self._lock:
             if existing:
@@ -203,6 +207,49 @@ class Database:
                 gaps.append((a + 1, b - 1))
         return gaps
 
+    def repeat_summary(self, chat_ids: list[int] | None = None) -> dict[str, int]:
+        """How many stored messages are reposts of text already collected —
+        i.e. how much «только уникальные» would leave out."""
+        scope, params = "", []
+        if chat_ids:
+            scope = " AND chat_id IN (" + ",".join("?" for _ in chat_ids) + ")"
+            params = list(chat_ids)
+        row = self.query_one(
+            f"""
+            SELECT count(*) AS groups, coalesce(sum(n - 1), 0) AS repeats FROM (
+                SELECT count(*) AS n FROM messages
+                WHERE text_hash IS NOT NULL{scope}
+                GROUP BY chat_id, text_hash HAVING n > 1)
+            """,
+            params,
+        )
+        return {
+            "repeats": row["repeats"] if row else 0,
+            "groups": row["groups"] if row else 0,
+        }
+
+    def gap_summary(self, chat_id: int) -> dict[str, int]:
+        """How many holes there are in the collected id sequence, and how
+        many messages they add up to.
+
+        Computed in SQL rather than by pulling every id into Python the way
+        find_gaps() does, so this can run on every screen refresh for a chat
+        with tens of thousands of messages.
+
+        A gap is not proof of loss: Telegram's per-chat ids also cover
+        service messages and anything since deleted, and those holes are
+        permanent. It marks a chat worth re-checking, not a defect."""
+        row = self.query_one(
+            """
+            SELECT count(*) AS gaps, coalesce(sum(diff - 1), 0) AS missing FROM (
+                SELECT message_id - lag(message_id) OVER (ORDER BY message_id) AS diff
+                FROM messages WHERE chat_id = ?
+            ) WHERE diff > 1
+            """,
+            (chat_id,),
+        )
+        return {"gaps": row["gaps"] if row else 0, "missing": row["missing"] if row else 0}
+
     # ---- authors ----------------------------------------------------
     def authors_for_chat(self, chat_id: int) -> list[sqlite3.Row]:
         return self.query(
@@ -257,7 +304,8 @@ class Database:
                        date_to: str | None = None, include_hidden: bool = False,
                        query: str = "", author: str = "", photos_only: bool = False,
                        forwards_only: bool = False, replies_only: bool = False,
-                       min_id_by_chat: dict[int, int] | None = None) -> list[sqlite3.Row]:
+                       min_id_by_chat: dict[int, int] | None = None,
+                       unique_only: bool = False) -> list[sqlite3.Row]:
         clauses: list[str] = []
         params: list[Any] = []
         from_sql = "FROM messages m"
@@ -300,6 +348,16 @@ class Database:
             clauses.append("m.is_reply = 1")
         if not include_hidden:
             clauses.append("m.is_hidden = 0")
+        if unique_only:
+            # Keep the first posting of each repeated text within its chat
+            # and drop the later reposts. Messages without a fingerprint
+            # (short ones, media-only) always pass — see db/dedup.py for
+            # why those are not treated as repeats.
+            clauses.append(
+                "(m.text_hash IS NULL OR m.message_id = ("
+                "  SELECT min(e.message_id) FROM messages e"
+                "  WHERE e.chat_id = m.chat_id AND e.text_hash = m.text_hash))"
+            )
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         # Pure chronological order — not grouped by chat first — so a
         # merged multi-chat export reads as one continuous timeline

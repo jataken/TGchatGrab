@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from ..context import AppContext
 from ..util import fire, run_blocking
-from ..widgets import button, card, h1, muted
+from ..widgets import button, card, h1, muted, plural
 from ...services.export_service import DEFAULT_TOKEN_LIMIT, ExportParams
 
 
@@ -119,7 +119,13 @@ class ExportScreen(QWidget):
         left.addWidget(self.zip_cb)
         self.include_hidden_cb = QCheckBox("Включить скрытые правилами игнора записи")
         left.addWidget(self.include_hidden_cb)
-        for cb in (self.merge_cb, self.incremental_cb, self.zip_cb, self.include_hidden_cb):
+        self.unique_only_cb = QCheckBox("Только уникальные — без повторов одного и того же текста")
+        left.addWidget(self.unique_only_cb)
+        self.repeats_hint = muted("")
+        self.repeats_hint.setWordWrap(True)
+        left.addWidget(self.repeats_hint)
+        for cb in (self.merge_cb, self.incremental_cb, self.zip_cb, self.include_hidden_cb,
+                    self.unique_only_cb):
             cb.toggled.connect(self._on_settings_changed)
 
         # ---- split mode ------------------------------------------------------
@@ -291,6 +297,7 @@ class ExportScreen(QWidget):
             incremental=self.incremental_cb.isChecked(),
             zip_photos=self.zip_cb.isChecked(),
             include_hidden=self.include_hidden_cb.isChecked(),
+            unique_only=self.unique_only_cb.isChecked(),
             folder=self.folder_input.text().strip(),
             query=filters.get("query", ""),
             author=filters.get("author", ""),
@@ -304,8 +311,27 @@ class ExportScreen(QWidget):
         self.done_label.hide()
         self._update_estimate()
 
+    def _update_repeats_hint(self, chat_ids: list[int]) -> None:
+        """Say what «только уникальные» would actually drop, so the choice
+        isn't made blind."""
+        if not chat_ids:
+            self.repeats_hint.setText("")
+            return
+        summary = self.ctx.db.repeat_summary(chat_ids)
+        repeats = summary["repeats"]
+        if not repeats:
+            self.repeats_hint.setText("Повторов среди выбранного не найдено.")
+            return
+        self.repeats_hint.setText(
+            f"В выбранном {repeats} " + plural(repeats, "повтор", "повтора", "повторов")
+            + f" в {summary['groups']} " + plural(summary["groups"], "тексте", "текстах", "текстах")
+            + " — столько записей уйдёт из выгрузки с этим флажком. "
+            "Первое появление каждого текста остаётся."
+        )
+
     def _update_estimate(self) -> None:
         params = self.build_params()
+        self._update_repeats_hint(params.chat_ids)
         if not params.chat_ids:
             self.token_line_label.setText("—")
             self._clear_preview()
@@ -417,6 +443,7 @@ class ExportScreen(QWidget):
         self.incremental_cb.setChecked(params.incremental)
         self.zip_cb.setChecked(params.zip_photos)
         self.include_hidden_cb.setChecked(params.include_hidden)
+        self.unique_only_cb.setChecked(getattr(params, 'unique_only', False))
         if params.folder:
             self.folder_input.setText(params.folder)
         self._update_estimate()

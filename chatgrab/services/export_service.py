@@ -55,6 +55,7 @@ class ExportParams:
     incremental: bool = False
     zip_photos: bool = False
     include_hidden: bool = False
+    unique_only: bool = False
     folder: str = ""
     query: str = ""
     author: str = ""
@@ -123,7 +124,8 @@ class ExportService:
             min_id_by_chat = self.db.incremental_baseline(params.chat_ids)
         return self.db.export_select(
             chat_ids=params.chat_ids, date_from=params.date_from, date_to=params.date_to,
-            include_hidden=params.include_hidden, query=params.query, author=params.author,
+            include_hidden=params.include_hidden, unique_only=params.unique_only,
+            query=params.query, author=params.author,
             photos_only=params.photos_only, forwards_only=params.forwards_only,
             replies_only=params.replies_only, min_id_by_chat=min_id_by_chat,
         )

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS messages (
     char_len INTEGER NOT NULL DEFAULT 0,
     is_reply INTEGER NOT NULL DEFAULT 0,
     is_forward INTEGER NOT NULL DEFAULT 0,
+    text_hash TEXT,                       -- normalized-text fingerprint, see db/dedup.py
     UNIQUE(chat_id, message_id)
 );
 """
@@ -78,6 +79,9 @@ _DDL_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date);",
     "CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(chat_id, sender_id);",
     "CREATE INDEX IF NOT EXISTS idx_messages_hidden ON messages(is_hidden);",
+    # Finding the earliest message carrying a given fingerprint within a
+    # chat — the query «только уникальные» runs on every export.
+    "CREATE INDEX IF NOT EXISTS idx_messages_text_hash ON messages(chat_id, text_hash, message_id);",
 ]
 
 _DDL_EXPORT_LOG = """
@@ -421,6 +425,14 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     if not _column_exists(conn, "bots", "settings"):
         conn.execute("ALTER TABLE bots ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';")
 
+    # Repeated-text fingerprint. Backfilled for an existing database so
+    # «только уникальные» works on already-collected history, not just on
+    # messages arriving from now on.
+    if not _column_exists(conn, "messages", "text_hash"):
+        conn.execute("ALTER TABLE messages ADD COLUMN text_hash TEXT;")
+        conn.commit()
+        _backfill_text_hashes(conn, on_progress=on_fts_progress)
+
     # Must run before the bot indexes below: the partial unique index they
     # create belongs on the rebuilt table, not the old constrained one.
     _migrate_scenario_sessions_unique(conn)
@@ -446,6 +458,33 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     if version != str(CURRENT_SCHEMA_VERSION):
         _set_meta(conn, "schema_version", str(CURRENT_SCHEMA_VERSION))
         conn.commit()
+
+
+def _backfill_text_hashes(conn: sqlite3.Connection, on_progress=None, batch_size: int = 2000) -> None:
+    """Fill text_hash for rows collected before the column existed. Batched
+    and committed as it goes, the same way the FTS build is, so a large
+    existing database doesn't hold one enormous transaction."""
+    from .dedup import fingerprint
+
+    total = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    done = 0
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, text FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        conn.executemany(
+            "UPDATE messages SET text_hash = ? WHERE id = ?",
+            [(fingerprint(text or ""), row_id) for row_id, text in rows],
+        )
+        conn.commit()
+        last_id = rows[-1][0]
+        done += len(rows)
+        if on_progress:
+            on_progress(done, total)
 
 
 def _build_fts_index(conn: sqlite3.Connection, on_progress=None, batch_size: int = 2000) -> None:

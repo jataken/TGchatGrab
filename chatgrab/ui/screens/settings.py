@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
+from .. import tray
 from ..widgets import button, card, h1, muted
 from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
@@ -341,6 +342,37 @@ class SettingsScreen(QWidget):
         outer.addWidget(db_card)
         outer.addSpacing(24)
 
+        # ---- background operation --------------------------------------
+        tray_card = card()
+        tray_lay = QVBoxLayout(tray_card)
+        tray_lay.setContentsMargins(16, 14, 16, 14)
+        tray_lay.addWidget(muted("РАБОТА В ФОНЕ"))
+        tray_hint = muted(
+            "Приложение слушает чаты, только пока запущено. Эти настройки позволяют "
+            "держать его включённым, не занимая место на панели задач."
+        )
+        tray_hint.setWordWrap(True)
+        tray_lay.addWidget(tray_hint)
+
+        self.tray_close_cb = QCheckBox("Сворачивать в область уведомлений вместо закрытия")
+        self.tray_close_cb.setChecked(self.ctx.db.get_setting("tray_minimize_on_close", True))
+        tray_lay.addWidget(self.tray_close_cb)
+
+        self.autostart_cb = QCheckBox("Запускать вместе с Windows")
+        self.autostart_cb.setChecked(tray.autostart_enabled())
+        if not tray.autostart_supported():
+            self.autostart_cb.setEnabled(False)
+            self.autostart_cb.setText("Запускать вместе с Windows (только в Windows-сборке)")
+        tray_lay.addWidget(self.autostart_cb)
+
+        self.tray_status = muted("")
+        self.tray_status.setWordWrap(True)
+        tray_lay.addWidget(self.tray_status)
+        save_tray_btn = button("Сохранить", "primary")
+        save_tray_btn.clicked.connect(self._save_tray)
+        tray_lay.addWidget(save_tray_btn)
+        outer.addWidget(tray_card)
+
         # ---- misc ------------------------------------------------------
         misc_card = card()
         misc_lay = QVBoxLayout(misc_card)
@@ -585,6 +617,18 @@ class SettingsScreen(QWidget):
             self, "Готово",
             f"Было: {before / (1024 * 1024):.1f} МБ → стало: {after / (1024 * 1024):.1f} МБ",
         )
+
+    def _save_tray(self) -> None:
+        self.ctx.db.set_setting("tray_minimize_on_close", self.tray_close_cb.isChecked())
+        wanted = self.autostart_cb.isChecked()
+        actual = tray.set_autostart(wanted)
+        # Reflect what the registry actually says, not what was asked —
+        # a refused write should not leave a checkbox lying about it.
+        self.autostart_cb.setChecked(actual)
+        if wanted and not actual and tray.autostart_supported():
+            self.tray_status.setText("Не удалось включить автозапуск — Windows отклонил запись в реестр.")
+        else:
+            self.tray_status.setText("Сохранено.")
 
     def _save_misc(self) -> None:
         self.ctx.db.set_setting("gap_notify_days", self.gap_days_spin.value())
