@@ -9,9 +9,8 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
-from ...widgets import button, card, chip, label, muted
+from ...widgets import button, card, chip, label, muted, plural as _plural
 from ....bots.rules_engine import RulesEngine
-from .common import populate_bot_picker
 
 _VALIDATIONS = [("text", "Любой"), ("phone", "Телефон"), ("number", "Число")]
 _VALIDATION_LABELS = dict(_VALIDATIONS)
@@ -104,6 +103,7 @@ class ScenarioScreen(QWidget):
         self.step_sel = 0
         self.test_open = False
         self.rules = RulesEngine(ctx.db)
+        ctx.bot_selection.changed.connect(self._on_bot_changed)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(40, 24, 40, 22)
@@ -127,10 +127,6 @@ class ScenarioScreen(QWidget):
         outer.addSpacing(12)
 
         top_row = QHBoxLayout()
-        top_row.addWidget(muted("Бот"))
-        self.bot_picker = QComboBox()
-        self.bot_picker.currentIndexChanged.connect(self._on_bot_changed)
-        top_row.addWidget(self.bot_picker)
         top_row.addWidget(muted("Сценарий"))
         self.scenario_picker = QComboBox()
         self.scenario_picker.currentIndexChanged.connect(self._on_scenario_changed)
@@ -272,12 +268,11 @@ class ScenarioScreen(QWidget):
         left_col.addWidget(self.empty_hint)
 
     def on_show(self, **kwargs) -> None:
-        populate_bot_picker(self.ctx, self.bot_picker)
-        self.selected_bot_id = self.bot_picker.currentData()
+        self.selected_bot_id = self.ctx.bot_selection.current
         self._reload_scenarios()
 
-    def _on_bot_changed(self, _index: int) -> None:
-        self.selected_bot_id = self.bot_picker.currentData()
+    def _on_bot_changed(self, bot_id) -> None:
+        self.selected_bot_id = bot_id
         self._reload_scenarios()
 
     def _reload_scenarios(self) -> None:
@@ -485,9 +480,27 @@ class ScenarioScreen(QWidget):
     def _on_delete_scenario(self) -> None:
         if self.selected_scenario_id is None:
             return
-        if QMessageBox.question(
-            self, "Удалить сценарий", "Удалить этот сценарий вместе со всеми шагами?"
-        ) != QMessageBox.Yes:
+        scenario = self.ctx.db.get_scenario(self.selected_scenario_id)
+        usage = self.ctx.db.scenario_usage(self.selected_scenario_id)
+        n_steps = len(self._steps())
+
+        text = f"Удалить «{scenario['name'] if scenario else 'сценарий'}» " \
+               f"вместе с {n_steps} " + _plural(n_steps, "вопросом", "вопросами", "вопросами") + "?"
+        consequences = []
+        if usage["actions"]:
+            consequences.append(
+                f"{usage['actions']} " + _plural(usage["actions"], "правило", "правила", "правил") +
+                " перестанет запускать этот сценарий")
+        if usage["active_dialogs"]:
+            consequences.append(
+                f"{usage['active_dialogs']} " +
+                _plural(usage["active_dialogs"], "контакт сейчас проходит", "контакта сейчас проходят",
+                        "контактов сейчас проходят") + " его — их незаконченные ответы пропадут")
+        if consequences:
+            text += "\n\n" + ";\n".join(consequences) + "."
+        text += "\n\nОтменить это нельзя."
+
+        if QMessageBox.question(self, "Удалить сценарий", text) != QMessageBox.Yes:
             return
         self.ctx.db.delete_scenario(self.selected_scenario_id)
         self._reload_scenarios()

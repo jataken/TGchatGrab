@@ -3,8 +3,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE
@@ -16,6 +16,7 @@ from .screens.bots.leads_screen import LeadsScreen
 from .screens.bots.log_screen import BotLogScreen
 from .screens.bots.rules_screen import RulesScreen
 from .screens.bots.scenario_screen import ScenarioScreen
+from .screens.bots.templates_screen import TemplatesScreen
 from .screens.browse import BrowseScreen
 from .screens.chats import ChatsScreen
 from .screens.collect import CollectScreen
@@ -44,9 +45,15 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
         ("leads", "Заявки"),
         ("rules", "Правила"),
         ("scenario", "Сценарий"),
+        ("templates", "Шаблоны"),
         ("botlog", "Журнал"),
     ],
 }
+
+# Screens that edit one particular bot, and so follow the sidebar's bot
+# selector. «Боты» lists them all and «Заявки»/«Журнал» span them, so
+# those three are deliberately not here.
+BOT_SCOPED_SCREENS = {"rules", "scenario", "templates"}
 COMMON_ITEMS = [("connect", "Подключение"), ("settings", "Настройки")]
 
 SCREEN_BLOCK = {key: block for block, items in NAV_BY_BLOCK.items() for key, _ in items}
@@ -103,6 +110,19 @@ class MainWindow(QMainWindow):
         side_lay.addWidget(switcher)
         side_lay.addSpacing(11)
 
+        # The bot the block's editing screens act on — chosen once here
+        # instead of once per screen. See ui/bot_selection.py.
+        self.bot_selector_box = QWidget()
+        selector_lay = QVBoxLayout(self.bot_selector_box)
+        selector_lay.setContentsMargins(0, 0, 0, 10)
+        selector_lay.setSpacing(4)
+        selector_lay.addWidget(QLabel("НАСТРАИВАЕМ БОТА"), 0)
+        self.bot_selector_box.findChild(QLabel).setProperty("class", "kicker")
+        self.bot_selector = QComboBox()
+        self.bot_selector.currentIndexChanged.connect(self._on_bot_selector_changed)
+        selector_lay.addWidget(self.bot_selector)
+        side_lay.addWidget(self.bot_selector_box)
+
         self.nav_panels: dict[str, QWidget] = {}
         for block_key, _ in BLOCKS:
             panel = QWidget()
@@ -154,6 +174,7 @@ class MainWindow(QMainWindow):
             "leads": LeadsScreen(ctx, self.navigate),
             "rules": RulesScreen(ctx, self.navigate),
             "scenario": ScenarioScreen(ctx, self.navigate),
+            "templates": TemplatesScreen(ctx, self.navigate),
             "botlog": BotLogScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
@@ -216,6 +237,29 @@ class MainWindow(QMainWindow):
         target = navigate_to or NAV_BY_BLOCK[block_key][0][0]
         self.navigate(target)
 
+    def _refresh_bot_selector(self) -> None:
+        """Keep the sidebar picker in step with the bots that exist, and
+        show it only where it means something."""
+        bots = self.ctx.db.list_bots()
+        current = self.ctx.bot_selection.ensure_valid(bots)
+        self.bot_selector.blockSignals(True)
+        self.bot_selector.clear()
+        for bot in bots:
+            self.bot_selector.addItem(bot["name"], bot["id"])
+        idx = self.bot_selector.findData(current)
+        self.bot_selector.setCurrentIndex(idx if idx >= 0 else -1)
+        self.bot_selector.blockSignals(False)
+
+        current_screen = next(
+            (k for k, w in self.screens.items() if w is self.stack.currentWidget()), None
+        )
+        self.bot_selector_box.setVisible(
+            bool(bots) and current_screen in BOT_SCOPED_SCREENS
+        )
+
+    def _on_bot_selector_changed(self, _index: int) -> None:
+        self.ctx.bot_selection.set_current(self.bot_selector.currentData())
+
     def navigate(self, key: str, **kwargs) -> None:
         block = SCREEN_BLOCK.get(key)
         if block is not None and block != self.active_block:
@@ -227,6 +271,9 @@ class MainWindow(QMainWindow):
             btn.setChecked(k == key)
         widget = self.screens[key]
         self.stack.setCurrentWidget(widget)
+        # Before on_show, so a bot-scoped screen reads a selection that is
+        # already pointing at a bot that exists.
+        self._refresh_bot_selector()
         on_show = getattr(widget, "on_show", None)
         if on_show:
             on_show(**kwargs)

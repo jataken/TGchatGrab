@@ -768,6 +768,35 @@ class Database:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.execute(f"UPDATE bot_templates SET {cols} WHERE id = ?", (*fields.values(), template_id))
 
+    def template_usage(self, template_id: int) -> dict[str, int]:
+        """What would break if this template were deleted: actions that
+        send it, and scenarios that use it as their closing message.
+        Referenced from JSON config, so there is no foreign key to lean on
+        — this is the only way to warn before the fact instead of showing
+        a broken reference afterwards."""
+        actions = self.query(
+            "SELECT id FROM bot_actions WHERE json_extract(config, '$.template_id') = ?",
+            (template_id,),
+        )
+        scenarios = self.query(
+            "SELECT id FROM bot_scenarios WHERE done_template_id = ?", (template_id,)
+        )
+        return {"actions": len(actions), "scenarios": len(scenarios)}
+
+    def scenario_usage(self, scenario_id: int) -> dict[str, int]:
+        """Actions that launch this scenario, plus how many contacts are
+        part-way through it right now — losing those mid-dialog is the
+        part a user is least likely to expect."""
+        actions = self.query(
+            "SELECT id FROM bot_actions WHERE json_extract(config, '$.scenario_id') = ?",
+            (scenario_id,),
+        )
+        active = self.query(
+            "SELECT id FROM bot_scenario_sessions WHERE scenario_id = ? AND status = 'active'",
+            (scenario_id,),
+        )
+        return {"actions": len(actions), "active_dialogs": len(active)}
+
     def delete_template(self, template_id: int) -> None:
         self.execute("DELETE FROM bot_templates WHERE id = ?", (template_id,))
 

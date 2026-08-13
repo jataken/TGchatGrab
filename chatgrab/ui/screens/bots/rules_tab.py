@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
 
 from ...context import AppContext
 from ...widgets import button, card, muted
-from .common import populate_bot_picker
 
 _TRIGGER_TYPES = [
     ("incoming_dm", "Написали боту в личку"),
@@ -53,17 +52,10 @@ class RulesTab(QWidget):
         self.ctx = ctx
         self.selected_bot_id: int | None = None
         self.selected_trigger_id: int | None = None
+        ctx.bot_selection.changed.connect(self._on_bot_changed)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-
-        top_row = QHBoxLayout()
-        top_row.addWidget(muted("Бот"))
-        self.bot_picker = QComboBox()
-        self.bot_picker.currentIndexChanged.connect(self._on_bot_changed)
-        top_row.addWidget(self.bot_picker, 1)
-        outer.addLayout(top_row)
-        outer.addSpacing(10)
 
         split = QSplitter()
         outer.addWidget(split, 1)
@@ -257,15 +249,12 @@ class RulesTab(QWidget):
 
     # ---- lifecycle -------------------------------------------------------
     def on_show(self) -> None:
-        populate_bot_picker(self.ctx, self.bot_picker)
-        # populate_bot_picker blocks signals while setting the index, so
-        # currentIndexChanged never fires on first load — read it directly.
-        self.selected_bot_id = self.bot_picker.currentData()
+        self.selected_bot_id = self.ctx.bot_selection.current
         self._reload_reference_lists()
         self._reload_triggers()
 
-    def _on_bot_changed(self, _index: int) -> None:
-        self.selected_bot_id = self.bot_picker.currentData()
+    def _on_bot_changed(self, bot_id) -> None:
+        self.selected_bot_id = bot_id
         self._reload_reference_lists()
         self._reload_triggers()
 

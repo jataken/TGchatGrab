@@ -2,7 +2,7 @@
 thread six constructor arguments through the whole tree."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..bots.manager import BotManager
 from ..config import AppConfig
@@ -14,6 +14,7 @@ from ..services.export_service import ExportService
 from ..services.ignore_service import IgnoreService
 from ..telegram.collector import Collector
 from ..telegram.service import TelegramService
+from .bot_selection import BotSelection
 
 
 @dataclass
@@ -28,3 +29,5 @@ class AppContext:
     backup_service: BackupService
     security: SecurityService
     bot_manager: BotManager
+    # Which bot the «Боты» block's screens are currently editing.
+    bot_selection: BotSelection = field(default_factory=BotSelection)

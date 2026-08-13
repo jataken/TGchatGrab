@@ -10,24 +10,6 @@ from ...context import AppContext
 from ...widgets import button, h1, muted
 from ....bots.rules_engine import IncomingEvent, RulesEngine
 from .rules_tab import RulesTab
-from .templates_tab import TemplatesTab
-
-
-class TemplatesDialog(QDialog):
-    def __init__(self, ctx: AppContext, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Шаблоны сообщений")
-        self.setMinimumSize(760, 480)
-        lay = QVBoxLayout(self)
-        self.templates_tab = TemplatesTab(ctx)
-        lay.addWidget(self.templates_tab)
-        close_row = QHBoxLayout()
-        close_row.addStretch(1)
-        close_btn = button("Закрыть", "secondary")
-        close_btn.clicked.connect(self.accept)
-        close_row.addWidget(close_btn)
-        lay.addLayout(close_row)
-        self.templates_tab.on_show()
 
 
 class RuleDryRunDialog(QDialog):
@@ -92,7 +74,7 @@ class RulesScreen(QWidget):
         header.addWidget(h1("Правила"))
         header.addStretch(1)
         templates_btn = button("Шаблоны сообщений", "ghost")
-        templates_btn.clicked.connect(self._open_templates)
+        templates_btn.clicked.connect(lambda: self.navigate("templates"))
         header.addWidget(templates_btn)
         test_btn = button("Проверить сообщением", "secondary")
         test_btn.clicked.connect(self._open_dry_run)
@@ -110,9 +92,6 @@ class RulesScreen(QWidget):
 
     def on_show(self, **kwargs) -> None:
         self.rules_tab.on_show()
-
-    def _open_templates(self) -> None:
-        TemplatesDialog(self.ctx, parent=self).exec()
 
     def _open_dry_run(self) -> None:
         RuleDryRunDialog(self.ctx, self.rules_tab.selected_bot_id, parent=self).exec()
