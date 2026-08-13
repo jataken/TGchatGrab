@@ -75,6 +75,24 @@ def build_qss() -> str:
     QPushButton[class="danger"] {{ color: {BAD_FG}; }}
     QPushButton[class="danger"]:hover {{ background: rgba(200,90,110,40); }}
 
+    /* Block switcher (Сбор / Боты) and filter chips — a checkable pill,
+       plain text so an unread-count badge can be appended to it. */
+    QPushButton[class="blocktab"] {{
+        border-radius: 7px; padding: 6px 4px; font-size: 12.5px; font-weight: 500;
+        color: rgba(233,233,237,0.72); background: transparent; border: none;
+    }}
+    QPushButton[class="blocktab"]:hover {{ background: rgba(233,233,237,10); }}
+    QPushButton[class="blocktab"]:checked {{ color: {TEXT}; background: rgba(145,132,217,56); }}
+    QPushButton[class="chip"] {{
+        border-radius: 7px; padding: 5px 11px; font-size: 12.5px;
+        color: rgba(233,233,237,0.7); background: rgba(233,233,237,8);
+        border: 1px solid rgba(233,233,237,20);
+    }}
+    QPushButton[class="chip"]:hover {{ background: rgba(233,233,237,18); }}
+    QPushButton[class="chip"]:checked {{
+        color: {ACCENT_400}; background: rgba(145,132,217,36); border-color: rgba(145,132,217,115);
+    }}
+
     QLineEdit, QDateEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
         background: {SURFACE}; border: 1px solid {DIVIDER}; border-radius: 8px;
         padding: 6px 10px; font-size: 13px; min-height: 20px; color: {TEXT};

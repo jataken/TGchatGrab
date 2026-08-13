@@ -3,7 +3,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE
@@ -11,24 +12,44 @@ from ..paths import resource_path
 from .context import AppContext
 from .util import fire
 from .screens.bots import BotsScreen
+from .screens.bots.leads_screen import LeadsScreen
+from .screens.bots.log_screen import BotLogScreen
+from .screens.bots.rules_screen import RulesScreen
+from .screens.bots.scenario_screen import ScenarioScreen
 from .screens.browse import BrowseScreen
 from .screens.chats import ChatsScreen
 from .screens.collect import CollectScreen
 from .screens.connect import ConnectScreen
 from .screens.export_screen import ExportScreen
-from .screens.overview import OverviewScreen
 from .screens.settings import SettingsScreen
+from .screens.today import TodayScreen
 
-NAV_ITEMS = [
-    ("overview", "Обзор"),
-    ("connect", "Подключение"),
-    ("chats", "Чаты"),
-    ("collect", "Сбор данных"),
-    ("browse", "Поиск в собранном"),
-    ("export", "Экспорт"),
-    ("bots", "Боты"),
-    ("settings", "Настройки"),
-]
+# The app is two functional blocks — collecting from Telegram chats, and
+# running bots on top of the same account — switched with a segmented
+# control at the top of the sidebar. Each block gets its own short nav
+# list below it; "Подключение" and "Настройки" are shared account-level
+# settings and stay pinned under both, so they don't need duplicating.
+BLOCKS = [("collect", "Сбор"), ("bots", "Боты")]
+
+NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
+    "collect": [
+        ("today", "Сегодня"),
+        ("chats", "Источники"),
+        ("collect", "Сбор"),
+        ("browse", "Собранное"),
+        ("export", "Экспорт"),
+    ],
+    "bots": [
+        ("bots", "Боты"),
+        ("leads", "Заявки"),
+        ("rules", "Правила"),
+        ("scenario", "Сценарий"),
+        ("botlog", "Журнал"),
+    ],
+}
+COMMON_ITEMS = [("connect", "Подключение"), ("settings", "Настройки")]
+
+SCREEN_BLOCK = {key: block for block, items in NAV_BY_BLOCK.items() for key, _ in items}
 
 
 class MainWindow(QMainWindow):
@@ -51,32 +72,65 @@ class MainWindow(QMainWindow):
 
         self.sidebar = QWidget()
         self.sidebar.setProperty("class", "sidebar")
-        self.sidebar.setFixedWidth(232)
+        self.sidebar.setFixedWidth(238)
         side_lay = QVBoxLayout(self.sidebar)
-        side_lay.setContentsMargins(12, 16, 12, 14)
+        side_lay.setContentsMargins(12, 14, 12, 14)
         side_lay.setSpacing(2)
 
-        section_label = QLabel("РАЗДЕЛЫ")
-        section_label.setProperty("class", "kicker")
-        side_lay.addWidget(section_label)
-
+        self.active_block = "collect"
         self._nav_buttons: dict[str, QPushButton] = {}
-        for key, title in NAV_ITEMS:
+        self._nav_labels: dict[str, str] = {}
+
+        switcher = QWidget()
+        switcher.setStyleSheet(
+            "background: rgba(233,233,237,13); border-radius: 9px;"
+        )
+        switcher_lay = QHBoxLayout(switcher)
+        switcher_lay.setContentsMargins(3, 3, 3, 3)
+        switcher_lay.setSpacing(3)
+        self.block_group = QButtonGroup(self)
+        self.block_group.setExclusive(True)
+        self.block_buttons: dict[str, QPushButton] = {}
+        for key, title in BLOCKS:
             btn = QPushButton(title)
+            btn.setProperty("class", "blocktab")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(self._nav_button_qss())
-            btn.clicked.connect(lambda checked, k=key: self.navigate(k))
-            side_lay.addWidget(btn)
-            self._nav_buttons[key] = btn
+            btn.clicked.connect(lambda _checked, k=key: self._switch_block(k))
+            self.block_group.addButton(btn)
+            switcher_lay.addWidget(btn, 1)
+            self.block_buttons[key] = btn
+        side_lay.addWidget(switcher)
+        side_lay.addSpacing(11)
+
+        self.nav_panels: dict[str, QWidget] = {}
+        for block_key, _ in BLOCKS:
+            panel = QWidget()
+            panel_lay = QVBoxLayout(panel)
+            panel_lay.setContentsMargins(0, 0, 0, 0)
+            panel_lay.setSpacing(2)
+            for key, title in NAV_BY_BLOCK[block_key]:
+                self._add_nav_button(panel_lay, key, title)
+            side_lay.addWidget(panel)
+            self.nav_panels[block_key] = panel
 
         side_lay.addStretch(1)
+
+        divider = QWidget()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background: #33354a;")
+        side_lay.addSpacing(8)
+        side_lay.addWidget(divider)
+        side_lay.addSpacing(8)
+
+        for key, title in COMMON_ITEMS:
+            self._add_nav_button(side_lay, key, title)
 
         self.queue_box = QLabel("")
         self.queue_box.setWordWrap(True)
         self.queue_box.setStyleSheet(
             "background: rgba(233,233,237,10); border-radius: 8px; padding: 10px; "
-            "font-size: 12px; color: #c9c9d1;"
+            "font-size: 12px; color: #c9c9d1; margin-top: 10px;"
         )
         side_lay.addWidget(self.queue_box)
 
@@ -90,28 +144,44 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.stack, 1)
 
         self.screens: dict[str, QWidget] = {
-            "overview": OverviewScreen(ctx, self.navigate),
+            "today": TodayScreen(ctx, self.navigate),
             "connect": ConnectScreen(ctx, self.navigate),
             "chats": ChatsScreen(ctx, self.navigate),
             "collect": CollectScreen(ctx, self.navigate),
             "browse": BrowseScreen(ctx, self.navigate),
             "export": ExportScreen(ctx, self.navigate),
             "bots": BotsScreen(ctx, self.navigate),
+            "leads": LeadsScreen(ctx, self.navigate),
+            "rules": RulesScreen(ctx, self.navigate),
+            "scenario": ScenarioScreen(ctx, self.navigate),
+            "botlog": BotLogScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
-        for key, _ in NAV_ITEMS:
+        for key in self.screens:
             self.stack.addWidget(self.screens[key])
 
         ctx.collector.chats_changed.connect(self._on_state_changed)
         ctx.collector.log_event.connect(self._on_log_event)
+        ctx.bot_manager.bots_changed.connect(self._on_state_changed)
+        ctx.bot_manager.log_event.connect(self._on_log_event)
 
         self._sidebar_timer = QTimer(self)
         self._sidebar_timer.timeout.connect(self._refresh_sidebar)
         self._sidebar_timer.start(2000)
 
-        self.navigate("overview")
+        self._switch_block("collect", navigate_to="today")
         self._refresh_sidebar()
         fire(self._startup_autoconnect(), parent=self, on_error=lambda e: None)
+
+    def _add_nav_button(self, layout: QVBoxLayout, key: str, title: str) -> None:
+        btn = QPushButton(title)
+        btn.setCheckable(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(self._nav_button_qss())
+        btn.clicked.connect(lambda checked, k=key: self.navigate(k))
+        layout.addWidget(btn)
+        self._nav_buttons[key] = btn
+        self._nav_labels[key] = title
 
     async def _startup_autoconnect(self) -> None:
         """Resume an already-authorized session automatically on launch —
@@ -129,7 +199,7 @@ class MainWindow(QMainWindow):
         from . import theme
         return f"""
         QPushButton {{
-            text-align: left; padding: 8px 9px; border-radius: 8px; font-size: 13.5px;
+            text-align: left; padding: 8px 10px; border-radius: 8px; font-size: 13.5px;
             color: rgba(233,233,237,0.72); background: transparent; border: none;
         }}
         QPushButton:hover {{ background: rgba(233,233,237,15); }}
@@ -138,7 +208,21 @@ class MainWindow(QMainWindow):
         }}
         """
 
+    def _switch_block(self, block_key: str, navigate_to: str | None = None) -> None:
+        self.active_block = block_key
+        self.block_buttons[block_key].setChecked(True)
+        for key, panel in self.nav_panels.items():
+            panel.setVisible(key == block_key)
+        target = navigate_to or NAV_BY_BLOCK[block_key][0][0]
+        self.navigate(target)
+
     def navigate(self, key: str, **kwargs) -> None:
+        block = SCREEN_BLOCK.get(key)
+        if block is not None and block != self.active_block:
+            self.active_block = block
+            self.block_buttons[block].setChecked(True)
+            for bk, panel in self.nav_panels.items():
+                panel.setVisible(bk == block)
         for k, btn in self._nav_buttons.items():
             btn.setChecked(k == key)
         widget = self.screens[key]
@@ -173,6 +257,32 @@ class MainWindow(QMainWindow):
         else:
             self.conn_label.setText("●  Нет подключения")
             self.conn_label.setStyleSheet("font-size: 12px; color: #c98a9a; padding: 4px;")
+
+        bots = db.list_bots()
+        new_leads = len(db.list_leads(status="new"))
+        bad_bots = len([b for b in bots if b["status"] == "error"])
+
+        self._set_badge("chats", str(len(chats)) if chats else "")
+        self._set_badge("collect", "●" if loading else "", accent=True)
+        self._set_badge("bots", str(len(bots)) if bots else "")
+        self._set_badge("leads", str(new_leads) if new_leads else "")
+        self._set_badge(
+            "collect_block", "●" if loading else "", accent=True, button=self.block_buttons["collect"],
+            base_label="Сбор",
+        )
+        bots_badge = str(new_leads) if new_leads else ("!" if bad_bots else "")
+        self._set_badge(
+            "bots_block", bots_badge, accent=not bad_bots, button=self.block_buttons["bots"],
+            base_label="Боты",
+        )
+
+    def _set_badge(self, key: str, badge: str, accent: bool = False,
+                    button: QPushButton | None = None, base_label: str | None = None) -> None:
+        btn = button or self._nav_buttons.get(key)
+        if btn is None:
+            return
+        label = base_label if base_label is not None else self._nav_labels.get(key, "")
+        btn.setText(f"{label}   {badge}" if badge else label)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         event.accept()

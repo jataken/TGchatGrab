@@ -3,12 +3,12 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
-from ..widgets import button, card, h1, muted
+from ..widgets import button, card, chip, h1, muted
 
 _MEDIA_BADGE_LABELS = {
     "photo": "▣ фото приложено", "video": "▣ видео приложено",
@@ -115,7 +115,7 @@ class BrowseScreen(QWidget):
         top = QWidget()
         top_lay = QVBoxLayout(top)
         top_lay.setContentsMargins(40, 28, 40, 16)
-        top_lay.addWidget(h1("Поиск в собранном"))
+        top_lay.addWidget(h1("Собранное"))
         self.hint_label = muted("")
         top_lay.addWidget(self.hint_label)
 
@@ -138,13 +138,26 @@ class BrowseScreen(QWidget):
         top_lay.addLayout(filters_row)
 
         chip_row = QHBoxLayout()
-        self.chat_picker = QComboBox()
-        self.chat_picker.addItem("Все чаты", 0)
-        chip_row.addWidget(self.chat_picker)
+        chip_scroll = QScrollArea()
+        chip_scroll.setWidgetResizable(True)
+        chip_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        chip_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        chip_scroll.setFixedHeight(40)
+        chip_host = QWidget()
+        self.chip_lay = QHBoxLayout(chip_host)
+        self.chip_lay.setContentsMargins(0, 0, 0, 0)
+        self.chip_lay.setSpacing(6)
+        self.chip_lay.addStretch(1)
+        chip_scroll.setWidget(chip_host)
+        chip_row.addWidget(chip_scroll, 1)
+        self.chat_chip_group = QButtonGroup(self)
+        self.chat_chip_group.setExclusive(True)
+        self.chat_chips: dict[int, QPushButton] = {}
+        self.selected_chat_id = 0
+
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Сначала новые", "Сначала старые"])
         chip_row.addWidget(self.sort_combo)
-        chip_row.addStretch(1)
         top_lay.addLayout(chip_row)
 
         status_row = QHBoxLayout()
@@ -184,7 +197,6 @@ class BrowseScreen(QWidget):
             w.textChanged.connect(self._debounced_search)
         for cb in (self.photos_only_cb, self.forward_only_cb, self.reply_only_cb):
             cb.toggled.connect(self._on_filter_changed)
-        self.chat_picker.currentIndexChanged.connect(self._on_filter_changed)
         self.sort_combo.currentIndexChanged.connect(self._on_sort_change)
 
         self._debounce = QTimer(self)
@@ -193,20 +205,51 @@ class BrowseScreen(QWidget):
 
         self._last_rows = []
 
-    def on_show(self, **kwargs) -> None:
+    def on_show(self, chat_id: int | None = None, **kwargs) -> None:
         self._populate_chat_picker()
+        if chat_id is not None:
+            self._select_chat_chip(chat_id)
         self._run_search()
 
+    def _select_chat_chip(self, chat_id: int) -> None:
+        chip_btn = self.chat_chips.get(chat_id)
+        if chip_btn is not None:
+            chip_btn.setChecked(True)
+        self.selected_chat_id = chat_id if chip_btn is not None else 0
+
     def _populate_chat_picker(self) -> None:
-        current = self.chat_picker.currentData()
-        self.chat_picker.blockSignals(True)
-        self.chat_picker.clear()
-        self.chat_picker.addItem("Все чаты", 0)
-        for chat in self.ctx.db.list_chats():
-            self.chat_picker.addItem(chat["title"], chat["chat_id"])
-        idx = self.chat_picker.findData(current) if current else 0
-        self.chat_picker.setCurrentIndex(max(0, idx))
-        self.chat_picker.blockSignals(False)
+        current = self.selected_chat_id
+        for btn in self.chat_chips.values():
+            self.chat_chip_group.removeButton(btn)
+            btn.setParent(None)
+            btn.deleteLater()
+        self.chat_chips.clear()
+
+        all_chip = chip("Все чаты")
+        all_chip.setChecked(current == 0)
+        all_chip.clicked.connect(lambda: self._pick_chat_chip(0))
+        self.chat_chip_group.addButton(all_chip)
+        self.chip_lay.insertWidget(0, all_chip)
+        self.chat_chips[0] = all_chip
+
+        for i, chat in enumerate(self.ctx.db.list_chats(), start=1):
+            btn = chip(chat["title"])
+            btn.setChecked(current == chat["chat_id"])
+            btn.clicked.connect(lambda _c, cid=chat["chat_id"]: self._pick_chat_chip(cid))
+            self.chat_chip_group.addButton(btn)
+            self.chip_lay.insertWidget(i, btn)
+            self.chat_chips[chat["chat_id"]] = btn
+
+        if current not in self.chat_chips:
+            self.selected_chat_id = 0
+            self.chat_chips[0].setChecked(True)
+
+    def _pick_chat_chip(self, chat_id: int) -> None:
+        self.selected_chat_id = chat_id
+        chip_btn = self.chat_chips.get(chat_id)
+        if chip_btn is not None:
+            chip_btn.setChecked(True)
+        self._on_filter_changed()
 
     def _debounced_search(self) -> None:
         self.page = 0
@@ -227,8 +270,7 @@ class BrowseScreen(QWidget):
         self.photos_only_cb.setChecked(False)
         self.forward_only_cb.setChecked(False)
         self.reply_only_cb.setChecked(False)
-        self.chat_picker.setCurrentIndex(0)
-        self._run_search()
+        self._pick_chat_chip(0)
 
     def _on_sort_change(self, _index: int) -> None:
         self.sort_desc = self.sort_combo.currentIndex() == 0
@@ -249,7 +291,7 @@ class BrowseScreen(QWidget):
         return {
             "query": self.query_input.text(),
             "author": self.author_input.text(),
-            "chat_id": self.chat_picker.currentData() or None,
+            "chat_id": self.selected_chat_id or None,
             "photos_only": self.photos_only_cb.isChecked(),
             "forwards_only": self.forward_only_cb.isChecked(),
             "replies_only": self.reply_only_cb.isChecked(),

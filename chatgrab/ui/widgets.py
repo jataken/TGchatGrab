@@ -38,6 +38,14 @@ def button(text: str, cls: str = "secondary") -> QPushButton:
     return btn
 
 
+def chip(text: str, checkable: bool = True) -> QPushButton:
+    """A small pill toggle — used for the chat filter row on Собранное and
+    similar single-choice-of-many filters."""
+    btn = button(text, "chip")
+    btn.setCheckable(checkable)
+    return btn
+
+
 def card() -> QFrame:
     frame = QFrame()
     frame.setProperty("class", "card")
@@ -140,42 +148,6 @@ class ToggleSwitch(QWidget):
         p.setBrush(knob_color)
         p.setPen(Qt.NoPen)
         p.drawEllipse(knob_x, 2, 15, 15)
-
-
-class ActivityBars(QWidget):
-    """Small 16-bar activity chart, painted directly (matches the mockup's
-    per-tile bar chart on the Обзор screen)."""
-
-    def __init__(self, values: list[int] | None = None):
-        super().__init__()
-        self._values = values or []
-        self.setMinimumHeight(42)
-        self.setMinimumWidth(140)
-
-    def set_values(self, values: list[int]) -> None:
-        self._values = values
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        values = self._values or [0]
-        vmax = max(values) or 1
-        w = self.width()
-        h = self.height()
-        n = len(values)
-        gap = 3
-        bar_w = max(2.0, (w - gap * (n - 1)) / n)
-        for i, v in enumerate(values):
-            ratio = v / vmax if vmax else 0
-            bar_h = max(3, ratio * (h - 4))
-            x = i * (bar_w + gap)
-            y = h - bar_h
-            color = QColor(theme.ACCENT_400) if i >= n - 3 else QColor(theme.ACCENT)
-            color.setAlpha(230 if i >= n - 3 else 150)
-            p.setBrush(color)
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(int(x), int(y), int(bar_w), int(bar_h), 2, 2)
 
 
 class KeyValue(QWidget):

@@ -205,7 +205,7 @@ class ChatsScreen(QWidget):
 
         header = QHBoxLayout()
         title_col = QVBoxLayout()
-        title_col.addWidget(h1("Отслеживаемые чаты"))
+        title_col.addWidget(h1("Источники"))
         self.summary_label = muted("")
         title_col.addWidget(self.summary_label)
         header.addLayout(title_col)
@@ -216,9 +216,9 @@ class ChatsScreen(QWidget):
         outer.addLayout(header)
         outer.addSpacing(16)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Чат", "Собрано сообщений", "Последнее сообщение", "Состояние", "Сбор"]
+            ["Чат", "Сообщений", "Медиа", "Последнее", "Состояние", "Сбор"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -288,18 +288,22 @@ class ChatsScreen(QWidget):
 
         self.table.setRowCount(len(chats))
         for row, chat in enumerate(chats):
-            title_item = QTableWidgetItem(f"{chat['title']}\n@{chat['username'] or '—'}")
+            depth = "вся история" if chat["depth_mode"] == "all" else f"с {chat['depth_from_date']}"
+            title_item = QTableWidgetItem(f"{chat['title']}\n@{chat['username'] or '—'} · {depth}")
             title_item.setData(Qt.UserRole, chat["chat_id"])
             self.table.setItem(row, 0, title_item)
 
             count = db.message_count(chat["chat_id"])
             self.table.setItem(row, 1, QTableWidgetItem(f"{count:,}".replace(",", " ") if count else "—"))
 
+            media = db.media_count(chat["chat_id"])
+            self.table.setItem(row, 2, QTableWidgetItem(f"{media:,}".replace(",", " ") if media else "—"))
+
             last = db.last_message_date(chat["chat_id"]) or "—"
-            self.table.setItem(row, 2, QTableWidgetItem(str(last)[:19].replace("T", " ")))
+            self.table.setItem(row, 3, QTableWidgetItem(str(last)[:19].replace("T", " ")))
 
             pill = StatusPill(chat["status"])
-            self.table.setCellWidget(row, 3, pill)
+            self.table.setCellWidget(row, 4, pill)
 
             actions = QWidget()
             a_lay = QHBoxLayout(actions)
@@ -317,7 +321,7 @@ class ChatsScreen(QWidget):
             remove_btn.clicked.connect(lambda _, cid=chat["chat_id"], t=chat["title"]: self._on_remove(cid, t))
             a_lay.addWidget(remove_btn)
             a_lay.addStretch(1)
-            self.table.setCellWidget(row, 4, actions)
+            self.table.setCellWidget(row, 5, actions)
 
             self.table.setRowHeight(row, 46)
 
