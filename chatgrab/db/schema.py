@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 _DDL_META = """
 CREATE TABLE IF NOT EXISTS app_meta (
@@ -294,6 +294,7 @@ CREATE TABLE IF NOT EXISTS bot_scenarios (
     bot_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     steps TEXT NOT NULL DEFAULT '[]',
+    kind TEXT NOT NULL DEFAULT 'linear',  -- linear | branching, см. bots/scenario_engine.py
     created_at TEXT NOT NULL,
     done_template_id INTEGER          -- confirmation sent once all steps are answered
 );
@@ -319,6 +320,7 @@ CREATE TABLE IF NOT EXISTS bot_scenario_sessions (
     scenario_id INTEGER NOT NULL,
     contact_telegram_id INTEGER NOT NULL,
     step_index INTEGER NOT NULL DEFAULT 0,
+    step_id TEXT,                             -- ветвящийся сценарий ходит по id, не по номеру
     answers TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'active',    -- active | done | abandoned
     started_at TEXT NOT NULL,
@@ -416,6 +418,10 @@ def _migrate_scenario_sessions_unique(conn: sqlite3.Connection) -> None:
     Detected from the stored DDL rather than a version number, so a
     database that skipped versions (or was created by a build in between)
     is still repaired exactly once.
+
+    ВНИМАНИЕ: список колонок здесь зафиксирован. Всё, что добавляется в эту
+    таблицу позже, должно добавляться в migrate() ПОСЛЕ вызова этой
+    функции — иначе перестройка молча выбросит новую колонку.
     """
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bot_scenario_sessions'"
@@ -507,9 +513,23 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     if not _column_exists(conn, "bots", "account_id"):
         conn.execute("ALTER TABLE bots ADD COLUMN account_id INTEGER;")
 
+    # Ветвление рядом с линейным, а не вместо него: у пользователя
+    # планируются разные боты под разные задачи, и уже настроенный
+    # пошаговый сценарий должен продолжать работать как работал.
+    if not _column_exists(conn, "bot_scenarios", "kind"):
+        conn.execute("ALTER TABLE bot_scenarios ADD COLUMN kind TEXT NOT NULL DEFAULT 'linear';")
+
     # Must run before the bot indexes below: the partial unique index they
     # create belongs on the rebuilt table, not the old constrained one.
     _migrate_scenario_sessions_unique(conn)
+
+    # ПОСЛЕ перестройки таблицы выше, не до неё. Перестройка пересоздаёт
+    # bot_scenario_sessions по фиксированному списку колонок, поэтому
+    # колонка, добавленная раньше, тихо исчезала бы — база из v2 получала
+    # схему без step_id, и ветвящийся сценарий падал бы только у тех, кто
+    # обновился с очень старой версии.
+    if not _column_exists(conn, "bot_scenario_sessions", "step_id"):
+        conn.execute("ALTER TABLE bot_scenario_sessions ADD COLUMN step_id TEXT;")
 
     for ddl in _DDL_INDEXES:
         conn.execute(ddl)

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 from ...context import AppContext
 from ...widgets import button, card, chip, label, muted, plural as _plural
 from ....bots.rules_engine import RulesEngine
+from ....bots.scenario_engine import BRANCHING, END, LINEAR, format_question, options_of
 
 _VALIDATIONS = [("text", "Любой"), ("phone", "Телефон"), ("number", "Число")]
 _VALIDATION_LABELS = dict(_VALIDATIONS)
@@ -21,8 +22,35 @@ _VALIDATION_HINTS = {
 }
 
 
+def _branch_summary(step: dict, steps: list[dict]) -> str:
+    """Куда ведёт шаг — словами, а не идентификаторами.
+
+    Автор сценария думает «после этого спросим про тираж», а не «s4».
+    Список шагов на экране должен показывать ровно это, иначе развилку
+    приходится держать в голове.
+    """
+    numbers = {s.get("id"): i + 1 for i, s in enumerate(steps)}
+
+    def where(target):
+        if target == END:
+            return "конец"
+        if target and target in numbers:
+            return f"шаг {numbers[target]}"
+        if target:
+            return "шаг удалён"
+        return None
+
+    options = options_of(step)
+    if options:
+        return " · ".join(
+            f"«{o['label']}» → {where(o.get('next')) or 'дальше'}" for o in options)
+    target = where(step.get("next"))
+    return f"дальше → {target}" if target else ""
+
+
 class StepRow(QFrame):
-    def __init__(self, index: int, step: dict, selected: bool, on_select, on_move, can_move_down: bool):
+    def __init__(self, index: int, step: dict, selected: bool, on_select, on_move, can_move_down: bool,
+                 branch_text: str = ""):
         super().__init__()
         self.index = index
         color = "rgba(145,132,217,46)" if selected else "rgba(233,233,237,8)"
@@ -60,6 +88,11 @@ class StepRow(QFrame):
         )
         detail.setStyleSheet("color: #6c6c78; font-size: 11.5px;")
         text_col.addWidget(detail)
+        if branch_text:
+            branch = label(branch_text)
+            branch.setWordWrap(True)
+            branch.setStyleSheet("color: #b5abfc; font-size: 11.5px;")
+            text_col.addWidget(branch)
         lay.addLayout(text_col, 1)
 
         if not q.strip():
@@ -87,12 +120,18 @@ class StepRow(QFrame):
 
 
 class ScenarioScreen(QWidget):
-    """Сценарий — a real linear step editor (question → field → validation)
-    with a side properties panel and an inline test-run panel, replacing
-    the old «Сценарии» + «Тест» tabs. The engine only executes steps in
-    order — no branching canvas is offered here, only the note the
-    redesign asked for: the branching canvas is a stated future, not a
-    working feature, so it isn't mocked up as one."""
+    """Редактор сценария: вопрос → поле → проверка, боковая панель
+    свойств, тестовый прогон.
+
+    Вид сценария («Пошаговый» / «С развилками») — свойство самого
+    сценария, а не режим экрана. Так у одного бота могут одновременно
+    жить простая анкета и разговор с развилками, и переключение вида не
+    переписывает уже настроенное: переходы сохраняются в тех же шагах и
+    просто не читаются, пока сценарий пошаговый.
+
+    Развилка редактируется списком, а не полотном со стрелками: путь
+    контакта здесь всегда один сверху вниз, и список показывает его
+    ровно так же, как контакт его увидит."""
 
     def __init__(self, ctx: AppContext, navigate):
         super().__init__()
@@ -140,12 +179,29 @@ class ScenarioScreen(QWidget):
         outer.addLayout(top_row)
         outer.addSpacing(6)
 
+        # Вид сценария — свойство сценария, а не приложения: под разные
+        # задачи планируются разные боты, и пошаговая анкета должна
+        # оставаться пошаговой, когда рядом появилась ветвящаяся.
+        kind_row = QHBoxLayout()
+        kind_row.setSpacing(8)
+        kind_row.addWidget(muted("Вид"))
+        self.kind_group = QButtonGroup(self)
+        self.kind_group.setExclusive(True)
+        self.kind_buttons: dict[str, object] = {}
+        for key, lbl in ((LINEAR, "Пошаговый"), (BRANCHING, "С развилками")):
+            btn = chip(lbl)
+            btn.clicked.connect(lambda _c, k=key: self._on_kind_pick(k))
+            self.kind_group.addButton(btn)
+            kind_row.addWidget(btn)
+            self.kind_buttons[key] = btn
+        kind_row.addStretch(1)
+        outer.addLayout(kind_row)
+        outer.addSpacing(6)
+
         note_row = QHBoxLayout()
         note_row.setSpacing(14)
-        note_label = muted(
-            "Шаги идут строго по порядку, без развилок — так это работает в движке. "
-            "Когда контакт ответит на последний вопрос, ответы станут заявкой и уйдут менеджеру."
-        )
+        self.note_label = muted("")
+        note_label = self.note_label
         note_label.setWordWrap(True)
         note_row.addWidget(note_label, 1)
         self.test_btn = button("Прогнать сценарий", "secondary")
@@ -219,9 +275,29 @@ class ScenarioScreen(QWidget):
 
         body.addLayout(left_col, 60)
 
+        # Панель прокручивается: число вариантов задаёт пользователь, и на
+        # пятом переход последнего варианта просто обрезался снизу.
         self.props_panel = card()
-        props_lay = QVBoxLayout(self.props_panel)
-        props_lay.setContentsMargins(16, 16, 16, 16)
+        panel_lay = QVBoxLayout(self.props_panel)
+        panel_lay.setContentsMargins(0, 0, 0, 0)
+        props_scroll = QScrollArea()
+        props_scroll.setWidgetResizable(True)
+        props_scroll.setFrameShape(QFrame.NoFrame)
+        props_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Селекторы обязательны: таблица стилей без них применяется и ко
+        # всем детям, а «прозрачный фон» у полей ввода — это поля без фона.
+        props_scroll.setObjectName("propsScroll")
+        props_scroll.setStyleSheet(
+            "QScrollArea#propsScroll { background: transparent; border: none; }")
+        props_inner = QWidget()
+        props_inner.setObjectName("propsInner")
+        props_inner.setStyleSheet("QWidget#propsInner { background: transparent; }")
+        props_scroll.setWidget(props_inner)
+        panel_lay.addWidget(props_scroll)
+        props_lay = QVBoxLayout(props_inner)
+        # Правый отступ побольше: полоса прокрутки забирает ширину изнутри,
+        # и без него она наезжала на подписи.
+        props_lay.setContentsMargins(16, 16, 22, 16)
         props_lay.setSpacing(12)
         self.props_kicker = label("", "kicker")
         props_lay.addWidget(self.props_kicker)
@@ -233,7 +309,13 @@ class ScenarioScreen(QWidget):
         self.field_input = QLineEdit()
         self.field_input.editingFinished.connect(self._on_props_changed)
         props_lay.addWidget(self.field_input)
-        props_lay.addWidget(muted("Проверка ответа"))
+        # Проверка ответа теряет смысл, когда у шага есть варианты:
+        # выбирать можно только из предложенного.
+        self.validation_box = QWidget()
+        validation_lay = QVBoxLayout(self.validation_box)
+        validation_lay.setContentsMargins(0, 0, 0, 0)
+        validation_lay.setSpacing(6)
+        validation_lay.addWidget(muted("Проверка ответа"))
         val_row = QHBoxLayout()
         self.validation_group = QButtonGroup(self)
         self.validation_group.setExclusive(True)
@@ -244,10 +326,35 @@ class ScenarioScreen(QWidget):
             self.validation_group.addButton(btn)
             val_row.addWidget(btn)
             self.validation_buttons[key] = btn
-        props_lay.addLayout(val_row)
+        validation_lay.addLayout(val_row)
         self.validation_hint = muted("")
         self.validation_hint.setWordWrap(True)
-        props_lay.addWidget(self.validation_hint)
+        validation_lay.addWidget(self.validation_hint)
+        props_lay.addWidget(self.validation_box)
+
+        # ---- развилка ------------------------------------------------
+        self.branch_box = QWidget()
+        branch_lay = QVBoxLayout(self.branch_box)
+        branch_lay.setContentsMargins(0, 0, 0, 0)
+        branch_lay.setSpacing(6)
+        branch_lay.addWidget(muted("Варианты ответа"))
+        self.options_lay = QVBoxLayout()
+        self.options_lay.setSpacing(10)
+        branch_lay.addLayout(self.options_lay)
+        add_opt_btn = button("＋ Вариант", "ghost")
+        add_opt_btn.clicked.connect(self._on_add_option)
+        branch_lay.addWidget(add_opt_btn)
+        self.branch_hint = muted("")
+        self.branch_hint.setWordWrap(True)
+        branch_lay.addWidget(self.branch_hint)
+        next_row = QHBoxLayout()
+        next_row.addWidget(muted("Дальше"))
+        self.next_combo = QComboBox()
+        self.next_combo.currentIndexChanged.connect(self._on_next_changed)
+        next_row.addWidget(self.next_combo, 1)
+        branch_lay.addLayout(next_row)
+        props_lay.addWidget(self.branch_box)
+        self._option_rows: list[QWidget] = []
 
         props_lay.addSpacing(6)
         props_lay.addWidget(muted("Так это увидит контакт:"))
@@ -258,10 +365,16 @@ class ScenarioScreen(QWidget):
         )
         props_lay.addWidget(self.preview_bubble)
         props_lay.addStretch(1)
+        # Кнопка удаления — под прокруткой, а не внутри неё: это действие,
+        # а не свойство, и искать его прокруткой незачем.
         self.remove_step_btn = button("Удалить шаг", "danger")
         self.remove_step_btn.clicked.connect(self._on_remove_step)
-        props_lay.addWidget(self.remove_step_btn)
-        self.props_panel.setFixedWidth(320)
+        del_wrap = QWidget()
+        del_lay = QVBoxLayout(del_wrap)
+        del_lay.setContentsMargins(16, 0, 16, 14)
+        del_lay.addWidget(self.remove_step_btn)
+        panel_lay.addWidget(del_wrap)
+        self.props_panel.setFixedWidth(344)
         body.addWidget(self.props_panel, 0)
 
         self.empty_hint = muted("В этом сценарии пока нет вопросов — добавьте первый.")
@@ -312,6 +425,10 @@ class ScenarioScreen(QWidget):
             item = self.steps_lay.takeAt(0)
             w = item.widget()
             if w:
+                # setParent(None) до deleteLater: отложенное удаление
+                # случится, когда цикл событий до него дойдёт, а до тех
+                # пор старый шаг рисуется поверх нового.
+                w.setParent(None)
                 w.deleteLater()
 
         steps = self._steps()
@@ -320,12 +437,17 @@ class ScenarioScreen(QWidget):
         self.add_step_btn.setVisible(has_scenario)
         self.empty_hint.setVisible(has_scenario and not steps)
         self.props_panel.setVisible(has_scenario and bool(steps))
+        self._sync_kind()
         if not steps:
+            self._clear_options()
             return
 
+        branching = self._kind() == BRANCHING
         self.step_sel = max(0, min(self.step_sel, len(steps) - 1))
         for i, step in enumerate(steps):
-            row = StepRow(i, step, i == self.step_sel, self._select_step, self._move_step, i < len(steps) - 1)
+            row = StepRow(i, step, i == self.step_sel, self._select_step, self._move_step,
+                          i < len(steps) - 1,
+                          branch_text=_branch_summary(step, steps) if branching else "")
             self.steps_lay.insertWidget(i, row)
 
         self._sync_props()
@@ -399,6 +521,180 @@ class ScenarioScreen(QWidget):
         )
         self.saved_label.setText("сохранено только что")
 
+    # ---- вид сценария: пошаговый / с развилками -----------------------
+    def _kind(self) -> str:
+        if self.selected_scenario_id is None:
+            return LINEAR
+        scenario = self.ctx.db.get_scenario(self.selected_scenario_id)
+        if scenario is None:
+            return LINEAR
+        return (scenario["kind"] if "kind" in scenario.keys() else None) or LINEAR
+
+    def _sync_kind(self) -> None:
+        kind = self._kind()
+        btn = self.kind_buttons.get(kind)
+        if btn is not None:
+            btn.setChecked(True)
+        if kind == BRANCHING:
+            self.note_label.setText(
+                "У шага могут быть варианты ответа, и каждый ведёт в свой шаг. "
+                "Контакт отвечает номером варианта или его словами — кнопок у "
+                "обычного аккаунта нет. Шаг без вариантов идёт туда, куда указано "
+                "в «Дальше», иначе просто к следующему по списку."
+            )
+        else:
+            self.note_label.setText(
+                "Шаги идут строго по порядку, без развилок. Когда контакт ответит "
+                "на последний вопрос, ответы станут заявкой и уйдут менеджеру."
+            )
+        for key, btn in self.kind_buttons.items():
+            btn.setEnabled(self.selected_scenario_id is not None)
+
+    def _on_kind_pick(self, kind: str) -> None:
+        if self.selected_scenario_id is None or kind == self._kind():
+            self._sync_kind()
+            return
+        if kind == LINEAR:
+            branching_steps = [s for s in self._steps() if options_of(s) or s.get("next")]
+            if branching_steps and QMessageBox.question(
+                self, "Сделать пошаговым",
+                f"В {len(branching_steps)} " + _plural(branching_steps and len(branching_steps),
+                                                        "шаге", "шагах", "шагах")
+                + " заданы развилки. Пошаговый сценарий пойдёт строго по порядку и "
+                "переходы учитывать не будет — сами они сохранятся, так что "
+                "вернуть развилки можно этой же кнопкой. Продолжить?"
+            ) != QMessageBox.Yes:
+                self._sync_kind()
+                return
+        self.ctx.db.update_scenario(self.selected_scenario_id, kind=kind)
+        self.saved_label.setText("сохранено только что")
+        self._reload_steps()
+
+    # ---- развилка выбранного шага -------------------------------------
+    def _targets(self, steps: list[dict], exclude_id=None) -> list[tuple[str, object]]:
+        out: list[tuple[str, object]] = [("следующий по списку", None)]
+        for i, step in enumerate(steps):
+            if step.get("id") == exclude_id:
+                continue
+            title = (step.get("question") or "").strip() or f"шаг {i + 1}"
+            out.append((f"{i + 1}. {title[:34]}", step.get("id")))
+        out.append(("завершить разговор", END))
+        return out
+
+    def _clear_options(self) -> None:
+        for row in self._option_rows:
+            row.setParent(None)
+            row.deleteLater()
+        self._option_rows.clear()
+
+    def _sync_branch(self, steps: list[dict], step: dict) -> None:
+        branching = self._kind() == BRANCHING
+        self.branch_box.setVisible(branching)
+        options = options_of(step)
+        self.validation_box.setVisible(not (branching and options))
+        if not branching:
+            return
+
+        self._clear_options()
+        targets = self._targets(steps, exclude_id=step.get("id"))
+        for i, option in enumerate(step.get("options") or []):
+            # Подпись и переход — двумя строками, а не в одну: панель узкая,
+            # и в одной строке от подписи оставалось три буквы.
+            row = QWidget()
+            rl = QVBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(4)
+            top = QHBoxLayout()
+            top.setContentsMargins(0, 0, 0, 0)
+            top.setSpacing(4)
+            label_input = QLineEdit(str(option.get("label", "")))
+            label_input.setPlaceholderText("что ответит контакт")
+            label_input.editingFinished.connect(
+                lambda idx=i: self._on_option_label_changed(idx))
+            top.addWidget(label_input, 1)
+            del_btn = button("×", "ghost")
+            del_btn.setFixedWidth(26)
+            del_btn.clicked.connect(lambda _c, n=i: self._on_remove_option(n))
+            top.addWidget(del_btn)
+            rl.addLayout(top)
+            bottom = QHBoxLayout()
+            bottom.setContentsMargins(12, 0, 0, 0)
+            bottom.setSpacing(4)
+            bottom.addWidget(muted("→"))
+            combo = QComboBox()
+            for text, data in targets:
+                combo.addItem(text, data)
+            idx = combo.findData(option.get("next"))
+            combo.setCurrentIndex(max(0, idx))
+            combo.currentIndexChanged.connect(
+                lambda _i, n=i: self._on_option_next_changed(n))
+            bottom.addWidget(combo, 1)
+            rl.addLayout(bottom)
+            self.options_lay.addWidget(row)
+            self._option_rows.append(row)
+            row._label_input = label_input
+            row._combo = combo
+
+        self.branch_hint.setText(
+            "Без вариантов контакт отвечает своими словами."
+            if not options else
+            "Ответ засчитывается по номеру варианта или по его словам."
+        )
+        self.next_combo.blockSignals(True)
+        self.next_combo.clear()
+        for text, data in targets:
+            self.next_combo.addItem(text, data)
+        idx = self.next_combo.findData(step.get("next"))
+        self.next_combo.setCurrentIndex(max(0, idx))
+        self.next_combo.blockSignals(False)
+        # «Дальше» — это про шаг без вариантов: когда варианты есть, куда
+        # идти, решает выбранный вариант.
+        self.next_combo.setEnabled(not options)
+
+    def _on_add_option(self) -> None:
+        steps = self._steps()
+        if not steps:
+            return
+        step = steps[self.step_sel]
+        step.setdefault("options", []).append({"label": "", "next": None})
+        self._save_steps(steps)
+
+    def _on_remove_option(self, index: int) -> None:
+        steps = self._steps()
+        if not steps:
+            return
+        options = steps[self.step_sel].get("options") or []
+        if 0 <= index < len(options):
+            del options[index]
+        self._save_steps(steps)
+
+    def _on_option_label_changed(self, index: int) -> None:
+        steps = self._steps()
+        if not steps or index >= len(self._option_rows):
+            return
+        options = steps[self.step_sel].get("options") or []
+        if index >= len(options):
+            return
+        options[index]["label"] = self._option_rows[index]._label_input.text().strip()
+        self._save_steps(steps)
+
+    def _on_option_next_changed(self, index: int) -> None:
+        steps = self._steps()
+        if not steps or index >= len(self._option_rows):
+            return
+        options = steps[self.step_sel].get("options") or []
+        if index >= len(options):
+            return
+        options[index]["next"] = self._option_rows[index]._combo.currentData()
+        self._save_steps(steps)
+
+    def _on_next_changed(self, _index: int) -> None:
+        steps = self._steps()
+        if not steps:
+            return
+        steps[self.step_sel]["next"] = self.next_combo.currentData()
+        self._save_steps(steps)
+
     def _select_step(self, index: int) -> None:
         self.step_sel = index
         self._reload_steps()
@@ -429,7 +725,12 @@ class ScenarioScreen(QWidget):
         if btn is not None:
             btn.setChecked(True)
         self.validation_hint.setText(_VALIDATION_HINTS.get(validation, ""))
-        self.preview_bubble.setText(step.get("question", "") or "(вопрос пока пустой)")
+        self._sync_branch(steps, step)
+        # Предпросмотр показывает то же, что уйдёт контакту, — вместе с
+        # пронумерованными вариантами: без номеров развилка выглядит как
+        # вопрос без ответа.
+        preview = format_question(step) if self._kind() == BRANCHING else step.get("question", "")
+        self.preview_bubble.setText(preview or "(вопрос пока пустой)")
 
     def _on_props_changed(self) -> None:
         steps = self._steps()

@@ -64,6 +64,30 @@ try:
 except sqlite3.IntegrityError as e:
     print("NEW: second ACTIVE REJECTED  ->", e)
 
+# колонки, добавленные после v2, должны появиться на старой базе
+def columns(table):
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+added = {
+    "chats": {"account_id"},
+    "bots": {"account_id", "settings"},
+    "messages": {"media_path", "text_hash"},
+    "bot_scenarios": {"kind", "done_template_id"},
+    "bot_scenario_sessions": {"step_id"},
+}
+for table, wanted in added.items():
+    missing = wanted - columns(table)
+    print(f"{table}: {sorted(wanted)} -> {'ok' if not missing else 'НЕТ ' + str(missing)}")
+    assert not missing, (table, missing)
+
+# уже настроенный сценарий обязан остаться пошаговым: ветвление добавлено
+# рядом, а не вместо
+conn.execute("INSERT INTO bot_scenarios(bot_id,name,steps,created_at) VALUES (1,'Старый','[]','2026-08-01')")
+conn.commit()
+kind = conn.execute("SELECT kind FROM bot_scenarios ORDER BY id DESC LIMIT 1").fetchone()[0]
+print("вид сценария по умолчанию:", kind)
+assert kind == "linear", kind
+
 # migrate() must be safe to run again
 schema.migrate(conn)
 print("re-migrate OK, rows =", conn.execute("SELECT count(*) FROM bot_scenario_sessions").fetchone()[0])

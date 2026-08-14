@@ -1184,7 +1184,8 @@ class Database:
             (bot_id, contact_telegram_id),
         )
 
-    def start_scenario_session(self, bot_id: int, scenario_id: int, contact_telegram_id: int) -> int:
+    def start_scenario_session(self, bot_id: int, scenario_id: int, contact_telegram_id: int,
+                                step_id: str | None = None) -> int:
         with self._lock:
             now = now_iso()
             self._conn.execute(
@@ -1194,9 +1195,9 @@ class Database:
             )
             cur = self._conn.execute(
                 """INSERT INTO bot_scenario_sessions(bot_id, scenario_id, contact_telegram_id,
-                       step_index, answers, status, started_at, updated_at)
-                   VALUES (?, ?, ?, 0, '{}', 'active', ?, ?)""",
-                (bot_id, scenario_id, contact_telegram_id, now, now),
+                       step_index, step_id, answers, status, started_at, updated_at)
+                   VALUES (?, ?, ?, 0, ?, '{}', 'active', ?, ?)""",
+                (bot_id, scenario_id, contact_telegram_id, step_id, now, now),
             )
             self._conn.commit()
             return cur.lastrowid
