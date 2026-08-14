@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -40,6 +40,24 @@ class AddChatDialog(QDialog):
         self.depth_date.setEnabled(False)
         self.depth_from.toggled.connect(self.depth_date.setEnabled)
         lay.addWidget(self.depth_date)
+
+        # Выбор аккаунта показывается только когда их больше одного —
+        # иначе это лишний вопрос там, где ответ всегда один.
+        self.account_combo = None
+        accounts = self.ctx.db.list_accounts()
+        if len(accounts) > 1:
+            acc_row = QHBoxLayout()
+            acc_row.addWidget(QLabel("Собирать аккаунтом"))
+            self.account_combo = QComboBox()
+            for acc in accounts:
+                suffix = " · основной" if acc["is_default"] else ""
+                self.account_combo.addItem(acc["name"] + suffix, acc["id"])
+            acc_row.addWidget(self.account_combo, 1)
+            lay.addLayout(acc_row)
+            # Список диалогов принадлежит аккаунту: показывать чаты одного
+            # номера, а собирать другим — верный способ добавить чат, в
+            # котором выбранный аккаунт не состоит.
+            self.account_combo.currentIndexChanged.connect(lambda _i: self._reload_dialogs())
 
         picker_row = QHBoxLayout()
         picker_row.addWidget(QLabel("Или выберите из своих чатов"))
@@ -87,9 +105,13 @@ class AddChatDialog(QDialog):
         self.dialogs_status.setText("Загружаю список ваших чатов…")
         self.dialogs_status.setStyleSheet("color: #9a9aa3; font-size: 12px;")
         self.refresh_dialogs_btn.setEnabled(False)
+        account_id = self.account_combo.currentData() if self.account_combo else None
+        service = self.ctx.tg
+        if account_id is not None and self.ctx.accounts is not None:
+            service = self.ctx.accounts.service_for(account_id)
 
         async def go():
-            return await self.ctx.tg.list_dialogs()
+            return await service.list_dialogs()
 
         def on_error(e):
             self.refresh_dialogs_btn.setEnabled(True)
@@ -140,14 +162,18 @@ class AddChatDialog(QDialog):
         depth_date = self.depth_date.text().strip() or None if depth_mode == "from_date" else None
         self.confirm_btn.setEnabled(False)
 
+        account_id = self.account_combo.currentData() if self.account_combo else None
+
         async def go():
             if self.chosen_dialog is not None:
-                await self.ctx.collector.add_chat_from_dialog(self.chosen_dialog, depth_mode, depth_date)
+                await self.ctx.collector.add_chat_from_dialog(
+                    self.chosen_dialog, depth_mode, depth_date, account_id)
             else:
                 link = self.link_input.text().strip()
                 if not link:
                     raise ValueError("Укажите ссылку/имя чата или выберите чат из списка.")
-                await self.ctx.collector.add_chat_by_link(link, depth_mode, depth_date)
+                await self.ctx.collector.add_chat_by_link(
+                    link, depth_mode, depth_date, account_id)
 
         def on_error(e):
             self.confirm_btn.setEnabled(True)

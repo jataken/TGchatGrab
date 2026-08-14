@@ -15,6 +15,7 @@ from ..services.export_service import ExportService
 from ..services.ignore_service import IgnoreService
 from ..services.retention_service import RetentionService
 from ..services.watch_service import WatchService
+from ..telegram.accounts import AccountRegistry
 from ..telegram.collector import Collector
 from ..telegram.service import TelegramService
 from .bot_selection import BotSelection
@@ -35,5 +36,6 @@ class AppContext:
     watch_service: WatchService
     retention_service: RetentionService
     export_schedule_service: ExportScheduleService
+    accounts: AccountRegistry | None = None
     # Which bot the «Боты» block's screens are currently editing.
     bot_selection: BotSelection = field(default_factory=BotSelection)

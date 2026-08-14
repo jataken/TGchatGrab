@@ -81,6 +81,38 @@ class SecurityService:
     def enabled(self) -> bool:
         return self.config.master_password_enabled
 
+    # ---- which session files the vault covers ---------------------------
+    def _plain_sessions(self) -> list[Path]:
+        """Every plaintext session file, not just the primary one.
+
+        Дополнительные аккаунты (telegram/accounts.py) кладут свои файлы
+        рядом, в ту же папку. Шифровать только основной значило бы, что
+        включённый мастер-пароль защищает один вход из нескольких, — а
+        выглядело бы это как полная защита.
+        """
+        paths: list[Path] = []
+        primary = Path(self.config.session_path)
+        if primary.exists():
+            paths.append(primary)
+        session_dir = self.paths.session_dir
+        if session_dir.exists():
+            for file in sorted(session_dir.glob("*.session")):
+                if file != primary:
+                    paths.append(file)
+        return paths
+
+    def _encrypted_sessions(self) -> list[Path]:
+        out: list[Path] = []
+        primary_enc = _session_enc_path(Path(self.config.session_path))
+        if primary_enc.exists():
+            out.append(primary_enc)
+        session_dir = self.paths.session_dir
+        if session_dir.exists():
+            for file in sorted(session_dir.glob("*.session.enc")):
+                if file != primary_enc:
+                    out.append(file)
+        return out
+
     def _current_iterations(self) -> int:
         """The iteration count the *existing* vault was encrypted under —
         never PBKDF2_ITERATIONS directly, so a vault created before this
@@ -143,8 +175,7 @@ class SecurityService:
         salt = secrets.token_bytes(16)
         api_hash_enc = _encrypt(self.config.api_hash.encode("utf-8"), password, salt, PBKDF2_ITERATIONS)
 
-        session_path = Path(self.config.session_path)
-        if session_path.exists():
+        for session_path in self._plain_sessions():
             enc_path = _session_enc_path(session_path)
             enc_path.write_bytes(_encrypt(session_path.read_bytes(), password, salt, PBKDF2_ITERATIONS))
             session_path.unlink()
@@ -166,9 +197,10 @@ class SecurityService:
         iterations = self._current_iterations()
         api_hash = _decrypt(base64.b64decode(self.config.api_hash_enc), password, salt, iterations)
 
-        session_path = Path(self.config.session_path)
-        enc_path = _session_enc_path(session_path)
-        if not session_path.exists() and enc_path.exists():
+        for enc_path in self._encrypted_sessions():
+            session_path = enc_path.parent / enc_path.name[: -len(".enc")]
+            if session_path.exists():
+                continue
             session_path.parent.mkdir(parents=True, exist_ok=True)
             session_path.write_bytes(_decrypt(enc_path.read_bytes(), password, salt, iterations))
         # If a plaintext session already exists here, it's a leftover from
@@ -186,9 +218,8 @@ class SecurityService:
         vault was never unlocked this run."""
         if not self.enabled or self._password is None:
             return
-        session_path = Path(self.config.session_path)
-        if session_path.exists():
-            salt = base64.b64decode(self.config.kdf_salt)
+        salt = base64.b64decode(self.config.kdf_salt)
+        for session_path in self._plain_sessions():
             enc_path = _session_enc_path(session_path)
             enc_path.write_bytes(_encrypt(session_path.read_bytes(), self._password, salt, self._current_iterations()))
             session_path.unlink()
@@ -221,11 +252,9 @@ class SecurityService:
         unrecoverable — listeners are notified with no new key at all,
         rather than guess at silently discarding vs. keeping ciphertext
         that can never be opened again."""
-        session_path = Path(self.config.session_path)
-        enc_path = _session_enc_path(session_path)
-        if enc_path.exists():
+        for enc_path in self._encrypted_sessions():
             enc_path.unlink()
-        if session_path.exists():
+        for session_path in self._plain_sessions():
             session_path.unlink()
         old_salt_b64 = self.config.kdf_salt or None
         old_iterations = self._current_iterations() if old_salt_b64 else None

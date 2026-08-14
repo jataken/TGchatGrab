@@ -29,7 +29,11 @@ class UserbotRunner:
         self.rules = rules
         self._on_log = on_log        # (bot_id, text, tone) -> None
         self._on_status = on_status  # (bot_id, status, error) -> None
-        self._entity_cache: dict[int, object] = {}
+        # Реестр аккаунтов; None — приложение на одном аккаунте.
+        self.accounts = None
+        # Ключ — (клиент, собеседник): access_hash выдаётся аккаунту, а не
+        # приложению, поэтому entity одного аккаунта бесполезна другому.
+        self._entity_cache: dict[tuple[int, int | str], object] = {}
         # (bot_id, target) -> monotonic time of the last message to that
         # contact; enforces the per-contact cooldown.
         self._cooldowns: dict[tuple[int, int | str], float] = {}
@@ -42,6 +46,7 @@ class UserbotRunner:
         # both reading a stale timestamp and firing at once.
         self._send_locks: dict[int, asyncio.Lock] = {}
         self._registered = False
+        self._registered_clients: set[int] = set()
 
     def _send_lock(self, bot_id: int) -> asyncio.Lock:
         lock = self._send_locks.get(bot_id)
@@ -55,21 +60,63 @@ class UserbotRunner:
             self._on_log(bot_id, text, tone)
         return log
 
+    # ---- accounts -----------------------------------------------------
+    def service_for_bot(self, bot) -> TelegramService:
+        """Аккаунт, от имени которого пишет этот бот. Отдельный аккаунт под
+        рассылку — единственный способ не подставлять под ограничение тот
+        номер, которым собирается история: лимиты Telegram считаются на
+        аккаунт, и «не может писать» и «не может читать чаты» иначе
+        оказываются одним и тем же событием."""
+        if self.accounts is None or bot is None:
+            return self.tg
+        account_id = bot["account_id"] if "account_id" in bot.keys() else None
+        return self.accounts.service_for(account_id)
+
+    def client_for_bot(self, bot):
+        return self.service_for_bot(bot).client
+
     def register(self) -> None:
-        """Idempotent — safe to call whenever the client becomes available,
-        even if a userbot-type bot doesn't exist yet."""
-        if self._registered or not self.tg.client:
-            return
-        self.tg.client.add_event_handler(self._on_new_message, events.NewMessage(incoming=True))
-        self._registered = True
+        """Idempotent — safe to call whenever a client becomes available,
+        even if a userbot-type bot doesn't exist yet. Called again after
+        bots start, so an account that only just got its first bot is
+        picked up without a restart."""
+        for service in self._bot_services():
+            if service.client is None or id(service.client) in self._registered_clients:
+                continue
+            service.client.add_event_handler(self._on_new_message, events.NewMessage(incoming=True))
+            self._registered_clients.add(id(service.client))
+            self._registered = True
 
     def unregister(self) -> None:
-        if self._registered and self.tg.client:
-            self.tg.client.remove_event_handler(self._on_new_message)
+        for service in self._bot_services():
+            if service.client is not None and id(service.client) in self._registered_clients:
+                service.client.remove_event_handler(self._on_new_message)
+                self._registered_clients.discard(id(service.client))
         self._registered = False
 
-    def _running_bots(self) -> list:
-        return [b for b in self.db.list_bots() if b["type"] == "userbot" and b["status"] == "running"]
+    def _bot_services(self) -> list[TelegramService]:
+        if self.accounts is None:
+            return [self.tg]
+        seen: dict[int, TelegramService] = {id(self.tg): self.tg}
+        for bot in self.db.list_bots():
+            if bot["type"] != "userbot":
+                continue
+            service = self.service_for_bot(bot)
+            seen[id(service)] = service
+        return list(seen.values())
+
+    def _running_bots(self, client=None) -> list:
+        """Боты, которые должны увидеть это сообщение.
+
+        При нескольких аккаунтах сообщение приходит на конкретный клиент,
+        и бот с другого аккаунта его не видел — отдать ему событие значит
+        ответить с номера, который в переписке не участвовал.
+        """
+        bots = [b for b in self.db.list_bots()
+                if b["type"] == "userbot" and b["status"] == "running"]
+        if client is None or self.accounts is None:
+            return bots
+        return [b for b in bots if self.client_for_bot(b) is client]
 
     async def _on_new_message(self, event) -> None:
         # This handler stays registered on the shared Telethon client for
@@ -83,7 +130,7 @@ class UserbotRunner:
             _logger.warning("userbot runner failed to handle an incoming message", exc_info=True)
 
     async def _handle_new_message(self, event) -> None:
-        running = self._running_bots()
+        running = self._running_bots(getattr(event, "client", None))
         if not running:
             return
         try:
@@ -94,7 +141,8 @@ class UserbotRunner:
             return
 
         contact_telegram_id = sender.id
-        self._entity_cache[contact_telegram_id] = sender
+        client = getattr(event, "client", None)
+        self._entity_cache[(id(client), contact_telegram_id)] = sender
         username = getattr(sender, "username", None)
         text = event.raw_text or ""
         if event.is_private:
@@ -125,9 +173,14 @@ class UserbotRunner:
         async def send_dm(target: int | str, text: str) -> None:
             if not text:
                 return
-            limits = bot_settings.load(self.db.get_bot(bot_id))
+            bot = self.db.get_bot(bot_id)
+            limits = bot_settings.load(bot)
             key = (bot_id, target)
             log = self._log_for(bot_id)
+            client = self.client_for_bot(bot)
+            if client is None:
+                log("аккаунт бота не подключён — сообщение не отправлено", "warn")
+                return
 
             cooldown = limits["dm_cooldown_seconds"]
             last = self._cooldowns.get(key)
@@ -136,7 +189,7 @@ class UserbotRunner:
                     f"({cooldown:g} с)", "warn")
                 return
 
-            entity = await self._resolve(target)
+            entity = await self._resolve(target, client)
             if entity is None:
                 log(f"не удалось отправить сообщение {target} — аккаунт ещё не видел этого пользователя "
                     "(нужен @username или предыдущий контакт)", "warn")
@@ -155,7 +208,7 @@ class UserbotRunner:
                         await asyncio.sleep(wait)
                 for _ in range(3):
                     try:
-                        await self.tg.client.send_message(entity, text)
+                        await client.send_message(entity, text)
                         sent_at = time.monotonic()
                         self._cooldowns[key] = sent_at
                         self._last_send[bot_id] = sent_at
@@ -172,21 +225,25 @@ class UserbotRunner:
                 log(f"не удалось отправить сообщение {target} — Telegram продолжает просить подождать", "warn")
         return send_dm
 
-    async def _resolve(self, target: int | str):
+    async def _resolve(self, target: int | str, client=None):
+        client = client or self.tg.client
+        if client is None:
+            return None
         if isinstance(target, str) and target.startswith("@"):
             try:
-                return await self.tg.client.get_entity(target)
+                return await client.get_entity(target)
             except Exception:
                 return None
         try:
             tid = int(target)
         except (TypeError, ValueError):
             return None
-        if tid in self._entity_cache:
-            return self._entity_cache[tid]
+        key = (id(client), tid)
+        if key in self._entity_cache:
+            return self._entity_cache[key]
         try:
-            entity = await self.tg.client.get_entity(tid)
-            self._entity_cache[tid] = entity
+            entity = await client.get_entity(tid)
+            self._entity_cache[key] = entity
             return entity
         except Exception:
             return None

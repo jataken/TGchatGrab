@@ -30,6 +30,9 @@ class TelegramService:
     def __init__(self, config: AppConfig):
         self.config = config
         self.client: TelegramClient | None = None
+        # Второй и последующие аккаунты живут в тех же api_id/api_hash, но
+        # в своём файле сессии — см. telegram/accounts.py. Пусто = основной.
+        self.session_path_override: str | None = None
         self._phone: str | None = None
         self._phone_code_hash: str | None = None
         # Cached synchronously-readable flag — the sidebar and other
@@ -52,7 +55,7 @@ class TelegramService:
             ) from None
         api_hash = self.config.api_hash.strip()
         return TelegramClient(
-            self.config.session_path, api_id, api_hash,
+            self.session_path_override or self.config.session_path, api_id, api_hash,
             device_model="ChatGrab", app_version=__version__,
             system_version="Windows 10",
         )

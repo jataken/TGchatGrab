@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 _DDL_META = """
 CREATE TABLE IF NOT EXISTS app_meta (
@@ -171,6 +171,19 @@ CREATE TABLE IF NOT EXISTS export_schedule (
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_at TEXT,
     last_result TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_ACCOUNT = """
+CREATE TABLE IF NOT EXISTS account (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT,
+    session_file TEXT NOT NULL UNIQUE,   -- имя файла внутри sessions_dir
+    enabled INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
     created_at TEXT NOT NULL
 );
 """
@@ -364,6 +377,7 @@ _ALL_TABLE_DDL = [
     _DDL_META, _DDL_SETTINGS, _DDL_CHATS, _DDL_MESSAGES,
     _DDL_EXPORT_LOG, _DDL_EXPORT_PRESET, _DDL_IGNORE_RULE, _DDL_STAT_CACHE,
     _DDL_SEARCH_PRESET, _DDL_WATCH_RULE, _DDL_WATCH_HIT, _DDL_EXPORT_SCHEDULE,
+    _DDL_ACCOUNT,
     _DDL_BOTS, _DDL_BOT_TRIGGERS, _DDL_BOT_ACTIONS, _DDL_BOT_CONTACTS,
     _DDL_BOT_LEADS, _DDL_BOT_ACTIVITY_LOG, _DDL_BOT_TEMPLATES,
     _DDL_BOT_SCENARIOS, _DDL_BOT_SCENARIO_SESSIONS,
@@ -484,6 +498,14 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
         conn.execute("ALTER TABLE messages ADD COLUMN text_hash TEXT;")
         conn.commit()
         _backfill_text_hashes(conn, on_progress=on_fts_progress)
+
+    # Which account collects a chat, and which account a userbot speaks
+    # from. NULL means «основной» — that is what every existing row is,
+    # so a single-account database keeps behaving exactly as before.
+    if not _column_exists(conn, "chats", "account_id"):
+        conn.execute("ALTER TABLE chats ADD COLUMN account_id INTEGER;")
+    if not _column_exists(conn, "bots", "account_id"):
+        conn.execute("ALTER TABLE bots ADD COLUMN account_id INTEGER;")
 
     # Must run before the bot indexes below: the partial unique index they
     # create belongs on the rebuilt table, not the old constrained one.

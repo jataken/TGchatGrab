@@ -94,6 +94,19 @@ class BotManager(QObject):
         if self._running:
             return
         self._running = True
+        # Аккаунты юзерботов, отличные от основного, подключаются здесь —
+        # иначе бот, оставшийся в статусе «работает» с прошлого запуска,
+        # молча не слушал бы ничего до первого ручного «Запустить».
+        for bot in self.db.list_bots():
+            if bot["type"] != "userbot" or bot["status"] != "running":
+                continue
+            service = self.userbot_runner.service_for_bot(bot)
+            if service is self.tg:
+                continue
+            try:
+                await service.connect()
+            except Exception:
+                _logger.warning("не удалось подключить аккаунт бота %s", bot["id"], exc_info=True)
         try:
             self.userbot_runner.register()
         except Exception:
@@ -137,6 +150,23 @@ class BotManager(QObject):
             if not bot:
                 return
             if bot["type"] == "userbot":
+                service = self.userbot_runner.service_for_bot(bot)
+                try:
+                    # Свой аккаунт у бота может быть ещё не подключён:
+                    # реестр создаёт клиентов лениво.
+                    await service.connect()
+                    if not await service.is_authorized():
+                        self.db.set_bot_field(
+                            bot_id, status="error",
+                            last_error="Аккаунт бота не авторизован — войдите на экране «Аккаунты».")
+                        self._on_log(bot_id, "аккаунт бота не авторизован", "warn")
+                        self.bots_changed.emit()
+                        return
+                except Exception as e:
+                    self.db.set_bot_field(bot_id, status="error", last_error=str(e))
+                    self._on_log(bot_id, f"не удалось подключить аккаунт бота: {e}", "warn")
+                    self.bots_changed.emit()
+                    return
                 self.userbot_runner.register()
                 self.db.set_bot_field(bot_id, status="running", last_error=None)
                 self._on_log(bot_id, "правила юзербота включены", "ok")

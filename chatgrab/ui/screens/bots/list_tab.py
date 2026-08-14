@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox, QSpinBox,
+    QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
@@ -63,6 +63,28 @@ class SendLimitsDialog(QDialog):
         lay.addWidget(muted("Максимум напоминаний за один заход (остальные — в следующий)"))
         lay.addWidget(self.cap)
 
+        # Аккаунт, от имени которого пишет юзербот. Появляется только
+        # когда аккаунтов больше одного и только для юзерботов: у бота
+        # через Bot API свой собственный аккаунт по определению.
+        self.account_combo = None
+        accounts = ctx.db.list_accounts()
+        if bot and bot["type"] == "userbot" and len(accounts) > 1:
+            lay.addSpacing(8)
+            lay.addWidget(muted(
+                "Аккаунт, от имени которого бот пишет. Отдельный номер под рассылку "
+                "означает, что ограничение за отправку не заденет сбор чатов."))
+            self.account_combo = QComboBox()
+            for acc in accounts:
+                suffix = " · основной" if acc["is_default"] else ""
+                self.account_combo.addItem(acc["name"] + suffix, acc["id"])
+            current = bot["account_id"] if "account_id" in bot.keys() else None
+            if current is None:
+                default = ctx.db.default_account()
+                current = default["id"] if default else None
+            idx = self.account_combo.findData(current)
+            self.account_combo.setCurrentIndex(max(0, idx))
+            lay.addWidget(self.account_combo)
+
         self.estimate = muted("")
         self.estimate.setWordWrap(True)
         lay.addWidget(self.estimate)
@@ -96,6 +118,11 @@ class SendLimitsDialog(QDialog):
             "dm_cooldown_seconds": self.cooldown.value(),
             "max_reminders_per_tick": self.cap.value(),
         }))
+        if self.account_combo is not None:
+            self.ctx.db.set_bot_field(self.bot_id, account_id=self.account_combo.currentData())
+            QMessageBox.information(
+                self, "Аккаунт бота",
+                "Смена аккаунта вступит в силу после остановки и повторного запуска бота.")
         self.accept()
 
 

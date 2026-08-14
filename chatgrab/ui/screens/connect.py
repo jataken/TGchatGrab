@@ -4,12 +4,14 @@ import datetime as dt
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QScrollArea, QStackedLayout, QVBoxLayout, QWidget,
+    QHBoxLayout, QInputDialog, QLabel, QMessageBox, QScrollArea, QStackedLayout,
+    QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
 from ..util import fire
 from ..widgets import FieldRow, button, card, h1, label, muted
+from ...telegram.accounts import session_file_for
 
 
 class ConnectScreen(QWidget):
@@ -17,6 +19,9 @@ class ConnectScreen(QWidget):
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate
+        # Аккаунт, в который сейчас идёт вход. Для основного — None: тогда
+        # мастер работает ровно так же, как когда аккаунт был один.
+        self._target_account_id: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(40, 34, 40, 32)
@@ -39,14 +44,19 @@ class ConnectScreen(QWidget):
 
         self.stack = QStackedLayout()
         stack_widget = QWidget()
+        self._stack_widget = stack_widget
         stack_widget.setLayout(self.stack)
         outer.addWidget(stack_widget)
-        outer.addStretch(1)
 
         self._build_authed_page()
         self._build_phone_page()
         self._build_code_page()
         self._build_pwd_page()
+
+        self.accounts_card = self._build_accounts_card()
+        outer.addSpacing(14)
+        outer.addWidget(self.accounts_card)
+        outer.addStretch(1)
 
         # QStackedLayout only sizes its container to the *currently shown*
         # page's own size hint, not the tallest of all of them — combined
@@ -58,10 +68,22 @@ class ConnectScreen(QWidget):
         # front, so every page always gets enough room no matter which is
         # current.
         pages = (self.authed_page, self.phone_page, self.code_page, self.pwd_page)
-        tallest = max(p.sizeHint().height() for p in pages)
-        stack_widget.setMinimumHeight(tallest + 24)
+        self._tallest_page = max(p.sizeHint().height() for p in pages) + 24
+        stack_widget.setMinimumHeight(self._tallest_page)
 
-        self.stack.setCurrentWidget(self.phone_page)
+        self._show_page(self.phone_page)
+
+    def _show_page(self, page: QWidget) -> None:
+        """Список аккаунтов относится к вошедшему состоянию, а не к шагу
+        мастера — прячется вместе с ним, одним движением, чтобы порядок
+        вызовов не решал, видно его или нет."""
+        self.stack.setCurrentWidget(page)
+        self.accounts_card.setVisible(page is self.authed_page)
+        # Высота под самую высокую страницу нужна мастеру входа; на
+        # вошедшем экране она превратилась бы в пустую полосу между
+        # карточкой аккаунта и списком.
+        self._stack_widget.setMinimumHeight(
+            page.sizeHint().height() + 8 if page is self.authed_page else self._tallest_page)
 
     # ---- pages ---------------------------------------------------------
     def _build_authed_page(self) -> None:
@@ -101,6 +123,41 @@ class ConnectScreen(QWidget):
         lay.addWidget(note)
         lay.addStretch(1)
         self.stack.addWidget(self.authed_page)
+
+    def _build_accounts_card(self) -> QWidget:
+        """Живёт рядом со стеком, а не внутри него.
+
+        QStackedLayout выдаёт контейнеру высоту текущей страницы, и
+        карточка со списком переменной длины внутри него схлопывалась:
+        подсказка налезала на строки. Снаружи она просто занимает
+        столько, сколько ей нужно.
+        """
+        acc_card = card()
+        acc_card.setMaximumWidth(520)
+        acc_lay = QVBoxLayout(acc_card)
+        acc_lay.setContentsMargins(16, 14, 16, 14)
+        acc_lay.setSpacing(8)
+        acc_lay.addWidget(label("АККАУНТЫ", "kicker"))
+        acc_hint = muted(
+            "Ограничения Telegram считаются на аккаунт. Если рассылка идёт с "
+            "того же номера, что и сбор, ограничение на отправку отнимает и "
+            "доступ к чатам. Второй аккаунт разводит эти риски: чаты можно "
+            "оставить на одном номере, а ботов посадить на другой."
+        )
+        acc_hint.setWordWrap(True)
+        acc_lay.addWidget(acc_hint)
+
+        self.accounts_box = QVBoxLayout()
+        self.accounts_box.setSpacing(6)
+        acc_lay.addLayout(self.accounts_box)
+
+        add_row = QHBoxLayout()
+        self.add_account_btn = button("Добавить аккаунт", "secondary")
+        self.add_account_btn.clicked.connect(self._on_add_account)
+        add_row.addWidget(self.add_account_btn)
+        add_row.addStretch(1)
+        acc_lay.addLayout(add_row)
+        return acc_card
 
     def _build_phone_page(self) -> None:
         self.phone_page = QWidget()
@@ -184,33 +241,154 @@ class ConnectScreen(QWidget):
         lay.addStretch(1)
         self.stack.addWidget(self.pwd_page)
 
+    # ---- accounts -------------------------------------------------------
+    @property
+    def _target(self):
+        """Сервис, в который сейчас логинимся."""
+        if self._target_account_id is None or self.ctx.accounts is None:
+            return self.ctx.tg
+        return self.ctx.accounts.service_for(self._target_account_id)
+
+    def _refresh_accounts(self) -> None:
+        while self.accounts_box.count():
+            item = self.accounts_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                # setParent(None) до deleteLater: отложенное удаление
+                # выполняется только когда цикл событий до него дойдёт, и
+                # до тех пор старая строка продолжает рисоваться поверх
+                # новой.
+                w.setParent(None)
+                w.deleteLater()
+            elif item.layout() is not None:
+                _clear_layout(item.layout())
+
+        accounts = self.ctx.db.list_accounts()
+        self.add_account_btn.setEnabled(self.ctx.accounts is not None)
+        if not accounts:
+            self.accounts_box.addWidget(muted("Пока только этот аккаунт."))
+            return
+        for acc in accounts:
+            usage = self.ctx.db.account_usage(acc["id"])
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            title = acc["name"] + (" · основной" if acc["is_default"] else "")
+            name_col = QVBoxLayout()
+            name_col.setSpacing(1)
+            name_col.addWidget(QLabel(title))
+            detail = f"чатов: {usage['chats']} · ботов: {usage['bots']}"
+            if acc["last_error"]:
+                detail += f" · {acc['last_error']}"
+            name_col.addWidget(muted(detail))
+            rl.addLayout(name_col, 1)
+
+            if not acc["is_default"]:
+                main_btn = button("Сделать основным", "ghost")
+                main_btn.clicked.connect(lambda _c, a=acc["id"]: self._on_make_default(a))
+                rl.addWidget(main_btn)
+            login_btn = button("Войти", "ghost")
+            login_btn.clicked.connect(lambda _c, a=acc["id"], n=acc["name"]: self._on_login_as(a, n))
+            rl.addWidget(login_btn)
+            del_btn = button("Удалить", "ghost")
+            del_btn.clicked.connect(lambda _c, a=acc["id"]: self._on_delete_account(a))
+            rl.addWidget(del_btn)
+            self.accounts_box.addWidget(row)
+
+    def _on_add_account(self) -> None:
+        if self.ctx.accounts is None:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Новый аккаунт",
+            "Как назвать аккаунт? Имя нужно только вам — например «для ботов».")
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        taken = {a["session_file"] for a in self.ctx.db.list_accounts()}
+        account_id = self.ctx.db.add_account(name, session_file_for(name, taken))
+        self._start_login_for(account_id, name)
+
+    def _on_login_as(self, account_id: int, name: str) -> None:
+        self._start_login_for(account_id, name)
+
+    def _start_login_for(self, account_id: int, name: str) -> None:
+        default = self.ctx.db.default_account()
+        # Вход в основной аккаунт — это обычный мастер, без цели.
+        self._target_account_id = None if (default and default["id"] == account_id) else account_id
+        self.phone_error.setText(f"Вход в аккаунт «{name}».")
+        self.phone_field.set_text("")
+        self._show_page(self.phone_page)
+
+    def _on_make_default(self, account_id: int) -> None:
+        self.ctx.db.set_default_account(account_id)
+        self._refresh_accounts()
+        QMessageBox.information(
+            self, "Основной аккаунт изменён",
+            "Чаты и боты без явно выбранного аккаунта теперь работают через него. "
+            "Изменение вступит в силу после перезапуска приложения.")
+
+    def _on_delete_account(self, account_id: int) -> None:
+        usage = self.ctx.db.account_usage(account_id)
+        acc = self.ctx.db.get_account(account_id)
+        if acc is None:
+            return
+        if QMessageBox.question(
+            self, "Убрать аккаунт",
+            f"Убрать «{acc['name']}» из приложения? Чаты ({usage['chats']}) и боты "
+            f"({usage['bots']}), закреплённые за ним, вернутся на основной аккаунт. "
+            "Сам аккаунт в Telegram и уже собранные сообщения не трогаются; "
+            "файл входа останется на диске."
+        ) != QMessageBox.Yes:
+            return
+        self.ctx.db.delete_account(account_id)
+        if self.ctx.accounts is not None:
+            self.ctx.accounts.forget(account_id)
+        self._refresh_accounts()
+
     # ---- lifecycle -----------------------------------------------------
     def on_show(self, **kwargs) -> None:
+        self._refresh_accounts()
         if not self.ctx.config.is_configured:
             self.phone_error.setText(
                 "Сначала укажите ключ приложения (api_id) и секрет (api_hash) на экране «Настройки» — "
                 "их выдаёт my.telegram.org."
             )
             self.goto_settings_btn.show()
-            self.stack.setCurrentWidget(self.phone_page)
+            self._show_page(self.phone_page)
             return
         self.goto_settings_btn.hide()
         fire(self._check_auth(), parent=self)
 
     async def _check_auth(self) -> None:
-        authed = await self.ctx.tg.is_authorized()
-        if authed:
-            me = await self.ctx.tg.me()
-            name = " ".join(p for p in [me.first_name, me.last_name] if p) or "Аккаунт Telegram"
-            self.account_name_label.setText(name)
-            phone = f"+{me.phone}" if getattr(me, "phone", None) else ""
-            now = dt.datetime.now().strftime("%d.%m.%Y, %H:%M")
-            self.account_meta_label.setText(f"{phone} · вход выполнен {now}" if phone else f"вход выполнен {now}")
-            self.stack.setCurrentWidget(self.authed_page)
-            await self.ctx.collector.start()
-            await self.ctx.bot_manager.start()
-        else:
-            self.stack.setCurrentWidget(self.phone_page)
+        authed = await self._target.is_authorized()
+        if not authed:
+            self._show_page(self.phone_page)
+            return
+
+        me = await self._target.me()
+        phone = f"+{me.phone}" if getattr(me, "phone", None) else ""
+        if self._target_account_id is not None:
+            # Вошли в дополнительный аккаунт: записываем номер в строку,
+            # возвращаемся к списку и оставляем основной как был.
+            self.ctx.db.set_account_field(self._target_account_id, phone=phone or None,
+                                          last_error=None)
+            self._target_account_id = None
+            self.phone_error.setText("")
+            self._refresh_accounts()
+            self._show_page(self.authed_page)
+            return
+
+        name = " ".join(p for p in [me.first_name, me.last_name] if p) or "Аккаунт Telegram"
+        self.account_name_label.setText(name)
+        now = dt.datetime.now().strftime("%d.%m.%Y, %H:%M")
+        self.account_meta_label.setText(f"{phone} · вход выполнен {now}" if phone else f"вход выполнен {now}")
+        if self.ctx.accounts is not None:
+            self.ctx.accounts.ensure_primary_row()
+        self._refresh_accounts()
+        self._show_page(self.authed_page)
+        await self.ctx.collector.start()
+        await self.ctx.bot_manager.start()
 
     # ---- actions ---------------------------------------------------------
     def _on_send_code(self) -> None:
@@ -230,13 +408,13 @@ class ConnectScreen(QWidget):
         def done():
             self.code_hint.setText(f"Код отправлен на {phone}. Он живёт около двух минут — если не успели, запросите новый.")
             self.code_field.set_text("")
-            self.stack.setCurrentWidget(self.code_page)
+            self._show_page(self.code_page)
 
         def on_error(e):
             from ...telegram.errors import humanize_error
             self.phone_error.setText(humanize_error(e))
 
-        fire(self.ctx.tg.send_code(phone), parent=self, on_error=on_error, on_done=done)
+        fire(self._target.send_code(phone), parent=self, on_error=on_error, on_done=done)
 
     def _on_resend_code(self) -> None:
         self._on_send_code()
@@ -250,11 +428,11 @@ class ConnectScreen(QWidget):
         self.code_error.hide()
 
         async def go() -> None:
-            signed_in = await self.ctx.tg.submit_code(code)
+            signed_in = await self._target.submit_code(code)
             if signed_in:
                 await self._check_auth()
             else:
-                self.stack.setCurrentWidget(self.pwd_page)
+                self._show_page(self.pwd_page)
 
         def on_error(e):
             from telethon.errors import PhoneCodeExpiredError
@@ -281,10 +459,21 @@ class ConnectScreen(QWidget):
         def on_done():
             fire(self._check_auth(), parent=self)
 
-        fire(self.ctx.tg.submit_password(pwd), parent=self, on_error=on_error, on_done=on_done)
+        fire(self._target.submit_password(pwd), parent=self, on_error=on_error, on_done=on_done)
 
     def _on_sign_out(self) -> None:
         def on_done():
-            self.stack.setCurrentWidget(self.phone_page)
+            self._show_page(self.phone_page)
 
         fire(self.ctx.tg.sign_out(), parent=self, on_done=on_done)
+
+
+def _clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        w = item.widget()
+        if w is not None:
+            w.setParent(None)
+            w.deleteLater()
+        elif item.layout() is not None:
+            _clear_layout(item.layout())

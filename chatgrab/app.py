@@ -24,6 +24,7 @@ from .services.export_service import ExportService
 from .services.ignore_service import IgnoreService
 from .services.retention_service import RetentionService
 from .services.watch_service import WatchService
+from .telegram.accounts import AccountRegistry
 from .telegram.collector import Collector
 from .telegram.service import TelegramService
 from .ui.context import AppContext
@@ -85,6 +86,11 @@ def run() -> int:
     bot_manager = BotManager(db, tg, security)
     register_bot_token_rotation(db, security)
 
+    accounts = AccountRegistry(db, config, PATHS, tg)
+    accounts.ensure_primary_row()
+    collector.accounts = accounts
+    bot_manager.userbot_runner.accounts = accounts
+
     watch_service = WatchService(db)
     collector.watch_service = watch_service
     retention_service = RetentionService(db, PATHS)
@@ -98,7 +104,7 @@ def run() -> int:
         export_service=export_service, ignore_service=ignore_service,
         backup_service=backup_service, security=security, bot_manager=bot_manager,
         watch_service=watch_service, retention_service=retention_service,
-        export_schedule_service=export_schedule_service,
+        export_schedule_service=export_schedule_service, accounts=accounts,
     )
 
     window = MainWindow(ctx)
