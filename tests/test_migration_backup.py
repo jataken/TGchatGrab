@@ -76,23 +76,26 @@ backups_after = list(backup_dir().glob("*.db"))
 print("  файлов бэкапа:", len(backups_after))
 assert len(backups_after) == 1, "нечего мигрировать — новый бэкап не должен появляться"
 
-print("\n== откат добавленной миграции снимает ровно то, что она добавила ==")
+print("\n== откат снимает последнюю миграцию, у которой вообще есть down() ==")
 copy_path = Path(base) / "rollback_copy.db"
 shutil.copy2(paths.db_path, copy_path)
 conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables_before
 
+# 008 (лид) применена позже, но у неё нет down() — трогает данные, а не
+# только добавляет таблицу, см. её докстринг. rollback_last должен
+# пропустить её и найти 007, а не упасть и не откатить не то.
 undone = migrations.rollback_last(conn)
 print("  откачена миграция:", undone)
-assert undone == "007"
+assert undone == "007", "008 без down() должна быть пропущена, а не откачена"
 tables_after = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" not in tables_after, "direction должна исчезнуть после отката"
 assert tables_after == tables_before - {"direction"}, "откат не должен трогать ничего кроме своей таблицы"
 
 applied = {r[0] for r in conn.execute("SELECT id FROM schema_migrations")}
 print("  осталось применённых:", sorted(applied))
-assert applied == {"006"}
+assert applied == {"006", "008"}, "008 не откатывалась — должна остаться применённой"
 conn.close()
 
 # Оригинальный файл (не копия) не тронут — direction по-прежнему на месте.

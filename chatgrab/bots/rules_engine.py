@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from ..core import lead as lead_domain
 from ..db.database import Database
 from .scenario_engine import ScenarioEngine
 from .templating import context_for, render, resolve_action_text
@@ -114,12 +115,17 @@ class RulesEngine:
             if result.question:
                 await send_dm(event.contact_telegram_id, result.question)
             elif result.done and result.answers is not None:
-                self._save_lead_from_answers(bot_id, contact_id, result.answers)
+                self._save_lead_from_answers(bot_id, contact_id, result.answers, event)
             log("сценарий запущен", "ok")
 
         elif atype == "save_lead":
             content = {"text": event.text} if event.text else {}
-            self.db.add_lead(contact_id, bot_id, content, status="new")
+            self.db.add_lead(
+                contact_id, bot_id, content, status="new",
+                source_chat_id=event.chat_id,
+                source_type=lead_domain.source_type_from_chat_type(event.chat_type),
+                event_source=lead_domain.EVENT_SOURCE_RULE,
+            )
             log("заявка сохранена", "ok")
 
         elif atype == "forward_lead" or atype == "notify_manager":
@@ -160,8 +166,14 @@ class RulesEngine:
         return context_for(self.db, bot_id, self.db.get_contact(contact_id),
                            answers=answers, event_text=event.text)
 
-    def _save_lead_from_answers(self, bot_id: int, contact_id: int, answers: dict) -> None:
-        self.db.add_lead(contact_id, bot_id, answers, status="new")
+    def _save_lead_from_answers(self, bot_id: int, contact_id: int, answers: dict,
+                                event: IncomingEvent) -> None:
+        self.db.add_lead(
+            contact_id, bot_id, answers, status="new",
+            source_chat_id=event.chat_id,
+            source_type=lead_domain.source_type_from_chat_type(event.chat_type),
+            event_source=lead_domain.EVENT_SOURCE_SCENARIO,
+        )
 
     # ---- scenario continuation (a contact already mid-dialog) -----------
     def has_active_scenario(self, bot_id: int, contact_telegram_id: int) -> bool:
@@ -177,7 +189,7 @@ class RulesEngine:
             await send_dm(event.contact_telegram_id, result.question)
             return
         if result.done and result.answers is not None:
-            self._save_lead_from_answers(bot_id, contact_id, result.answers)
+            self._save_lead_from_answers(bot_id, contact_id, result.answers, event)
 
             # Confirm to the contact first — they're the one waiting on a
             # reply — then hand the summary to the manager.

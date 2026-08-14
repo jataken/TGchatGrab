@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 
 from ...context import AppContext
 from ...widgets import KeyValue, muted
+from ....core import lead as lead_domain
 
 
 class AnalyticsTab(QWidget):
@@ -101,4 +102,4 @@ class AnalyticsTab(QWidget):
         if leads:
             self.history_list.addItem(f"— {len(leads)} заявок от этого контакта —")
             for lead in leads:
-                self.history_list.addItem(f"  заявка #{lead['id']}: {lead['status']}")
+                self.history_list.addItem(f"  заявка #{lead['id']}: {lead_domain.label_for_status(lead['status'])}")

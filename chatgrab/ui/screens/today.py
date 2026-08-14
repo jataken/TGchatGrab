@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..context import AppContext
 from ..widgets import ActivityBars, fmt_int as _fmt, h1, label, muted, plural as _plural
+from ...core import lead as lead_domain
 
 _TONE_COLORS = {
     "accent": "#9184d9",
@@ -300,7 +301,7 @@ class TodayScreen(QWidget):
         db = self.ctx.db
         bots = db.list_bots()
         leads = db.list_leads()
-        new_leads = [l for l in leads if l["status"] == "new"]
+        new_leads = [l for l in leads if l["status"] == lead_domain.NEW]
         bad_bots = [b for b in bots if b["status"] == "error"]
         running = [b for b in bots if b["status"] == "running"]
         col = self.bots_col
@@ -344,7 +345,8 @@ class TodayScreen(QWidget):
             col.add_row(b["name"], b["last_error"] or "бот остановился с ошибкой",
                         "починить", lambda: self.navigate("bots"), "bad")
 
-        in_progress = [l for l in leads if l["status"] == "in_progress"]
+        active_statuses = {lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION}
+        in_progress = [l for l in leads if l["status"] in active_statuses]
         if in_progress:
             col.add_row(
                 f"{len(in_progress)} " + _plural(len(in_progress), "заявка", "заявки", "заявок") + " в работе",

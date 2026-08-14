@@ -293,6 +293,51 @@ CREATE TABLE IF NOT EXISTS bot_leads (
 );
 """
 
+# New columns folded onto bot_leads by migration "008" — see
+# db/migrations.py. Kept as a list rather than inline ALTER statements so
+# the migration step can loop over it and stay a one-liner per column.
+# contact_id/status/manager/content/created_at/updated_at above are
+# untouched: existing callers of add_lead() keep working unmodified.
+_LEAD_NEW_COLUMNS = [
+    ("tg_user_id", "INTEGER"),
+    ("username", "TEXT"),
+    ("display_name", "TEXT"),
+    ("phone", "TEXT"),
+    ("email", "TEXT"),
+    ("source_chat_id", "INTEGER"),
+    ("source_type", "TEXT NOT NULL DEFAULT 'bot'"),      # chat | dm | bot | manual
+    ("direction_id", "INTEGER"),
+    ("product", "TEXT"),
+    ("volume", "TEXT"),
+    ("unit", "TEXT"),
+    ("deadline", "TEXT"),
+    ("city", "TEXT"),
+    ("delivery", "TEXT"),
+    ("owner", "TEXT NOT NULL DEFAULT 'local_user'"),      # see core/lead.py, DEFAULT_OWNER
+    ("reject_reason", "TEXT"),
+    ("attachments", "TEXT NOT NULL DEFAULT '[]'"),        # КП files — paths, same as direction.price_file
+]
+
+# One row per change to a lead worth remembering — status moves, notes,
+# eventually reminders and CRM sync. What makes a lead a *card* instead of
+# a database row: the history is what the card actually shows.
+_DDL_LEAD_EVENTS = """
+CREATE TABLE IF NOT EXISTS lead_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,                       -- created | status | note | reminder | sync
+    from_status TEXT,
+    to_status TEXT,
+    text TEXT,
+    source TEXT NOT NULL,                     -- manual | scenario | rule | integration | migration
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_LEAD_EVENTS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_lead_events_lead ON lead_events(lead_id, created_at);",
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

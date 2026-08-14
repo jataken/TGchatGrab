@@ -75,6 +75,8 @@ added = {
     "messages": {"media_path", "text_hash"},
     "bot_scenarios": {"kind", "done_template_id"},
     "bot_scenario_sessions": {"step_id"},
+    "bot_leads": {"direction_id", "owner", "reject_reason", "attachments",
+                  "source_type", "tg_user_id"},
 }
 for table, wanted in added.items():
     missing = wanted - columns(table)
@@ -97,9 +99,10 @@ print("re-migrate OK, rows =", conn.execute("SELECT count(*) FROM bot_scenario_s
 # отражает применённые шаги ровно по одному разу
 applied = {row[0] for row in conn.execute("SELECT id FROM schema_migrations")}
 print("применённые миграции:", sorted(applied))
-assert applied == {"006", "007"}, applied
-assert "direction" in {r[0] for r in conn.execute(
-    "SELECT name FROM sqlite_master WHERE type='table'")}, "таблица direction не создалась"
+assert applied == {"006", "007", "008"}, applied
+tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert "direction" in tables, "таблица direction не создалась"
+assert "lead_events" in tables, "таблица lead_events не создалась"
 
 before_count = conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
 schema.migrate(conn)

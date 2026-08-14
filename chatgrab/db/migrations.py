@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import schema
+from ..core import lead as lead_domain
 
 _MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -73,10 +74,59 @@ def _down_directions(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS direction;")
 
 
+def _up_leads(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """bot_leads becomes a real lead: identity/business columns, plus
+    lead_events for history. The additive part is a one-liner per column
+    (see schema._LEAD_NEW_COLUMNS); the part worth reading is the backfill
+    below, which is the only place data actually changes shape.
+
+    No down() — unlike 007's plain DROP TABLE, this touches an existing
+    table's data (the status remap), not just adds one it can cleanly
+    undo. The mandatory backup before this runs is the safety net here,
+    same as for any other non-trivial step — see the module docstring.
+    """
+    for name, coltype in schema._LEAD_NEW_COLUMNS:
+        if not schema._column_exists(conn, "bot_leads", name):
+            conn.execute(f"ALTER TABLE bot_leads ADD COLUMN {name} {coltype};")
+    conn.execute(schema._DDL_LEAD_EVENTS)
+    for ddl in schema._DDL_LEAD_EVENTS_INDEXES:
+        conn.execute(ddl)
+
+    # Backfill: every pre-existing lead gets a first history row (an empty
+    # timeline reads as broken, not as "nothing happened yet"), and the
+    # old three-status model maps onto the funnel. 'closed' is the one
+    # lossy mapping — it used to mean both "won" and "we're done here,
+    # lost or otherwise" — so it additionally gets a flagged status event
+    # instead of a silent rename, per PLAN.md С2's "риск" note.
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows = conn.execute("SELECT id, status FROM bot_leads").fetchall()
+    for lead_id, old_status in rows:
+        conn.execute(
+            "INSERT INTO lead_events(lead_id, kind, source, text, created_at) "
+            "VALUES (?, 'created', 'migration', 'Заявка перенесена из старой модели.', ?)",
+            (lead_id, now),
+        )
+        new_status = lead_domain.remap_legacy_status(old_status)
+        if new_status == old_status:
+            continue
+        conn.execute("UPDATE bot_leads SET status = ? WHERE id = ?", (new_status, lead_id))
+        if old_status == "closed":
+            conn.execute(
+                "INSERT INTO lead_events"
+                "(lead_id, kind, from_status, to_status, source, text, created_at) "
+                "VALUES (?, 'status', ?, ?, 'migration', ?, ?)",
+                (lead_id, old_status, new_status,
+                 "Статус перенесён из старой модели «closed» → «сделка». Возможно, "
+                 "это был проигранный лид — проверьте и поставьте «отказ», если нужно.",
+                 now),
+            )
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
     Migration("007", "direction catalogue", _up_directions, _down_directions),
+    Migration("008", "lead model + history", _up_leads),
 ]
 
 

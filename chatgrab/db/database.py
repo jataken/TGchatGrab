@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from . import schema
 from .dedup import fingerprint
+from ..core import lead as lead_domain
 
 _logger = logging.getLogger("chatgrab")
 
@@ -1028,16 +1029,48 @@ class Database:
         )
 
     def add_lead(self, contact_id: int, bot_id: int, content: dict, status: str = "new",
-                 manager: str | None = None) -> int:
+                 manager: str | None = None, *, tg_user_id: int | None = None,
+                 username: str | None = None, display_name: str | None = None,
+                 phone: str | None = None, email: str | None = None,
+                 source_chat_id: int | None = None,
+                 source_type: str = lead_domain.SOURCE_TYPE_BOT,
+                 direction_id: int | None = None, product: str | None = None,
+                 volume: str | None = None, unit: str | None = None,
+                 deadline: str | None = None, city: str | None = None,
+                 delivery: str | None = None,
+                 event_source: str = lead_domain.EVENT_SOURCE_RULE) -> int:
+        """Creates a lead and its opening lead_events row in one go — a
+        lead with no history is exactly the "silent database row" the
+        card (see ui/screens/bots/lead_card.py) exists to stop being.
+
+        Signature grew rather than gaining a second create_lead(): every
+        existing caller (rules_engine's save_lead/run_scenario actions)
+        still passes just contact_id/bot_id/content/status, and every new
+        field here is optional with a sensible default — a bot-sourced
+        lead just doesn't set the ones a human fills in on the card later.
+        """
         with self._lock:
             now = now_iso()
             cur = self._conn.execute(
-                """INSERT INTO bot_leads(contact_id, bot_id, status, manager, created_at, updated_at, content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (contact_id, bot_id, status, manager, now, now, json.dumps(content, ensure_ascii=False)),
+                """INSERT INTO bot_leads(
+                       contact_id, bot_id, status, manager, created_at, updated_at, content,
+                       tg_user_id, username, display_name, phone, email,
+                       source_chat_id, source_type, direction_id, product, volume, unit,
+                       deadline, city, delivery, owner
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (contact_id, bot_id, status, manager, now, now, json.dumps(content, ensure_ascii=False),
+                 tg_user_id, username, display_name, phone, email,
+                 source_chat_id, source_type, direction_id, product, volume, unit,
+                 deadline, city, delivery, lead_domain.DEFAULT_OWNER),
+            )
+            lead_id = cur.lastrowid
+            self._conn.execute(
+                "INSERT INTO lead_events(lead_id, kind, source, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (lead_id, lead_domain.EVENT_KIND_CREATED, event_source, now),
             )
             self._conn.commit()
-            return cur.lastrowid
+            return lead_id
 
     def get_lead(self, lead_id: int) -> sqlite3.Row | None:
         return self.query_one("SELECT * FROM bot_leads WHERE id = ?", (lead_id,))
@@ -1065,9 +1098,68 @@ class Database:
         fields = dict(fields)
         if "content" in fields and isinstance(fields["content"], dict):
             fields["content"] = json.dumps(fields["content"], ensure_ascii=False)
+        if "attachments" in fields and isinstance(fields["attachments"], list):
+            fields["attachments"] = json.dumps(fields["attachments"], ensure_ascii=False)
         fields.setdefault("updated_at", now_iso())
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.execute(f"UPDATE bot_leads SET {cols} WHERE id = ?", (*fields.values(), lead_id))
+
+    def set_lead_status(self, lead_id: int, new_status: str, *, reject_reason: str | None = None,
+                        source: str = lead_domain.EVENT_SOURCE_MANUAL, text: str | None = None) -> None:
+        """The one validated path for changing a lead's stage — enforces
+        core.lead's single hard rule (LOST needs a reason) and always logs
+        the move, which is what makes set_lead_field unsuitable for this
+        one field: a status written through it would change the funnel
+        with no trace in the history the card shows.
+
+        Raises ValueError on an invalid move rather than silently
+        refusing, so a caller (the card, a future scenario action) finds
+        out immediately instead of the change quietly not happening.
+        """
+        error = lead_domain.validate_transition(new_status, reject_reason)
+        if error:
+            raise ValueError(error)
+        lead = self.get_lead(lead_id)
+        if lead is None:
+            raise ValueError(f"Заявка {lead_id} не найдена.")
+        old_status = lead["status"]
+        with self._lock:
+            fields = {"status": new_status, "updated_at": now_iso()}
+            if new_status == lead_domain.LOST:
+                fields["reject_reason"] = reject_reason.strip()
+            cols = ", ".join(f"{k} = ?" for k in fields)
+            self._conn.execute(f"UPDATE bot_leads SET {cols} WHERE id = ?", (*fields.values(), lead_id))
+            self._conn.execute(
+                "INSERT INTO lead_events(lead_id, kind, from_status, to_status, text, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (lead_id, lead_domain.EVENT_KIND_STATUS, old_status, new_status, text, source, now_iso()),
+            )
+            self._conn.commit()
+
+    def add_lead_note(self, lead_id: int, text: str,
+                      source: str = lead_domain.EVENT_SOURCE_MANUAL) -> None:
+        text = text.strip()
+        if not text:
+            return
+        self.execute(
+            "INSERT INTO lead_events(lead_id, kind, text, source, created_at) VALUES (?, ?, ?, ?, ?)",
+            (lead_id, lead_domain.EVENT_KIND_NOTE, text, source, now_iso()),
+        )
+
+    def list_lead_events(self, lead_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM lead_events WHERE lead_id = ? ORDER BY created_at, id", (lead_id,))
+
+    def lead_correspondence(self, telegram_id: int, limit: int = 200) -> list[sqlite3.Row]:
+        """What this contact has actually said, across every tracked
+        chat — the "переписка" on the card. A plain filter on sender_id,
+        not an FTS query: there's no search phrase here, just "everything
+        from this person," and messages already carries that column."""
+        return self.query(
+            "SELECT * FROM messages WHERE sender_id = ? AND is_hidden = 0 "
+            "ORDER BY date DESC LIMIT ?",
+            (telegram_id, limit),
+        )
 
     def log_activity(self, contact_id: int | None, bot_id: int | None, chat_id: int | None,
                       message_id: int | None, chat_type: str | None, kind: str = "message") -> None:
@@ -1158,6 +1250,11 @@ class Database:
         return out[:limit]
 
     def leads_funnel(self, bot_id: int | None = None) -> dict[str, int]:
+        """Three coarse buckets for analytics_tab.py's summary row — the
+        funnel's own five-stage detail (С8) doesn't fit that layout, so
+        qualified/quote_sent/negotiation collapse into "в работе" and
+        won/lost collapse into "закрыты", same grouping analytics_tab and
+        today.py already use elsewhere."""
         sql = "SELECT status, count(*) AS c FROM bot_leads"
         params: list[Any] = []
         if bot_id is not None:
@@ -1165,8 +1262,10 @@ class Database:
             params.append(bot_id)
         sql += " GROUP BY status"
         counts = {r["status"]: r["c"] for r in self.query(sql, params)}
-        return {"new": counts.get("new", 0), "in_progress": counts.get("in_progress", 0),
-                "closed": counts.get("closed", 0)}
+        in_progress = sum(counts.get(s, 0) for s in
+                           (lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION))
+        closed = sum(counts.get(s, 0) for s in (lead_domain.WON, lead_domain.LOST))
+        return {"new": counts.get(lead_domain.NEW, 0), "in_progress": in_progress, "closed": closed}
 
     # ---- bot templates ---------------------------------------------------
     def add_template(self, bot_id: int | None, name: str, text: str, variables: list[str]) -> int:

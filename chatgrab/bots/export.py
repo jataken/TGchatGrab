@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..core import lead as lead_domain
 from ..db.database import Database, now_iso
 from ..paths import Paths
 from ..services.xlsx_safety import excel_safe
-
-_STATUS_LABELS = {"new": "новая", "in_progress": "в работе", "closed": "закрыта"}
 
 
 def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
@@ -46,7 +45,7 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         ws.append([
             lead["created_at"], excel_safe(bot["name"]) if bot else f"бот {lead['bot_id']}",
             excel_safe(handle), telegram_id,
-            _STATUS_LABELS.get(lead["status"], lead["status"]), excel_safe(lead["manager"] or ""), summary,
+            lead_domain.label_for_status(lead["status"]), excel_safe(lead["manager"] or ""), summary,
         ])
         row_idx = ws.max_row
         for col in range(1, len(headers) + 1):

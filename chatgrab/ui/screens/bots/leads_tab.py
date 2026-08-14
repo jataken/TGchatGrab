@@ -13,22 +13,16 @@ from ...context import AppContext
 from ...util import fire, run_blocking
 from ...widgets import button, chip, muted
 from ....bots.export import export_leads_xlsx
-
-_STATUS_LABELS = {"new": "новая", "in_progress": "в работе", "closed": "закрыта"}
-_STATUS_STYLE = {
-    "new": ("rgba(145,132,217,46)", "#d2cefd", "#b5abfc"),
-    "in_progress": ("rgba(220,150,90,46)", "#f0c6a0", "#f0c6a0"),
-    "closed": ("rgba(233,233,237,13)", "#6c6c78", "#3f424d"),
-}
-_NEXT_STATUS = {"new": "in_progress", "in_progress": "closed", "closed": "new"}
+from ....core import lead as lead_domain
+from .lead_card import LeadCardDialog
 
 
 def _status_pill(status: str) -> QWidget:
-    bg, fg, dot = _STATUS_STYLE.get(status, _STATUS_STYLE["closed"])
+    bg, fg, _dot = lead_domain.STATUS_COLORS.get(status, lead_domain.STATUS_COLORS[lead_domain.NEW])
     host = QWidget()
     lay = QHBoxLayout(host)
     lay.setContentsMargins(8, 0, 8, 0)
-    pill = muted(f"●  {_STATUS_LABELS.get(status, status)}")
+    pill = muted(f"●  {lead_domain.label_for_status(status)}")
     pill.setStyleSheet(
         f"color: {fg}; background: {bg}; border-radius: 6px; padding: 3px 10px; font-size: 11.5px;"
     )
@@ -79,8 +73,14 @@ class LeadsTab(QWidget):
         chip_row.setSpacing(6)
         self.chip_group = QButtonGroup(self)
         self.chip_group.setExclusive(True)
-        for key, lbl in [("all", "Все"), ("new", "Новые"),
-                         ("in_progress", "В работе"), ("closed", "Закрытые")]:
+        # One chip per real status rather than an aggregate "в работе":
+        # list_leads() filters on an exact status, and inventing a bucket
+        # that isn't a real value would need logic this tab doesn't have
+        # yet — С3 is where fuller filtering (направление/источник/дата)
+        # is actually built.
+        chip_items = [("all", "Все")] + [(s, lead_domain.label_for_status(s))
+                                          for s in lead_domain.ALL_STATUSES]
+        for key, lbl in chip_items:
             btn = chip(lbl)
             btn.setChecked(key == "all")
             btn.clicked.connect(lambda _c, k=key: self._set_filter(k))
@@ -98,6 +98,10 @@ class LeadsTab(QWidget):
         self.table.setShowGrid(False)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.table.cellClicked.connect(self._on_cell_clicked)
+        # Double-click anywhere opens the full card — the status column's
+        # single-click quick-advance (see the class docstring) is left
+        # alone, this is purely additive.
+        self.table.cellDoubleClicked.connect(self._on_open_card)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_context_menu)
         outer.addWidget(self.table, 1)
@@ -119,10 +123,11 @@ class LeadsTab(QWidget):
         status = None if self.status_filter == "all" else self.status_filter
         leads = db.list_leads(status=status)
 
-        n_new = len([l for l in all_leads if l["status"] == "new"])
-        n_prog = len([l for l in all_leads if l["status"] == "in_progress"])
+        n_new = len([l for l in all_leads if l["status"] == lead_domain.NEW])
+        active_statuses = {lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION}
+        n_active = len([l for l in all_leads if l["status"] in active_statuses])
         self.summary_label.setText(
-            f"{n_new} новых · {n_prog} в работе · {len(all_leads)} заявок всего"
+            f"{n_new} новых · {n_active} в работе · {len(all_leads)} заявок всего"
             if all_leads else "заявок пока нет — они появятся, когда сработает правило бота"
         )
         self.undo_btn.setVisible(self._undo is not None)
@@ -133,8 +138,10 @@ class LeadsTab(QWidget):
             date_item.setData(Qt.UserRole, lead["id"])
             self.table.setItem(row, 0, date_item)
 
-            contact = db.get_contact(lead["contact_id"])
-            handle = f"@{contact['username']}" if contact and contact["username"] else \
+            contact = db.get_contact(lead["contact_id"]) if lead["contact_id"] else None
+            handle = lead["display_name"] or \
+                (f"@{lead['username']}" if lead["username"] else None) or \
+                (f"@{contact['username']}" if contact and contact["username"] else None) or \
                 (str(contact["telegram_id"]) if contact else "—")
             manager = lead["manager"] or "не назначена"
             self.table.setItem(row, 1, QTableWidgetItem(f"{handle}\n{manager}"))
@@ -176,16 +183,30 @@ class LeadsTab(QWidget):
         lead = self.ctx.db.get_lead(lead_id)
         if not lead:
             return
-        self._undo = (lead_id, lead["status"])
-        self.ctx.db.set_lead_field(lead_id, status=_NEXT_STATUS.get(lead["status"], "new"))
+        # next_status() never advances *to* LOST (see core/lead.py), only
+        # cycles WON/LOST back to NEW — so this quick-advance never needs
+        # a reject_reason. Restoring it on undo is a separate story below.
+        self._undo = (lead_id, lead["status"], lead["reject_reason"])
+        self.ctx.db.set_lead_status(lead_id, lead_domain.next_status(lead["status"]),
+                                    source=lead_domain.EVENT_SOURCE_MANUAL)
         self.refresh()
 
     def _on_undo(self) -> None:
         if not self._undo:
             return
-        lead_id, previous = self._undo
+        lead_id, previous_status, previous_reject_reason = self._undo
         self._undo = None
-        self.ctx.db.set_lead_field(lead_id, status=previous)
+        try:
+            self.ctx.db.set_lead_status(
+                lead_id, previous_status, reject_reason=previous_reject_reason,
+                source=lead_domain.EVENT_SOURCE_MANUAL, text="отменено")
+        except ValueError:
+            # Only reachable if the previous state was somehow LOST with
+            # no reason on record — shouldn't happen since that couldn't
+            # have been set in the first place, but undo failing silently
+            # would be worse than undo failing loudly.
+            QMessageBox.information(self, "Не получилось отменить",
+                                    "Не удалось восстановить предыдущий статус.")
         self.refresh()
 
     def _on_context_menu(self, pos) -> None:
@@ -194,10 +215,23 @@ class LeadsTab(QWidget):
         if lead_id is None:
             return
         menu = QMenu(self)
+        open_card = menu.addAction("Открыть карточку")
         reassign = menu.addAction("Переназначить менеджера…")
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen == reassign:
+        if chosen == open_card:
+            self._open_card(lead_id)
+        elif chosen == reassign:
             self._reassign(lead_id)
+
+    def _on_open_card(self, row: int, _col: int) -> None:
+        lead_id = self._lead_id_at(row)
+        if lead_id is not None:
+            self._open_card(lead_id)
+
+    def _open_card(self, lead_id: int) -> None:
+        dialog = LeadCardDialog(self.ctx, lead_id, parent=self)
+        dialog.exec()
+        self.refresh()
 
     def _on_export(self) -> None:
         def on_error(e):
@@ -229,5 +263,9 @@ class LeadsTab(QWidget):
         name, ok = QInputDialog.getText(self, "Переназначить заявку", "Имя менеджера:",
                                          text=current["manager"] or "")
         if ok:
-            self.ctx.db.set_lead_field(lead_id, manager=name.strip(), status="in_progress")
+            # Reassigning who's handling a lead says nothing about where it
+            # is in the funnel — the old code forced status="in_progress"
+            # here, a value that no longer exists in the new vocabulary and
+            # would have bypassed set_lead_status's history logging anyway.
+            self.ctx.db.set_lead_field(lead_id, manager=name.strip())
             self.refresh()
