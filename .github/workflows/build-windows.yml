@@ -24,23 +24,106 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # Тесты гоняются и здесь, на Windows, а не только на Linux в
+      # соседнем workflow. Причина конкретная: приложение один раз уже
+      # падало при деплое на `%-d` в strftime — это расширение glibc,
+      # которого на Windows нет. Такую поломку не увидит ни один прогон
+      # на Ubuntu, а увидит пользователь при запуске exe.
+      - name: Прогнать тесты на Windows
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: pwsh
+        run: |
+          $failed = 0
+          # Именно foreach, а не ForEach-Object: у блока конвейера своя
+          # область видимости, и присваивание $failed в нём наружу не
+          # выходит — упавший тест молча не влиял бы на исход шага.
+          foreach ($t in Get-ChildItem tests/test_*.py) {
+            Write-Host "::group::$($t.Name)"
+            python $t.FullName
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error file=tests/$($t.Name)::тест не прошёл на Windows"
+              $failed = 1
+            }
+            Write-Host "::endgroup::"
+          }
+          python tests/smoke_screens.py
+          if ($LASTEXITCODE -ne 0) { $failed = 1 }
+          exit $failed
+
+      - name: Узнать версию и метку сборки
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path chatgrab/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $short = "${{ github.sha }}".Substring(0, 7)
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BUILD_TAG=$version-$short" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "ChatGrab $version ($short)"
+
       - name: Собрать portable ChatGrab.exe
         run: pyinstaller packaging/chatgrab.spec --noconfirm --clean
 
-      - name: Проверить, что exe собрался
+      # Файл собрался — это ещё не значит, что он запускается. Ровно
+      # здесь ловится то, чего не видно при сборке: не подхваченный
+      # PyInstaller модуль, отсутствующий плагин Qt, ошибка при старте.
+      # Признак успеха — не «процесс жив» (упавший windowed-билд может
+      # висеть на окне с ошибкой), а созданная база и чистый журнал:
+      # значит, приложение дошло до работы и ничего не свалилось.
+      - name: Проверить, что exe действительно запускается
         shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          if (-not (Test-Path "dist/ChatGrab.exe")) {
-            throw "ChatGrab.exe не найден в dist/"
+          if (-not (Test-Path "dist/ChatGrab.exe")) { throw "ChatGrab.exe не найден в dist/" }
+          $size = [math]::Round((Get-Item "dist/ChatGrab.exe").Length / 1MB, 1)
+          Write-Host "ChatGrab.exe — $size МБ"
+
+          # Абсолютный путь: приложение кладёт данные рядом с exe, и
+          # проверка ниже ищет их именно там.
+          $exe = (Resolve-Path "dist/ChatGrab.exe").Path
+          $proc = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddSeconds(90)
+          $db = "dist/data/chatgrab.db"
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $db)) {
+            if ($proc.HasExited) { break }
+            Start-Sleep -Seconds 2
           }
-          Get-Item "dist/ChatGrab.exe" | Select-Object Name, Length
+          $exited = $proc.HasExited
+          $code = if ($exited) { $proc.ExitCode } else { $null }
+          if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+
+          $log = "dist/data/chatgrab.log"
+          if (Test-Path $log) {
+            Write-Host "--- журнал приложения ---"
+            Get-Content $log
+            Write-Host "-------------------------"
+          }
+
+          if ($exited) { throw "Приложение завершилось само, код $code — при старте что-то сломалось" }
+          if (-not (Test-Path $db)) { throw "База не создана за 90 с — приложение не дошло до работы" }
+          if ((Test-Path $log) -and (Select-String -Path $log -Pattern "Traceback" -Quiet)) {
+            throw "В журнале есть traceback — смотрите вывод выше"
+          }
+          Write-Host "Запуск прошёл: база создана, ошибок в журнале нет"
+
+      - name: Приложить журнал запуска, если проверка не прошла
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatGrab-startup-log
+          path: dist/data/chatgrab.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Загрузить как артефакт сборки
         uses: actions/upload-artifact@v4
         with:
-          name: ChatGrab-windows
+          # Версия и коммит прямо в имени: иначе, скачав два артефакта с
+          # разницей в неделю, невозможно сказать, который из них новее.
+          name: ChatGrab-${{ env.BUILD_TAG }}-windows
           path: dist/ChatGrab.exe
           if-no-files-found: error
+          retention-days: 90
 
       - name: Опубликовать релиз (по тегу v*.*.*)
         if: startsWith(github.ref, 'refs/tags/v')
