@@ -10,6 +10,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog
 
 from . import APP_NAME
+from . import diagnostics
 from . import safety_net
 from .bots.crypto import register_bot_token_rotation
 from .bots.manager import BotManager
@@ -55,6 +56,12 @@ def run() -> int:
     app.aboutToQuit.connect(security.lock)
 
     db = Database(PATHS.db_path)
+
+    # Session trace for hands-on testing — off unless switched on in
+    # Настройки. Started here, before any service exists, so the file
+    # covers the whole run including startup. TEMPORARY, see TEMPORARY.md.
+    diagnostics.install(PATHS, bool(db.get_setting(diagnostics.SETTING_KEY, False)))
+
     tg = TelegramService(config)
     collector = Collector(db, tg, config, PATHS)
     export_service = ExportService(db, PATHS)
@@ -72,7 +79,12 @@ def run() -> int:
     window = MainWindow(ctx)
     window.show()
 
-    with loop:
-        loop.create_task(backup_service.run_periodic())
-        loop.run_forever()
+    try:
+        with loop:
+            loop.create_task(backup_service.run_periodic())
+            loop.run_forever()
+    finally:
+        session = diagnostics.current()
+        if session is not None:
+            session.stop()
     return 0

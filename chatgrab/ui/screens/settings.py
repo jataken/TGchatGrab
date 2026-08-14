@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from ..context import AppContext
 from .. import tray
+from ... import __version__, diagnostics
 from ..widgets import button, card, h1, muted
 from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
@@ -41,6 +42,16 @@ class SettingsScreen(QWidget):
             "Ключи доступа берутся на my.telegram.org и хранятся в отдельном файле "
             "рядом с программой, не в её коде."
         ))
+        # Which build this is — the first thing worth knowing when
+        # something goes wrong and the report comes back as a screenshot.
+        version_row = QHBoxLayout()
+        version_row.addWidget(muted(f"Версия {__version__}"))
+        version_row.addWidget(muted("·"))
+        copy_paths_btn = button("Скопировать сведения о сборке", "ghost")
+        copy_paths_btn.clicked.connect(self._copy_build_info)
+        version_row.addWidget(copy_paths_btn)
+        version_row.addStretch(1)
+        outer.addLayout(version_row)
         outer.addSpacing(18)
 
         grid = QGridLayout()
@@ -373,6 +384,40 @@ class SettingsScreen(QWidget):
         tray_lay.addWidget(save_tray_btn)
         outer.addWidget(tray_card)
 
+        # ---- diagnostics (temporary) -------------------------------------
+        diag_card = card()
+        diag_lay = QVBoxLayout(diag_card)
+        diag_lay.setContentsMargins(16, 14, 16, 14)
+        diag_lay.addWidget(muted("ДИАГНОСТИЧЕСКАЯ ЗАПИСЬ · ВРЕМЕННАЯ ФУНКЦИЯ"))
+        diag_hint = muted(
+            "Пишет в отдельный файл, какие экраны вы открывали, что нажимали и что "
+            "приложение при этом делало — включая ошибки, которые не видно на экране. "
+            "Нужна на время ручного тестирования: файл потом можно отдать разработчику. "
+            "Тексты сообщений, ключи и токены в запись не попадают."
+        )
+        diag_hint.setWordWrap(True)
+        diag_lay.addWidget(diag_hint)
+
+        self.diag_cb = QCheckBox("Вести диагностическую запись")
+        self.diag_cb.setChecked(bool(self.ctx.db.get_setting(diagnostics.SETTING_KEY, False)))
+        diag_lay.addWidget(self.diag_cb)
+
+        self.diag_status = muted("")
+        self.diag_status.setWordWrap(True)
+        diag_lay.addWidget(self.diag_status)
+
+        diag_row = QHBoxLayout()
+        save_diag_btn = button("Сохранить", "primary")
+        save_diag_btn.clicked.connect(self._save_diagnostics)
+        diag_row.addWidget(save_diag_btn)
+        open_diag_btn = button("Открыть папку с записями", "secondary")
+        open_diag_btn.clicked.connect(self._open_diagnostics_dir)
+        diag_row.addWidget(open_diag_btn)
+        diag_row.addStretch(1)
+        diag_lay.addLayout(diag_row)
+        outer.addWidget(diag_card)
+        self._refresh_diagnostics_status()
+
         # ---- misc ------------------------------------------------------
         misc_card = card()
         misc_lay = QVBoxLayout(misc_card)
@@ -617,6 +662,55 @@ class SettingsScreen(QWidget):
             self, "Готово",
             f"Было: {before / (1024 * 1024):.1f} МБ → стало: {after / (1024 * 1024):.1f} МБ",
         )
+
+    def _copy_build_info(self) -> None:
+        """Version, platform and where the data actually lives — the facts
+        a problem report needs, on the clipboard rather than retyped."""
+        import platform
+        import sys
+        from PySide6.QtWidgets import QApplication
+        info = (
+            f"ChatGrab {__version__}\n"
+            f"{platform.system()} {platform.release()} ({platform.machine()})\n"
+            f"Python {platform.python_version()}, сборка: "
+            f"{'exe' if getattr(sys, 'frozen', False) else 'из исходников'}\n"
+            f"Данные: {self.ctx.paths.data_dir}\n"
+            f"Журнал: {self.ctx.paths.log_path}"
+        )
+        QApplication.clipboard().setText(info)
+        QMessageBox.information(self, "Скопировано", info)
+
+    def _refresh_diagnostics_status(self) -> None:
+        session = diagnostics.current()
+        if session is not None and session.active and session.path is not None:
+            self.diag_status.setText(f"Идёт запись: {session.path.name}")
+        elif self.diag_cb.isChecked():
+            self.diag_status.setText("Запись включится при следующем запуске приложения.")
+        else:
+            self.diag_status.setText("Запись выключена.")
+
+    def _save_diagnostics(self) -> None:
+        wanted = self.diag_cb.isChecked()
+        self.ctx.db.set_setting(diagnostics.SETTING_KEY, wanted)
+        session = diagnostics.current()
+        if not wanted and session is not None and session.active:
+            # Stopping mid-run closes the current file cleanly, so it can be
+            # handed over without waiting for the app to exit.
+            session.stop()
+            QMessageBox.information(
+                self, "Диагностика",
+                "Запись остановлена, файл закрыт и готов к отправке.")
+        elif wanted and (session is None or not session.active):
+            QMessageBox.information(
+                self, "Диагностика",
+                "Запись начнётся при следующем запуске приложения — "
+                "так в файл попадёт и то, что происходит при старте.")
+        self._refresh_diagnostics_status()
+
+    def _open_diagnostics_dir(self) -> None:
+        target = self.ctx.paths.data_dir / "diagnostics"
+        target.mkdir(parents=True, exist_ok=True)
+        open_in_explorer(target)
 
     def _save_tray(self) -> None:
         self.ctx.db.set_setting("tray_minimize_on_close", self.tray_close_cb.isChecked())

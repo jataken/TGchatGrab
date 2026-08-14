@@ -7,6 +7,7 @@ from typing import Callable, Coroutine
 
 from PySide6.QtWidgets import QMessageBox, QWidget
 
+from .. import diagnostics
 from ..telegram.errors import humanize_error
 
 
@@ -21,6 +22,7 @@ def fire(coro: Coroutine, parent: QWidget | None = None,
         except asyncio.CancelledError:
             return
         except Exception as e:  # noqa: BLE001 — surfaced to the user, not swallowed
+            diagnostics.failure("асинхронная операция", e)
             if on_error:
                 on_error(e)
             else:

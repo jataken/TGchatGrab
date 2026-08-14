@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_TITLE
+from .. import diagnostics
 from ..paths import resource_path
 from .context import AppContext
 from .util import fire
@@ -276,6 +277,7 @@ class MainWindow(QMainWindow):
         for k, btn in self._nav_buttons.items():
             btn.setChecked(k == key)
         widget = self.screens[key]
+        diagnostics.screen(self._nav_labels.get(key, key))
         self.stack.setCurrentWidget(widget)
         # Before on_show, so a bot-scoped screen reads a selection that is
         # already pointing at a bot that exists.
@@ -288,6 +290,12 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar()
 
     def _on_log_event(self, entry: dict) -> None:
+        # Into the trace as well: these lines are visible on screen only
+        # when the matching log panel happens to be open, so a warning
+        # during manual testing is otherwise easy to miss entirely.
+        session = diagnostics.current()
+        if session is not None:
+            session.app_event("бот" if "bot" in entry else "сбор", entry)
         self._refresh_sidebar()
 
     def _refresh_sidebar(self) -> None:

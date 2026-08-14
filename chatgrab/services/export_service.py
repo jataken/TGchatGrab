@@ -43,6 +43,22 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _row_tokens(row) -> int:
+    """Token estimate for a row, from the stored char_len when the row was
+    fetched without its text (the estimate path), or from the text itself
+    otherwise."""
+    try:
+        length = row["char_len"]
+    except (IndexError, KeyError):
+        length = None
+    if length is None:
+        try:
+            length = len(row["text"] or "")
+        except (IndexError, KeyError):
+            length = 0
+    return max(1, length // 4)
+
+
 @dataclass
 class ExportParams:
     chat_ids: list[int]
@@ -118,17 +134,25 @@ class ExportService:
         self.paths = paths
 
     # ---- selection -----------------------------------------------------
-    def _selected_rows(self, params: ExportParams):
+    def _selection_kwargs(self, params: ExportParams) -> dict:
         min_id_by_chat = None
         if params.incremental:
             min_id_by_chat = self.db.incremental_baseline(params.chat_ids)
-        return self.db.export_select(
+        return dict(
             chat_ids=params.chat_ids, date_from=params.date_from, date_to=params.date_to,
             include_hidden=params.include_hidden, unique_only=params.unique_only,
             query=params.query, author=params.author,
             photos_only=params.photos_only, forwards_only=params.forwards_only,
             replies_only=params.replies_only, min_id_by_chat=min_id_by_chat,
         )
+
+    def _selected_rows(self, params: ExportParams):
+        return self.db.export_select(**self._selection_kwargs(params))
+
+    def _selected_meta(self, params: ExportParams):
+        """Same selection, without message text — enough to count files and
+        tokens, cheap enough to re-run on every change of a checkbox."""
+        return self.db.export_select_meta(**self._selection_kwargs(params))
 
     def _chat_title(self, chat_id: int) -> str:
         chat = self.db.get_chat(chat_id)
@@ -166,7 +190,7 @@ class ExportService:
         current: list = []
         current_tokens = 0
         for r in rows:
-            t = estimate_tokens(r["text"] or "")
+            t = _row_tokens(r)
             if current and current_tokens + t > params.token_limit:
                 out.append(current)
                 current, current_tokens = [], 0
@@ -180,8 +204,8 @@ class ExportService:
 
     # ---- estimate (no writes) -------------------------------------------
     def estimate(self, params: ExportParams) -> ExportEstimate:
-        rows = self._selected_rows(params)
-        token_total = sum(estimate_tokens(r["text"] or "") for r in rows)
+        rows = self._selected_meta(params)
+        token_total = sum(_row_tokens(r) for r in rows)
         names = self._plan_filenames(rows, params)
         return ExportEstimate(row_count=len(rows), token_count=token_total,
                                file_count=len(names), file_names=names)

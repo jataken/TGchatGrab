@@ -305,7 +305,8 @@ class Database:
                        query: str = "", author: str = "", photos_only: bool = False,
                        forwards_only: bool = False, replies_only: bool = False,
                        min_id_by_chat: dict[int, int] | None = None,
-                       unique_only: bool = False) -> list[sqlite3.Row]:
+                       unique_only: bool = False,
+                       _columns: str = "m.*") -> list[sqlite3.Row]:
         clauses: list[str] = []
         params: list[Any] = []
         from_sql = "FROM messages m"
@@ -366,8 +367,19 @@ class Database:
         # groups these afterward without disturbing the relative order,
         # so single-chat output stays date-sorted too.
         return self.query(
-            f"SELECT m.* {from_sql}{where} ORDER BY m.date ASC", params
+            f"SELECT {_columns} {from_sql}{where} ORDER BY m.date ASC", params
         )
+
+    def export_select_meta(self, **kwargs) -> list[sqlite3.Row]:
+        """The same selection as export_select, but only the columns needed
+        to plan an export: which chat, when, how long, and whether media is
+        attached.
+
+        The estimate on the export screen re-runs on every toggle, and
+        pulling full message text each time made that cost grow with the
+        size of the archive. `char_len` is stored per row precisely so the
+        token estimate never has to read the text itself."""
+        return self.export_select(_columns="m.chat_id, m.date, m.char_len, m.media_path", **kwargs)
 
     # ---- export log / presets ----------------------------------------
     def add_export_log(self, **fields: Any) -> int:
