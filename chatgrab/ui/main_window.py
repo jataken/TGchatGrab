@@ -91,8 +91,14 @@ class MainWindow(QMainWindow):
         self._nav_labels: dict[str, str] = {}
 
         switcher = QWidget()
+        # Scoped by object name. A selector-less stylesheet on a container
+        # is inherited by every child, so the plain "background: …" this
+        # used to carry was repainting the two tab buttons inside it — the
+        # checked tab's accent fill was being overwritten by the track's
+        # own colour, leaving only its border visible.
+        switcher.setObjectName("blockSwitcher")
         switcher.setStyleSheet(
-            "background: rgba(233,233,237,13); border-radius: 9px;"
+            "QWidget#blockSwitcher { background: rgba(233,233,237,13); border-radius: 9px; }"
         )
         switcher_lay = QHBoxLayout(switcher)
         switcher_lay.setContentsMargins(3, 3, 3, 3)
