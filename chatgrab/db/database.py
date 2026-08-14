@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import sqlite3
 import threading
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, Iterable
 
 from . import schema
 from .dedup import fingerprint
+
+_logger = logging.getLogger("chatgrab")
 
 
 def now_iso() -> str:
@@ -26,7 +29,29 @@ class Database:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=OFF;")
-        schema.migrate(self._conn)
+        schema.migrate(self._conn, on_backup=self._backup_before_migration)
+
+    def _backup_before_migration(self, conn: sqlite3.Connection, migration_id: str) -> None:
+        """Copy the database before schema.migrate() changes anything.
+
+        Uses the same online-backup API as backup_to() below, on the raw
+        connection migrate() hands back — not through BackupService,
+        which needs an already-migrated Database and would be circular
+        this early. Runs once, right before the first migration a given
+        database hasn't seen yet; a fresh install has nothing to protect
+        (see migrations._has_existing_schema), so it never fires there.
+        """
+        backup_dir = self.path.parent / "backups" / "pre_migration"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        dest_path = backup_dir / f"chatgrab_before_{migration_id}_{stamp}.db"
+        dest = sqlite3.connect(str(dest_path))
+        try:
+            conn.backup(dest)
+        finally:
+            dest.close()
+        _logger.info("резервная копия перед миграцией %s: %s -> %s",
+                     migration_id, self.path, dest_path)
 
     # ---- low level -------------------------------------------------
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
@@ -468,6 +493,107 @@ class Database:
 
     def delete_search_preset(self, name: str) -> None:
         self.execute("DELETE FROM search_preset WHERE name = ?", (name,))
+
+    # ---- directions -----------------------------------------------------
+    # A flat catalogue — see db/schema.py's _DDL_DIRECTION comment for why
+    # this deliberately isn't a line-item hierarchy.
+    def add_direction(self, name: str, keywords: list[str] | None = None,
+                      stop_words: list[str] | None = None, price_file: str | None = None,
+                      note: str | None = None) -> int:
+        order_index = (self.query_one(
+            "SELECT COALESCE(MAX(order_index), -1) + 1 AS n FROM direction")["n"])
+        cur = self.execute(
+            "INSERT INTO direction(name, keywords, stop_words, price_file, note, "
+            "enabled, order_index, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (name, json.dumps(keywords or [], ensure_ascii=False),
+             json.dumps(stop_words or [], ensure_ascii=False), price_file, note,
+             order_index, now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_directions(self, enabled_only: bool = False) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM direction"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY order_index, id"
+        return self.query(sql)
+
+    def get_direction(self, direction_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM direction WHERE id = ?", (direction_id,))
+
+    def update_direction(self, direction_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields = dict(fields)
+        for list_field in ("keywords", "stop_words"):
+            if list_field in fields and isinstance(fields[list_field], list):
+                fields[list_field] = json.dumps(fields[list_field], ensure_ascii=False)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE direction SET {cols} WHERE id = ?",
+                     (*fields.values(), direction_id))
+
+    def delete_direction(self, direction_id: int) -> None:
+        self.execute("DELETE FROM direction WHERE id = ?", (direction_id,))
+
+    def reorder_directions(self, ordered_ids: list[int]) -> None:
+        """Rewrite order_index to match the given sequence — used by the
+        ↑/↓ buttons on the screen, one full rewrite rather than a swap so
+        it can't drift out of sync with what's actually on screen."""
+        with self._lock:
+            for index, direction_id in enumerate(ordered_ids):
+                self._conn.execute(
+                    "UPDATE direction SET order_index = ? WHERE id = ?", (index, direction_id))
+            self._conn.commit()
+
+    def export_directions(self) -> dict:
+        """Plain JSON-able dict — id is left out on purpose: importing this
+        elsewhere (or back into a rebuilt database) should create fresh
+        rows, not collide with whatever ids happen to already exist."""
+        directions = []
+        for row in self.list_directions():
+            directions.append({
+                "name": row["name"],
+                "keywords": json.loads(row["keywords"]),
+                "stop_words": json.loads(row["stop_words"]),
+                "price_file": row["price_file"],
+                "note": row["note"],
+                "enabled": bool(row["enabled"]),
+            })
+        return {"directions": directions}
+
+    def import_directions(self, data: dict, replace: bool = False) -> int:
+        """Load a previously exported catalogue. Malformed entries are
+        skipped rather than aborting the whole import — one bad row in a
+        hand-edited file shouldn't cost the rest. Returns how many were
+        actually added.
+
+        replace=True clears the existing catalogue first — the "start
+        over from this file" path; the default just appends, for merging
+        two machines' lists or restoring after an accidental delete.
+        """
+        directions = data.get("directions") if isinstance(data, dict) else None
+        if not isinstance(directions, list):
+            return 0
+        if replace:
+            self.execute("DELETE FROM direction")
+        added = 0
+        for entry in directions:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            keywords = entry.get("keywords")
+            stop_words = entry.get("stop_words")
+            self.add_direction(
+                name.strip(),
+                keywords=keywords if isinstance(keywords, list) else [],
+                stop_words=stop_words if isinstance(stop_words, list) else [],
+                price_file=entry.get("price_file") if isinstance(entry.get("price_file"), str) else None,
+                note=entry.get("note") if isinstance(entry.get("note"), str) else None,
+            )
+            added += 1
+        return added
 
     # ---- Telegram accounts ---------------------------------------------
     def add_account(self, name: str, session_file: str, phone: str | None = None,

@@ -92,4 +92,19 @@ assert kind == "linear", kind
 # migrate() must be safe to run again
 schema.migrate(conn)
 print("re-migrate OK, rows =", conn.execute("SELECT count(*) FROM bot_scenario_sessions").fetchone()[0])
+
+# новый справочник направлений появляется на старой базе, и учёт миграций
+# отражает применённые шаги ровно по одному разу
+applied = {row[0] for row in conn.execute("SELECT id FROM schema_migrations")}
+print("применённые миграции:", sorted(applied))
+assert applied == {"006", "007"}, applied
+assert "direction" in {r[0] for r in conn.execute(
+    "SELECT name FROM sqlite_master WHERE type='table'")}, "таблица direction не создалась"
+
+before_count = conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
+schema.migrate(conn)
+after_count = conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
+print(f"записей об применённых миграциях: было {before_count}, стало {after_count}")
+assert before_count == after_count, "повторный migrate() не должен дублировать записи учёта"
+
 print("\nMIGRATION TEST PASSED")

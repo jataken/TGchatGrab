@@ -23,6 +23,7 @@ from .screens.watch import WatchScreen
 from .screens.chats import ChatsScreen
 from .screens.collect import CollectScreen
 from .screens.connect import ConnectScreen
+from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
 from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
@@ -58,7 +59,11 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
 # selector. «Боты» lists them all and «Заявки»/«Журнал» span them, so
 # those three are deliberately not here.
 BOT_SCOPED_SCREENS = {"rules", "scenario", "templates"}
-COMMON_ITEMS = [("connect", "Подключение"), ("settings", "Настройки")]
+COMMON_ITEMS = [
+    ("connect", "Подключение"),
+    ("directions", "Направления"),
+    ("settings", "Настройки"),
+]
 
 SCREEN_BLOCK = {key: block for block, items in NAV_BY_BLOCK.items() for key, _ in items}
 
@@ -176,6 +181,7 @@ class MainWindow(QMainWindow):
         self.screens: dict[str, QWidget] = {
             "today": TodayScreen(ctx, self.navigate),
             "connect": ConnectScreen(ctx, self.navigate),
+            "directions": DirectionsScreen(ctx, self.navigate),
             "chats": ChatsScreen(ctx, self.navigate),
             "collect": CollectScreen(ctx, self.navigate),
             "browse": BrowseScreen(ctx, self.navigate),

@@ -961,7 +961,13 @@ class SettingsScreen(QWidget):
             self.sched_table.setCellWidget(i, 4, del_btn)
             self.sched_table.setRowHeight(i, 34)
         self.sched_table.resizeColumnsToContents()
-        self.sched_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        sched_header = self.sched_table.horizontalHeader()
+        sched_header.setSectionResizeMode(3, QHeaderView.Stretch)
+        # Same fix as watch.py's rules_table: resizeColumnsToContents
+        # doesn't measure a cellWidget's sizeHint, so "Удалить" comes out
+        # clipped without an explicit floor here.
+        sched_header.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.sched_table.setColumnWidth(4, 108)
         self._fit_table(self.sched_table, 34, 200)
 
     def _on_delete_schedule(self, schedule_id: int) -> None:

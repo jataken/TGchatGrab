@@ -185,7 +185,15 @@ class WatchScreen(QWidget):
             self.rules_table.setCellWidget(row, 3, del_btn)
             self.rules_table.setRowHeight(row, 36)
         self.rules_table.resizeColumnsToContents()
-        self.rules_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        header = self.rules_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        # resizeColumnsToContents measures QTableWidgetItem text, not this
+        # column's cellWidget — it comes out too narrow for "Удалить"'s own
+        # sizeHint, and QPushButton clips centred text in place rather
+        # than eliding it, so the button reads as "далить" instead of
+        # truncating cleanly.
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.rules_table.setColumnWidth(3, 108)
 
     def _set_rule(self, rule_id: int, **fields) -> None:
         self.ctx.db.set_watch_rule(rule_id, **fields)

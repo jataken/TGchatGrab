@@ -1,9 +1,16 @@
-"""Schema creation and safe migrations.
+"""Schema DDL and the pre-numbered-migrations baseline.
 
-All statements are idempotent (CREATE TABLE IF NOT EXISTS / column-presence
-checks before ALTER TABLE), so calling migrate() on an existing user
-database only ever adds what's missing. Schema version is tracked in
-app_meta so future versions can add incremental migration steps.
+Everything below CURRENT_SCHEMA_VERSION and _apply_baseline() is the schema
+as it stood through v6, unchanged in behaviour — column-presence checks
+before ALTER TABLE, idempotent CREATE TABLE IF NOT EXISTS. It is now step
+"006_baseline" in db/migrations.py rather than a version number: databases
+that skipped a release still get repaired, exactly as before.
+
+Schema changes from here on are numbered migrations — see db/migrations.py
+for the runner, the tracking table, and how the pre-upgrade backup is
+wired in. This file keeps owning the DDL text itself (new tables/columns
+get their CREATE/ALTER statements here, referenced by a migration step
+there) since that's where every existing table already lives.
 """
 from __future__ import annotations
 
@@ -187,6 +194,28 @@ CREATE TABLE IF NOT EXISTS account (
     created_at TEXT NOT NULL
 );
 """
+
+# A flat list, deliberately — one person's five directions don't need
+# line items, units, or an owner field. Feeds the price file into price
+# requests, the keywords into chat search and monitoring, and later the
+# direction into the lead form and the Bitrix24 mapping.
+_DDL_DIRECTION = """
+CREATE TABLE IF NOT EXISTS direction (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    keywords TEXT NOT NULL DEFAULT '[]',
+    stop_words TEXT NOT NULL DEFAULT '[]',
+    price_file TEXT,
+    note TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_DIRECTION_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_direction_order ON direction(order_index);",
+]
 
 _DDL_STAT_CACHE = """
 CREATE TABLE IF NOT EXISTS chat_stat_cache (
@@ -466,9 +495,11 @@ def _fts_needs_build(conn: sqlite3.Connection) -> bool:
     return msg_count > 0 and fts_count == 0
 
 
-def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
-    """Bring the database up to CURRENT_SCHEMA_VERSION. Safe to call every
-    startup, on any existing user database."""
+def _apply_baseline(conn: sqlite3.Connection, on_fts_progress=None) -> None:
+    """Bring the database up to CURRENT_SCHEMA_VERSION (v6). This is
+    migration step "006_baseline" in db/migrations.py — body unchanged
+    from when it was the whole of migrate(), safe to call every startup
+    on any existing user database."""
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys=OFF;")
 
@@ -552,6 +583,22 @@ def migrate(conn: sqlite3.Connection, on_fts_progress=None) -> None:
     if version != str(CURRENT_SCHEMA_VERSION):
         _set_meta(conn, "schema_version", str(CURRENT_SCHEMA_VERSION))
         conn.commit()
+
+
+def migrate(conn: sqlite3.Connection, on_fts_progress=None, on_backup=None) -> None:
+    """Public entry point — unchanged signature plus one new optional
+    kwarg, so every existing caller (Database.__init__, both test files
+    that hand-build an old database and migrate it directly) keeps working
+    without modification.
+
+    Delegates to db/migrations.py, which tracks numbered steps beyond this
+    baseline and backs up the file before applying any of them. Imported
+    here rather than at module level: migrations.py imports this module
+    for the DDL and _apply_baseline, so importing it back at the top of
+    this file would be circular.
+    """
+    from . import migrations
+    migrations.run(conn, on_fts_progress=on_fts_progress, on_backup=on_backup)
 
 
 def _backfill_text_hashes(conn: sqlite3.Connection, on_progress=None, batch_size: int = 2000) -> None:
