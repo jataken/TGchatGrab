@@ -160,6 +160,25 @@ class BrowseScreen(QWidget):
         chip_row.addWidget(self.sort_combo)
         top_lay.addLayout(chip_row)
 
+        # Saved searches: the export screen has had presets from the start,
+        # while the filter set that actually finds things had to be rebuilt
+        # by hand every time.
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        preset_row.addWidget(muted("Сохранённые поиски"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(180)
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_picked)
+        preset_row.addWidget(self.preset_combo)
+        save_search_btn = button("Сохранить как…", "secondary")
+        save_search_btn.clicked.connect(self._on_save_preset)
+        preset_row.addWidget(save_search_btn)
+        self.delete_search_btn = button("Удалить", "ghost")
+        self.delete_search_btn.clicked.connect(self._on_delete_preset)
+        preset_row.addWidget(self.delete_search_btn)
+        preset_row.addStretch(1)
+        top_lay.addLayout(preset_row)
+
         status_row = QHBoxLayout()
         self.count_label = muted("")
         status_row.addWidget(self.count_label)
@@ -205,7 +224,75 @@ class BrowseScreen(QWidget):
 
         self._last_rows = []
 
+    # ---- saved searches ------------------------------------------------
+    def _populate_presets(self) -> None:
+        current = self.preset_combo.currentData()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem("— не выбран —", None)
+        for preset in self.ctx.db.list_search_presets():
+            self.preset_combo.addItem(preset["name"], preset["name"])
+        idx = self.preset_combo.findData(current)
+        self.preset_combo.setCurrentIndex(max(0, idx))
+        self.preset_combo.blockSignals(False)
+        self.delete_search_btn.setEnabled(self.preset_combo.currentData() is not None)
+
+    def _on_save_preset(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Сохранить поиск", "Название:")
+        if not ok or not name.strip():
+            return
+        params = self.current_filters()
+        params["sort_desc"] = self.sort_desc
+        self.ctx.db.save_search_preset(name.strip(), params)
+        self._populate_presets()
+        idx = self.preset_combo.findData(name.strip())
+        if idx >= 0:
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(idx)
+            self.preset_combo.blockSignals(False)
+            self.delete_search_btn.setEnabled(True)
+
+    def _on_preset_picked(self, _index: int) -> None:
+        name = self.preset_combo.currentData()
+        self.delete_search_btn.setEnabled(name is not None)
+        if name is None:
+            return
+        import json
+        preset = next((p for p in self.ctx.db.list_search_presets() if p["name"] == name), None)
+        if preset is None:
+            return
+        params = json.loads(preset["params"])
+        for widget in (self.query_input, self.author_input):
+            widget.blockSignals(True)
+        self.query_input.setText(params.get("query", ""))
+        self.author_input.setText(params.get("author", ""))
+        for widget in (self.query_input, self.author_input):
+            widget.blockSignals(False)
+        for cb, key in ((self.photos_only_cb, "photos_only"),
+                        (self.forward_only_cb, "forwards_only"),
+                        (self.reply_only_cb, "replies_only")):
+            cb.blockSignals(True)
+            cb.setChecked(bool(params.get(key)))
+            cb.blockSignals(False)
+        self.sort_desc = bool(params.get("sort_desc", True))
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.setCurrentIndex(0 if self.sort_desc else 1)
+        self.sort_combo.blockSignals(False)
+        chat_id = params.get("chat_id") or 0
+        self._select_chat_chip(chat_id) if chat_id else self._select_chat_chip(0)
+        self.page = 0
+        self._run_search()
+
+    def _on_delete_preset(self) -> None:
+        name = self.preset_combo.currentData()
+        if name is None:
+            return
+        self.ctx.db.delete_search_preset(name)
+        self._populate_presets()
+
     def on_show(self, chat_id: int | None = None, **kwargs) -> None:
+        self._populate_presets()
         self._populate_chat_picker()
         if chat_id is not None:
             self._select_chat_chip(chat_id)

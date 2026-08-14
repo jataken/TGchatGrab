@@ -19,6 +19,7 @@ from .screens.bots.rules_screen import RulesScreen
 from .screens.bots.scenario_screen import ScenarioScreen
 from .screens.bots.templates_screen import TemplatesScreen
 from .screens.browse import BrowseScreen
+from .screens.watch import WatchScreen
 from .screens.chats import ChatsScreen
 from .screens.collect import CollectScreen
 from .screens.connect import ConnectScreen
@@ -40,6 +41,7 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
         ("chats", "Источники"),
         ("collect", "Сбор"),
         ("browse", "Собранное"),
+        ("watch", "Наблюдение"),
         ("export", "Экспорт"),
     ],
     "bots": [
@@ -177,6 +179,7 @@ class MainWindow(QMainWindow):
             "chats": ChatsScreen(ctx, self.navigate),
             "collect": CollectScreen(ctx, self.navigate),
             "browse": BrowseScreen(ctx, self.navigate),
+            "watch": WatchScreen(ctx, self.navigate),
             "export": ExportScreen(ctx, self.navigate),
             "bots": BotsScreen(ctx, self.navigate),
             "leads": LeadsScreen(ctx, self.navigate),
@@ -202,6 +205,9 @@ class MainWindow(QMainWindow):
         # the close is a real exit rather than a minimise-to-tray.
         self.allow_close = False
         self.tray = TrayController(self, ctx)
+        # A watch-list match is the one collection event worth interrupting
+        # for — it is what the user explicitly asked to be told about.
+        ctx.watch_service.on_hit = self._on_watch_hit
 
         self._switch_block("collect", navigate_to="today")
         self._refresh_sidebar()
@@ -270,6 +276,14 @@ class MainWindow(QMainWindow):
             bool(bots) and current_screen in BOT_SCOPED_SCREENS
         )
 
+    def _on_watch_hit(self, rule, record) -> None:
+        chat = self.ctx.db.get_chat(record.get("chat_id"))
+        where = chat["title"] if chat else "отслеживаемый чат"
+        text = (record.get("text") or record.get("media_caption") or "").strip()
+        self.tray.notify(f"Сработало слово «{rule['phrase']}»",
+                          f"{where}: {text[:160]}")
+        self._refresh_sidebar()
+
     def _on_bot_selector_changed(self, _index: int) -> None:
         self.ctx.bot_selection.set_current(self.bot_selector.currentData())
 
@@ -334,6 +348,8 @@ class MainWindow(QMainWindow):
         self._set_badge("chats", str(len(chats)) if chats else "")
         self._set_badge("collect", "●" if loading else "", accent=True)
         self._set_badge("bots", str(len(bots)) if bots else "")
+        unseen = db.unseen_watch_count()
+        self._set_badge("watch", str(unseen) if unseen else "")
         self._set_badge("leads", str(new_leads) if new_leads else "")
         self._set_badge(
             "collect_block", "●" if loading else "", accent=True, button=self.block_buttons["collect"],

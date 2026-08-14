@@ -429,10 +429,183 @@ class Database:
     def list_presets(self) -> list[sqlite3.Row]:
         return self.query("SELECT * FROM export_preset ORDER BY created_at DESC")
 
+    # ---- scheduled exports ---------------------------------------------
+    def add_export_schedule(self, preset_name: str, every_hours: int, at_hour: int) -> int:
+        cur = self.execute(
+            "INSERT INTO export_schedule(preset_name, every_hours, at_hour, enabled, created_at) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (preset_name, every_hours, at_hour, now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_export_schedules(self) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM export_schedule ORDER BY created_at")
+
+    def set_export_schedule(self, schedule_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE export_schedule SET {cols} WHERE id = ?",
+                     (*fields.values(), schedule_id))
+
+    def delete_export_schedule(self, schedule_id: int) -> None:
+        self.execute("DELETE FROM export_schedule WHERE id = ?", (schedule_id,))
+
     def delete_preset(self, name: str) -> None:
         self.execute("DELETE FROM export_preset WHERE name = ?", (name,))
 
     # ---- stats cache -------------------------------------------------
+    # ---- saved searches ----------------------------------------------
+    def save_search_preset(self, name: str, params: dict[str, Any]) -> None:
+        self.execute(
+            "INSERT INTO search_preset(name, params, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET params = excluded.params",
+            (name, json.dumps(params, ensure_ascii=False), now_iso()),
+        )
+
+    def list_search_presets(self) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM search_preset ORDER BY name")
+
+    def delete_search_preset(self, name: str) -> None:
+        self.execute("DELETE FROM search_preset WHERE name = ?", (name,))
+
+    # ---- watch list ---------------------------------------------------
+    def add_watch_rule(self, phrase: str, chat_id: int | None = None, notify: bool = True) -> int:
+        cur = self.execute(
+            "INSERT INTO watch_rule(phrase, chat_id, enabled, notify, created_at) "
+            "VALUES (?, ?, 1, ?, ?)",
+            (phrase.strip(), chat_id, 1 if notify else 0, now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_watch_rules(self, enabled_only: bool = False) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM watch_rule"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        return self.query(sql + " ORDER BY created_at")
+
+    def set_watch_rule(self, rule_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE watch_rule SET {cols} WHERE id = ?", (*fields.values(), rule_id))
+
+    def delete_watch_rule(self, rule_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM watch_hit WHERE rule_id = ?", (rule_id,))
+            self._conn.execute("DELETE FROM watch_rule WHERE id = ?", (rule_id,))
+            self._conn.commit()
+
+    def add_watch_hit(self, rule_id: int, chat_id: int, message_id: int) -> bool:
+        """Records a match. Returns False when this message already matched
+        this rule — re-scanning history must not resurrect old alerts."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO watch_hit(rule_id, chat_id, message_id, matched_at) "
+                "VALUES (?, ?, ?, ?)",
+                (rule_id, chat_id, message_id, now_iso()),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def list_watch_hits(self, unseen_only: bool = False, limit: int = 200) -> list[sqlite3.Row]:
+        sql = ("SELECT h.*, r.phrase, m.text, m.date, m.sender_display_name, "
+               "       m.sender_username, m.link, m.media_path, c.title AS chat_title "
+               "FROM watch_hit h "
+               "JOIN watch_rule r ON r.id = h.rule_id "
+               "LEFT JOIN messages m ON m.chat_id = h.chat_id AND m.message_id = h.message_id "
+               "LEFT JOIN chats c ON c.chat_id = h.chat_id")
+        if unseen_only:
+            sql += " WHERE h.seen = 0"
+        return self.query(sql + " ORDER BY h.matched_at DESC LIMIT ?", (limit,))
+
+    def unseen_watch_count(self) -> int:
+        row = self.query_one("SELECT count(*) AS c FROM watch_hit WHERE seen = 0")
+        return row["c"] if row else 0
+
+    def mark_watch_hits_seen(self, hit_ids: list[int] | None = None) -> None:
+        if hit_ids:
+            placeholders = ",".join("?" for _ in hit_ids)
+            self.execute(f"UPDATE watch_hit SET seen = 1 WHERE id IN ({placeholders})", hit_ids)
+        else:
+            self.execute("UPDATE watch_hit SET seen = 1 WHERE seen = 0")
+
+    # ---- retention -----------------------------------------------------
+    def chat_storage(self) -> list[dict]:
+        """Per-chat volume: how many messages, how far back they go, and how
+        many carry a downloaded file. Feeds both the retention screen and
+        the source-productivity view."""
+        rows = self.query(
+            """
+            SELECT c.chat_id, c.title,
+                   count(m.id) AS messages,
+                   sum(CASE WHEN m.media_path IS NOT NULL AND m.media_path != '' THEN 1 ELSE 0 END) AS media,
+                   min(m.date) AS oldest, max(m.date) AS newest,
+                   coalesce(sum(m.char_len), 0) AS chars
+            FROM chats c LEFT JOIN messages m ON m.chat_id = c.chat_id
+            GROUP BY c.chat_id, c.title ORDER BY messages DESC
+            """
+        )
+        return [dict(r) for r in rows]
+
+    def messages_older_than(self, cutoff_iso: str, chat_id: int | None = None) -> int:
+        sql = "SELECT count(*) AS c FROM messages WHERE date < ?"
+        params: list[Any] = [cutoff_iso]
+        if chat_id is not None:
+            sql += " AND chat_id = ?"
+            params.append(chat_id)
+        return self.query_one(sql, params)["c"]
+
+    def select_older_than(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM messages WHERE date < ? ORDER BY date", (cutoff_iso,))
+
+    def delete_older_than(self, cutoff_iso: str) -> int:
+        """Deletes and reports how many rows went. FTS and watch hits are
+        cleaned alongside so nothing points at a message that is gone."""
+        with self._lock:
+            cur = self._conn.execute("SELECT count(*) FROM messages WHERE date < ?", (cutoff_iso,))
+            n = cur.fetchone()[0]
+            self._conn.execute(
+                "DELETE FROM watch_hit WHERE (chat_id, message_id) IN "
+                "(SELECT chat_id, message_id FROM messages WHERE date < ?)",
+                (cutoff_iso,),
+            )
+            self._conn.execute("DELETE FROM messages WHERE date < ?", (cutoff_iso,))
+            self._conn.commit()
+            return n
+
+    # ---- source productivity -------------------------------------------
+    def chat_productivity(self, days: int = 30) -> list[dict]:
+        """Is a source worth collecting? Volume alone does not say — this
+        pairs it with how often the chat produced something the user
+        actually asked to be told about (watch hits) or that a bot rule
+        turned into a lead."""
+        since = (dt.datetime.now() - dt.timedelta(days=days)).isoformat()
+        out = []
+        for row in self.chat_storage():
+            cid = row["chat_id"]
+            recent = self.query_one(
+                "SELECT count(*) AS c FROM messages WHERE chat_id = ? AND date >= ?",
+                (cid, since),
+            )["c"]
+            hits = self.query_one(
+                "SELECT count(*) AS c FROM watch_hit WHERE chat_id = ? AND matched_at >= ?",
+                (cid, since),
+            )["c"]
+            fired = self.query_one(
+                "SELECT count(*) AS c FROM bot_activity_log "
+                "WHERE chat_id = ? AND kind = 'trigger_fired' AND timestamp >= ?",
+                (cid, since),
+            )["c"]
+            out.append({
+                **row,
+                "recent": recent,
+                "per_day": round(recent / max(1, days), 1),
+                "watch_hits": hits,
+                "triggers": fired,
+            })
+        return out
+
     def rebuild_stat_cache(self, chat_id: int, days: int = 16) -> None:
         since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
         rows = self.query(

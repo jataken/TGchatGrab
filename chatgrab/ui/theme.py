@@ -42,6 +42,26 @@ STATUS_STYLES = {
 }
 
 
+# Единственный стиль на всех платформах — см. apply_theme ниже.
+BASE_STYLE = "Fusion"
+
+
+def apply_theme(app) -> None:
+    """Pin the widget style *and* the stylesheet, in that order.
+
+    Both halves matter and only together: the стиль decides whether the
+    QSS is honoured at all. Everything that renders the app — the real
+    entry point and the test harness alike — goes through here, so a
+    screenshot taken during development is a screenshot of what ships.
+    """
+    app.setStyle(BASE_STYLE)
+    # Once a stylesheet is set, app.style() is a QStyleSheetStyle wrapper
+    # that no longer reports the base style's name, so record it here —
+    # both the test and «сведения о сборке» read it back.
+    app.setProperty("chatgrab_base_style", app.style().objectName())
+    app.setStyleSheet(build_qss())
+
+
 def build_qss() -> str:
     return f"""
     * {{ font-family: "Segoe UI", "Inter", sans-serif; }}

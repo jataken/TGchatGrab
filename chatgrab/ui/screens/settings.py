@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPlainTextEdit, QScrollArea, QSpinBox, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 from ..context import AppContext
 from .. import tray
 from ... import __version__, diagnostics
-from ..widgets import button, card, h1, muted
+from ..widgets import button, card, h1, muted, plural
 from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
 from ...services.export_service import DEFAULT_MD_HEADER
@@ -384,6 +384,132 @@ class SettingsScreen(QWidget):
         tray_lay.addWidget(save_tray_btn)
         outer.addWidget(tray_card)
 
+        # ---- retention -----------------------------------------------
+        ret_card = card()
+        ret_lay = QVBoxLayout(ret_card)
+        ret_lay.setContentsMargins(16, 14, 16, 14)
+        ret_lay.addWidget(muted("СКОЛЬКО ХРАНИТЬ"))
+        ret_hint = muted(
+            "База растёт, пока её не подрезать. Старое сначала выписывается в "
+            "архивный файл рядом с выгрузками и только потом удаляется — "
+            "заархивированное можно открыть и отдать Claude позже. "
+            "Само по себе ничего не удаляется: только по этой кнопке."
+        )
+        ret_hint.setWordWrap(True)
+        ret_lay.addWidget(ret_hint)
+
+        ret_row = QHBoxLayout()
+        ret_row.addWidget(QLabel("Хранить сообщения за последние"))
+        self.retention_spin = QSpinBox()
+        self.retention_spin.setRange(0, 120)
+        self.retention_spin.setSuffix(" мес.")
+        self.retention_spin.setSpecialValueText("всё время")
+        self.retention_spin.setValue(self.ctx.retention_service.months)
+        self.retention_spin.valueChanged.connect(self._refresh_retention_preview)
+        ret_row.addWidget(self.retention_spin)
+        ret_row.addStretch(1)
+        ret_lay.addLayout(ret_row)
+
+        self.retention_preview = muted("")
+        self.retention_preview.setWordWrap(True)
+        ret_lay.addWidget(self.retention_preview)
+
+        ret_btns = QHBoxLayout()
+        save_ret_btn = button("Сохранить", "primary")
+        save_ret_btn.clicked.connect(self._save_retention)
+        ret_btns.addWidget(save_ret_btn)
+        self.prune_btn = button("Заархивировать и удалить старое", "secondary")
+        self.prune_btn.clicked.connect(self._on_prune)
+        ret_btns.addWidget(self.prune_btn)
+        orphan_btn = button("Найти файлы без сообщений", "ghost")
+        orphan_btn.clicked.connect(self._on_orphans)
+        ret_btns.addWidget(orphan_btn)
+        ret_btns.addStretch(1)
+        ret_lay.addLayout(ret_btns)
+        outer.addWidget(ret_card)
+
+        # ---- source productivity --------------------------------------
+        prod_card = card()
+        prod_lay = QVBoxLayout(prod_card)
+        prod_lay.setContentsMargins(16, 14, 16, 14)
+        prod_lay.addWidget(muted("ОТДАЧА ИСТОЧНИКОВ ЗА 30 ДНЕЙ"))
+        prod_hint = muted(
+            "Объём сам по себе не говорит, стоит ли собирать чат. Рядом — сколько "
+            "раз он дал то, о чём вы просили сообщить: совпадения по наблюдению и "
+            "срабатывания правил ботов."
+        )
+        prod_hint.setWordWrap(True)
+        prod_lay.addWidget(prod_hint)
+        self.prod_table = QTableWidget(0, 6)
+        self.prod_table.setHorizontalHeaderLabels(
+            ["Чат", "Всего", "В сутки", "Находок", "Правил", "Медиа"])
+        self.prod_table.verticalHeader().setVisible(False)
+        self.prod_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.prod_table.setShowGrid(False)
+        self.prod_table.setMaximumHeight(220)
+        self.prod_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        prod_lay.addWidget(self.prod_table)
+        prod_btns = QHBoxLayout()
+        refresh_prod_btn = button("Пересчитать", "ghost")
+        refresh_prod_btn.clicked.connect(self._refresh_productivity)
+        prod_btns.addWidget(refresh_prod_btn)
+        prod_btns.addStretch(1)
+        prod_lay.addLayout(prod_btns)
+        outer.addWidget(prod_card)
+
+        # ---- scheduled exports ----------------------------------------
+        xsched_card = card()
+        xsched_lay = QVBoxLayout(xsched_card)
+        xsched_lay.setContentsMargins(16, 14, 16, 14)
+        xsched_lay.addWidget(muted("ВЫГРУЗКА ПО РАСПИСАНИЮ"))
+        sched_hint = muted(
+            "Запускает сохранённый пресет экспорта сам, чтобы свежий файл просто "
+            "появлялся в папке. Если компьютер был выключен в назначенный час, "
+            "выгрузка произойдёт при следующем запуске — момент не пропадает."
+        )
+        sched_hint.setWordWrap(True)
+        xsched_lay.addWidget(sched_hint)
+
+        sched_add = QHBoxLayout()
+        sched_add.addWidget(muted("Пресет"))
+        self.sched_preset_combo = QComboBox()
+        self.sched_preset_combo.setMinimumWidth(160)
+        sched_add.addWidget(self.sched_preset_combo)
+        sched_add.addWidget(muted("каждые"))
+        self.sched_hours_spin = QSpinBox()
+        self.sched_hours_spin.setRange(1, 24 * 30)
+        self.sched_hours_spin.setValue(168)
+        self.sched_hours_spin.setSuffix(" ч")
+        sched_add.addWidget(self.sched_hours_spin)
+        sched_add.addWidget(muted("не раньше"))
+        self.sched_hour_spin = QSpinBox()
+        self.sched_hour_spin.setRange(0, 23)
+        self.sched_hour_spin.setValue(9)
+        self.sched_hour_spin.setSuffix(":00")
+        sched_add.addWidget(self.sched_hour_spin)
+        add_sched_btn = button("Добавить", "primary")
+        add_sched_btn.clicked.connect(self._on_add_schedule)
+        sched_add.addWidget(add_sched_btn)
+        sched_add.addStretch(1)
+        xsched_lay.addLayout(sched_add)
+
+        self.sched_table = QTableWidget(0, 5)
+        self.sched_table.setHorizontalHeaderLabels(
+            ["Пресет", "Период", "Прошлый запуск", "Результат", ""])
+        self.sched_table.verticalHeader().setVisible(False)
+        self.sched_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.sched_table.setShowGrid(False)
+        self.sched_table.setMaximumHeight(160)
+        self.sched_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        xsched_lay.addWidget(self.sched_table)
+        self.sched_empty = muted(
+            "Расписаний нет. Пресеты создаются на экране «Выгрузка» — "
+            "сначала сохраните там набор параметров, потом его можно запускать сам."
+        )
+        self.sched_empty.setWordWrap(True)
+        xsched_lay.addWidget(self.sched_empty)
+        outer.addWidget(xsched_card)
+
         # ---- diagnostics (temporary) -------------------------------------
         diag_card = card()
         diag_lay = QVBoxLayout(diag_card)
@@ -446,12 +572,19 @@ class SettingsScreen(QWidget):
         self._refresh_authors()
         self._refresh_db_size()
         self._refresh_security_section()
+        self._refresh_retention_preview()
+        self._populate_sched_presets()
+        self._refresh_schedules()
 
     def on_show(self, **kwargs) -> None:
         self._refresh_rules()
         self._refresh_authors()
         self._refresh_db_size()
         self._refresh_security_section()
+        self._refresh_retention_preview()
+        self._refresh_productivity()
+        self._populate_sched_presets()
+        self._refresh_schedules()
 
     # ---- actions -----------------------------------------------------
     @staticmethod
@@ -663,6 +796,178 @@ class SettingsScreen(QWidget):
             f"Было: {before / (1024 * 1024):.1f} МБ → стало: {after / (1024 * 1024):.1f} МБ",
         )
 
+    @staticmethod
+    def _fit_table(table: QTableWidget, row_height: int, cap: int) -> None:
+        """Height that follows the contents. Inside a long scrolling page a
+        fixed-height table with three rows in it just reads as a hole."""
+        wanted = table.horizontalHeader().height() + row_height * table.rowCount() + 4
+        table.setFixedHeight(max(row_height + 24, min(cap, wanted)))
+
+    # ---- retention ---------------------------------------------------
+    def _refresh_retention_preview(self) -> None:
+        """Says what the button would remove *before* it is pressed. The
+        count is against the value currently in the spinner, not the saved
+        one — otherwise the preview describes a different setting than the
+        one on screen."""
+        months = self.retention_spin.value()
+        if months <= 0:
+            self.retention_preview.setText(
+                "Сейчас хранится всё. Ничего не удаляется и не архивируется.")
+            self.prune_btn.setEnabled(False)
+            return
+        info = self.ctx.retention_service.preview(months)
+        n = info["messages"]
+        if not n:
+            self.retention_preview.setText(
+                f"Старше {info['cutoff'][:10]} ничего нет — удалять нечего.")
+            self.prune_btn.setEnabled(False)
+            return
+        self.retention_preview.setText(
+            f"Старше {info['cutoff'][:10]} — {n} "
+            + plural(n, "сообщение", "сообщения", "сообщений")
+            + ". Они уйдут в архивный файл и будут удалены из базы.")
+        self.prune_btn.setEnabled(True)
+
+    def _save_retention(self) -> None:
+        self.ctx.retention_service.set_months(self.retention_spin.value())
+        self._refresh_retention_preview()
+        QMessageBox.information(
+            self, "Сохранено",
+            "Срок хранения записан. Само по себе ничего не удалится — "
+            "старое уйдёт только по кнопке «Заархивировать и удалить старое».")
+
+    def _on_prune(self) -> None:
+        months = self.retention_spin.value()
+        if months <= 0:
+            return
+        info = self.ctx.retention_service.preview(months)
+        n = info["messages"]
+        if not n:
+            QMessageBox.information(self, "Нечего удалять",
+                                    "Сообщений старше указанного срока нет.")
+            return
+        if QMessageBox.question(
+            self, "Заархивировать и удалить",
+            f"{n} " + plural(n, "сообщение", "сообщения", "сообщений")
+            + f" старше {info['cutoff'][:10]} будут выписаны в архивный файл "
+            "и удалены из базы. Файлы медиа останутся на диске — их можно "
+            "найти отдельно кнопкой рядом. Продолжить?"
+        ) != QMessageBox.Yes:
+            return
+        result = self.ctx.retention_service.archive_and_prune(months)
+        self._refresh_db_size()
+        self._refresh_retention_preview()
+        where = f"\n\nАрхив: {result['path']}" if result["path"] else ""
+        QMessageBox.information(
+            self, "Готово",
+            f"Удалено {result['deleted']} "
+            + plural(result["deleted"], "сообщение", "сообщения", "сообщений")
+            + f", в архив записано {result['archived']}.{where}")
+
+    def _on_orphans(self) -> None:
+        """Lists leftover files rather than deleting them. Media on disk is
+        the one thing the app cannot recreate, so the decision stays with
+        the user — the folder just gets opened."""
+        orphans = self.ctx.retention_service.orphaned_media()
+        if not orphans:
+            QMessageBox.information(
+                self, "Всё на месте",
+                "Каждый файл в папках медиа привязан к сообщению в базе.")
+            return
+        total_mb = sum(p.stat().st_size for p in orphans if p.exists()) / (1024 * 1024)
+        sample = "\n".join(str(p) for p in orphans[:10])
+        more = f"\n… и ещё {len(orphans) - 10}" if len(orphans) > 10 else ""
+        if QMessageBox.question(
+            self, "Файлы без сообщений",
+            f"{len(orphans)} " + plural(len(orphans), "файл", "файла", "файлов")
+            + f" ({total_mb:.1f} МБ) больше не связаны ни с одним сообщением — "
+            "обычно это остаётся после удаления чата или архивации.\n\n"
+            f"{sample}{more}\n\nОткрыть папку, чтобы разобраться вручную?"
+        ) == QMessageBox.Yes:
+            open_in_explorer(self.ctx.paths.data_dir)
+
+    # ---- source productivity -----------------------------------------
+    def _refresh_productivity(self) -> None:
+        rows = self.ctx.db.chat_productivity(30)
+        rows.sort(key=lambda r: (r["watch_hits"] + r["triggers"], r["recent"]), reverse=True)
+        self.prod_table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            values = [
+                row["title"] or str(row["chat_id"]),
+                str(row["recent"]),
+                f"{row['per_day']:g}",
+                str(row["watch_hits"]),
+                str(row["triggers"]),
+                str(row["media"] or 0),
+            ]
+            for col, value in enumerate(values):
+                self.prod_table.setItem(i, col, QTableWidgetItem(value))
+            self.prod_table.setRowHeight(i, 30)
+        self.prod_table.resizeColumnsToContents()
+        self.prod_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._fit_table(self.prod_table, 30, 220)
+
+    # ---- scheduled exports -------------------------------------------
+    def _populate_sched_presets(self) -> None:
+        current = self.sched_preset_combo.currentText()
+        self.sched_preset_combo.clear()
+        names = [p["name"] for p in self.ctx.db.list_presets()]
+        self.sched_preset_combo.addItems(names)
+        if current in names:
+            self.sched_preset_combo.setCurrentText(current)
+        self.sched_preset_combo.setEnabled(bool(names))
+
+    def _on_add_schedule(self) -> None:
+        name = self.sched_preset_combo.currentText().strip()
+        if not name:
+            QMessageBox.information(
+                self, "Нет пресетов",
+                "Сначала сохраните набор параметров на экране «Выгрузка» — "
+                "расписание запускает именно его.")
+            return
+        existing = [s for s in self.ctx.db.list_export_schedules()
+                    if s["preset_name"] == name]
+        if existing:
+            QMessageBox.information(
+                self, "Уже есть",
+                f"Пресет «{name}» уже стоит на расписании. Удалите старую "
+                "строку, если период нужно изменить.")
+            return
+        self.ctx.db.add_export_schedule(
+            name, self.sched_hours_spin.value(), self.sched_hour_spin.value())
+        self._refresh_schedules()
+
+    def _refresh_schedules(self) -> None:
+        schedules = self.ctx.db.list_export_schedules()
+        self.sched_empty.setVisible(not schedules)
+        self.sched_table.setVisible(bool(schedules))
+        self.sched_table.setRowCount(len(schedules))
+        for i, s in enumerate(schedules):
+            hours = s["every_hours"]
+            if hours % 24 == 0:
+                days = hours // 24
+                period = f"каждые {days} " + plural(days, "сутки", "суток", "суток")
+            else:
+                period = f"каждые {hours} " + plural(hours, "час", "часа", "часов")
+            period += f", не раньше {s['at_hour']:02d}:00"
+            last = (s["last_run_at"] or "")[:16].replace("T", " ") or "ещё не запускалась"
+            self.sched_table.setItem(i, 0, QTableWidgetItem(s["preset_name"]))
+            self.sched_table.setItem(i, 1, QTableWidgetItem(period))
+            self.sched_table.setItem(i, 2, QTableWidgetItem(last))
+            self.sched_table.setItem(i, 3, QTableWidgetItem(s["last_result"] or "—"))
+            del_btn = button("Удалить", "ghost")
+            del_btn.clicked.connect(
+                lambda _c, sid=s["id"]: self._on_delete_schedule(sid))
+            self.sched_table.setCellWidget(i, 4, del_btn)
+            self.sched_table.setRowHeight(i, 34)
+        self.sched_table.resizeColumnsToContents()
+        self.sched_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self._fit_table(self.sched_table, 34, 200)
+
+    def _on_delete_schedule(self, schedule_id: int) -> None:
+        self.ctx.db.delete_export_schedule(schedule_id)
+        self._refresh_schedules()
+
     def _copy_build_info(self) -> None:
         """Version, platform and where the data actually lives — the facts
         a problem report needs, on the clipboard rather than retyped."""
@@ -674,6 +979,7 @@ class SettingsScreen(QWidget):
             f"{platform.system()} {platform.release()} ({platform.machine()})\n"
             f"Python {platform.python_version()}, сборка: "
             f"{'exe' if getattr(sys, 'frozen', False) else 'из исходников'}\n"
+            f"Стиль: {QApplication.instance().property('chatgrab_base_style') or '—'}\n"
             f"Данные: {self.ctx.paths.data_dir}\n"
             f"Журнал: {self.ctx.paths.log_path}"
         )

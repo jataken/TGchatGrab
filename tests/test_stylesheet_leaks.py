@@ -11,8 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtWidgets import QApplication, QLabel, QAbstractButton
 app = QApplication.instance() or QApplication(sys.argv)
-from chatgrab.ui.theme import build_qss
-app.setStyleSheet(build_qss())
+from chatgrab.ui.theme import BASE_STYLE, apply_theme
+apply_theme(app)
 loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 
 from chatgrab.paths import Paths
@@ -25,6 +25,9 @@ from chatgrab.services.ignore_service import IgnoreService
 from chatgrab.services.backup_service import BackupService
 from chatgrab.security import SecurityService
 from chatgrab.bots.manager import BotManager
+from chatgrab.services.watch_service import WatchService
+from chatgrab.services.retention_service import RetentionService
+from chatgrab.services.export_schedule_service import ExportScheduleService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow, NAV_BY_BLOCK, COMMON_ITEMS
 
@@ -36,7 +39,9 @@ ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     collector=Collector(db, tg, config, paths),
     export_service=ExportService(db, paths), ignore_service=IgnoreService(db),
     backup_service=BackupService(db, paths), security=sec,
-    bot_manager=BotManager(db, tg, sec))
+    bot_manager=BotManager(db, tg, sec),
+    watch_service=WatchService(db), retention_service=RetentionService(db, paths),
+    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)))
 db.add_chat(1, "Биржа", "b", "all", None)
 ctx.bot_manager.create_bot("Бот", "userbot", None, "custom", None)
 
@@ -45,7 +50,19 @@ for key in [k for _, items in NAV_BY_BLOCK.items() for k, _ in items] + [k for k
     win.navigate(key); app.processEvents()
 app.processEvents()
 
-print("== контейнеры со стилем без селектора ==")
+print("== стиль виджетов закреплён ==")
+# Без этого весь тест ниже проверяет чужую платформу: на Windows 11 Qt 6.7
+# по умолчанию берёт стиль «windows11», который рисует QPushButton сам и
+# выбрасывает `:checked { background: ... }`. Заливка выглядела правильной
+# в каждом снимке на Linux (там Fusion по умолчанию) и не работала у
+# пользователя. Проверяем и то, что приложение закрепляет стиль само.
+src = (Path(__file__).resolve().parent.parent / "chatgrab" / "app.py").read_text(encoding="utf-8")
+assert "apply_theme(app)" in src, "app.py должен применять тему через apply_theme"
+base_style = app.property("chatgrab_base_style")
+print(f"  стиль приложения: {base_style} (ожидается {BASE_STYLE.lower()})")
+assert base_style == BASE_STYLE.lower(), f"стиль не закреплён: {base_style}"
+
+print("\n== контейнеры со стилем без селектора ==")
 RISKY = ("background", "border", "color")
 offenders = []
 def walk(w, depth=0):

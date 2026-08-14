@@ -39,12 +39,14 @@ class Paths:
         self.session_dir = self.data_dir / "session"
         self.session_path = self.session_dir / "worker.session"
         self.backups_dir = self.data_dir / "backups"
+        self.archives_dir = self.data_dir / "archives"
         self.config_path = self.root / "config.json"
         self.log_path = self.data_dir / "chatgrab.log"
 
     def ensure(self) -> None:
         for d in (self.data_dir, self.photos_dir, self.videos_dir, self.voice_dir,
-                  self.documents_dir, self.exports_dir, self.session_dir, self.backups_dir):
+                  self.documents_dir, self.exports_dir, self.session_dir,
+                  self.backups_dir, self.archives_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def photo_path(self, chat_id: int, message_id: int) -> Path:

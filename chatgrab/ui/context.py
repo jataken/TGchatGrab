@@ -10,8 +10,11 @@ from ..db.database import Database
 from ..paths import Paths
 from ..security import SecurityService
 from ..services.backup_service import BackupService
+from ..services.export_schedule_service import ExportScheduleService
 from ..services.export_service import ExportService
 from ..services.ignore_service import IgnoreService
+from ..services.retention_service import RetentionService
+from ..services.watch_service import WatchService
 from ..telegram.collector import Collector
 from ..telegram.service import TelegramService
 from .bot_selection import BotSelection
@@ -29,5 +32,8 @@ class AppContext:
     backup_service: BackupService
     security: SecurityService
     bot_manager: BotManager
+    watch_service: WatchService
+    retention_service: RetentionService
+    export_schedule_service: ExportScheduleService
     # Which bot the «Боты» block's screens are currently editing.
     bot_selection: BotSelection = field(default_factory=BotSelection)

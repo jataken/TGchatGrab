@@ -95,6 +95,9 @@ class Collector(QObject):
         self._tasks: list[asyncio.Task] = []
         self._entity_cache: dict[int, object] = {}
         self._running = False
+        # Set by the app once the UI can show notifications; None keeps
+        # the collector usable on its own (tests, headless runs).
+        self.watch_service = None
 
     # ---- lifecycle -------------------------------------------------
     async def start(self) -> None:
@@ -258,7 +261,7 @@ class Collector(QObject):
         chat = self.db.get_chat(chat_id)
         if not chat:
             return
-        await self._store_message(event.message, chat)
+        await self._store_message(event.message, chat, live=True)
         chat = self.db.get_chat(chat_id)
         self.db.set_chat_field(chat_id, newest_loaded_id=max(chat["newest_loaded_id"] or 0, event.message.id))
         self._log(chat["title"], f"новое сообщение записано (id {event.message.id})", "ok")
@@ -399,9 +402,19 @@ class Collector(QObject):
                 return None
         return None
 
-    async def _store_message(self, message, chat) -> bool:
+    async def _store_message(self, message, chat, live: bool = False) -> bool:
         record = await self._message_to_record(message, chat)
-        return self.db.upsert_message(record)
+        is_new = self.db.upsert_message(record)
+        if is_new and self.watch_service is not None:
+            # Only alert for messages arriving now. A backfill re-reading
+            # months of history would otherwise fire a notification per
+            # match, which is how a useful alert becomes one people mute.
+            try:
+                self.watch_service.check(record, notify=live)
+            except Exception:
+                _logger.warning("не удалось проверить сообщение по списку наблюдения",
+                                exc_info=True)
+        return is_new
 
     # ---- history backfill --------------------------------------------
     async def _history_worker(self) -> None:

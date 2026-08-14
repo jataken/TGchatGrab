@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 _DDL_META = """
 CREATE TABLE IF NOT EXISTS app_meta (
@@ -82,6 +82,8 @@ _DDL_INDEXES = [
     # Finding the earliest message carrying a given fingerprint within a
     # chat — the query «только уникальные» runs on every export.
     "CREATE INDEX IF NOT EXISTS idx_messages_text_hash ON messages(chat_id, text_hash, message_id);",
+    "CREATE INDEX IF NOT EXISTS idx_watch_hit_seen ON watch_hit(seen, matched_at);",
+    "CREATE INDEX IF NOT EXISTS idx_watch_hit_msg ON watch_hit(chat_id, message_id);",
 ]
 
 _DDL_EXPORT_LOG = """
@@ -120,6 +122,55 @@ CREATE TABLE IF NOT EXISTS ignore_rule (
     value TEXT NOT NULL,
     scope TEXT NOT NULL DEFAULT 'global',
     chat_id INTEGER,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_SEARCH_PRESET = """
+CREATE TABLE IF NOT EXISTS search_preset (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    params TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+# Words worth being told about the moment they appear, without standing up
+# a bot for it. A rule matches new messages as they arrive; every match is
+# recorded so the feed survives a restart and can be marked read.
+_DDL_WATCH_RULE = """
+CREATE TABLE IF NOT EXISTS watch_rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phrase TEXT NOT NULL,
+    chat_id INTEGER,                          -- NULL = во всех отслеживаемых чатах
+    enabled INTEGER NOT NULL DEFAULT 1,
+    notify INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_WATCH_HIT = """
+CREATE TABLE IF NOT EXISTS watch_hit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    matched_at TEXT NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(rule_id, chat_id, message_id)
+);
+"""
+
+# One row per saved export that should run by itself.
+_DDL_EXPORT_SCHEDULE = """
+CREATE TABLE IF NOT EXISTS export_schedule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    preset_name TEXT NOT NULL,
+    every_hours INTEGER NOT NULL DEFAULT 168,
+    at_hour INTEGER NOT NULL DEFAULT 9,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run_at TEXT,
+    last_result TEXT,
     created_at TEXT NOT NULL
 );
 """
@@ -312,6 +363,7 @@ _FTS_TRIGGERS = [
 _ALL_TABLE_DDL = [
     _DDL_META, _DDL_SETTINGS, _DDL_CHATS, _DDL_MESSAGES,
     _DDL_EXPORT_LOG, _DDL_EXPORT_PRESET, _DDL_IGNORE_RULE, _DDL_STAT_CACHE,
+    _DDL_SEARCH_PRESET, _DDL_WATCH_RULE, _DDL_WATCH_HIT, _DDL_EXPORT_SCHEDULE,
     _DDL_BOTS, _DDL_BOT_TRIGGERS, _DDL_BOT_ACTIONS, _DDL_BOT_CONTACTS,
     _DDL_BOT_LEADS, _DDL_BOT_ACTIVITY_LOG, _DDL_BOT_TEMPLATES,
     _DDL_BOT_SCENARIOS, _DDL_BOT_SCENARIO_SESSIONS,

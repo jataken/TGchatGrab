@@ -18,6 +18,9 @@ from chatgrab.services.ignore_service import IgnoreService
 from chatgrab.services.backup_service import BackupService
 from chatgrab.security import SecurityService
 from chatgrab.bots.manager import BotManager
+from chatgrab.services.watch_service import WatchService
+from chatgrab.services.retention_service import RetentionService
+from chatgrab.services.export_schedule_service import ExportScheduleService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow
 from chatgrab.ui import tray as tray_mod
@@ -30,7 +33,9 @@ ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     collector=Collector(db, tg, config, paths),
     export_service=ExportService(db, paths), ignore_service=IgnoreService(db),
     backup_service=BackupService(db, paths), security=sec,
-    bot_manager=BotManager(db, tg, sec))
+    bot_manager=BotManager(db, tg, sec),
+    watch_service=WatchService(db), retention_service=RetentionService(db, paths),
+    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)))
 
 db.add_chat(1, "Биржа", "b", "all", None)
 bot_id = ctx.bot_manager.create_bot("Бот", "userbot", None, "custom", None)

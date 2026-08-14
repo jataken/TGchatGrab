@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtWidgets import QApplication
 app = QApplication.instance() or QApplication(sys.argv)
-from chatgrab.ui.theme import build_qss
-app.setStyleSheet(build_qss())
+from chatgrab.ui.theme import apply_theme
+apply_theme(app)
 loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 
 from chatgrab.paths import Paths
@@ -25,6 +25,9 @@ from chatgrab.services.ignore_service import IgnoreService
 from chatgrab.services.backup_service import BackupService
 from chatgrab.security import SecurityService
 from chatgrab.bots.manager import BotManager
+from chatgrab.services.watch_service import WatchService
+from chatgrab.services.retention_service import RetentionService
+from chatgrab.services.export_schedule_service import ExportScheduleService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow, NAV_BY_BLOCK, COMMON_ITEMS
 
@@ -36,7 +39,9 @@ ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     collector=Collector(db, tg, config, paths),
     export_service=ExportService(db, paths), ignore_service=IgnoreService(db),
     backup_service=BackupService(db, paths), security=sec,
-    bot_manager=BotManager(db, tg, sec))
+    bot_manager=BotManager(db, tg, sec),
+    watch_service=WatchService(db), retention_service=RetentionService(db, paths),
+    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)))
 
 # посевные данные: разные состояния чатов, бот с ошибкой, заявки, сценарий
 for cid, title, uname in [(1001, "Косметическое сырьё · Биржа", "cosmo"),
