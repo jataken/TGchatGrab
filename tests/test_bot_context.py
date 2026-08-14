@@ -23,6 +23,7 @@ from chatgrab.bots.manager import BotManager
 from chatgrab.services.watch_service import WatchService
 from chatgrab.services.retention_service import RetentionService
 from chatgrab.services.export_schedule_service import ExportScheduleService
+from chatgrab.services.lead_reminder_service import LeadReminderService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow, BOT_SCOPED_SCREENS
 
@@ -36,7 +37,8 @@ ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     backup_service=BackupService(db, paths), security=sec,
     bot_manager=BotManager(db, tg, sec),
     watch_service=WatchService(db), retention_service=RetentionService(db, paths),
-    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)))
+    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)),
+    lead_reminder_service=LeadReminderService(db))
 
 a = ctx.bot_manager.create_bot("Бот А", "userbot", None, "b2b", None)
 b = ctx.bot_manager.create_bot("Бот Б", "userbot", None, "b2c", None)

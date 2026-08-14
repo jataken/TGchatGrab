@@ -12,6 +12,7 @@ from ...context import AppContext
 from ...widgets import button, card, chip, label, muted, plural as _plural
 from ....bots.rules_engine import RulesEngine
 from ....bots.scenario_engine import BRANCHING, END, LINEAR, format_question, options_of
+from ....core import lead as lead_domain
 
 _VALIDATIONS = [("text", "Любой"), ("phone", "Телефон"), ("number", "Число")]
 _VALIDATION_LABELS = dict(_VALIDATIONS)
@@ -309,6 +310,13 @@ class ScenarioScreen(QWidget):
         self.field_input = QLineEdit()
         self.field_input.editingFinished.connect(self._on_props_changed)
         props_lay.addWidget(self.field_input)
+        props_lay.addWidget(muted("→ поле лида (необязательно)"))
+        self.lead_field_combo = QComboBox()
+        self.lead_field_combo.addItem("— не связано с лидом —", None)
+        for key in lead_domain.SCENARIO_LEAD_FIELDS:
+            self.lead_field_combo.addItem(lead_domain.SCENARIO_LEAD_FIELD_LABELS[key], key)
+        self.lead_field_combo.currentIndexChanged.connect(self._on_props_changed)
+        props_lay.addWidget(self.lead_field_combo)
         # Проверка ответа теряет смысл, когда у шага есть варианты:
         # выбирать можно только из предложенного.
         self.validation_box = QWidget()
@@ -720,6 +728,10 @@ class ScenarioScreen(QWidget):
         self.field_input.blockSignals(True)
         self.field_input.setText(step.get("field", ""))
         self.field_input.blockSignals(False)
+        self.lead_field_combo.blockSignals(True)
+        idx = self.lead_field_combo.findData(step.get("lead_field"))
+        self.lead_field_combo.setCurrentIndex(max(0, idx))
+        self.lead_field_combo.blockSignals(False)
         validation = step.get("validation", "text")
         btn = self.validation_buttons.get(validation)
         if btn is not None:
@@ -738,6 +750,7 @@ class ScenarioScreen(QWidget):
             return
         steps[self.step_sel]["question"] = self.question_input.text().strip()
         steps[self.step_sel]["field"] = self.field_input.text().strip() or f"field_{self.step_sel + 1}"
+        steps[self.step_sel]["lead_field"] = self.lead_field_combo.currentData()
         self._save_steps(steps)
 
     def _on_validation_pick(self, key: str) -> None:

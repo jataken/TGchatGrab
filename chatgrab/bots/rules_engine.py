@@ -115,7 +115,7 @@ class RulesEngine:
             if result.question:
                 await send_dm(event.contact_telegram_id, result.question)
             elif result.done and result.answers is not None:
-                self._save_lead_from_answers(bot_id, contact_id, result.answers, event)
+                self._save_lead_from_answers(bot_id, contact_id, result.answers, event, scenario_id)
             log("сценарий запущен", "ok")
 
         elif atype == "save_lead":
@@ -167,12 +167,26 @@ class RulesEngine:
                            answers=answers, event_text=event.text)
 
     def _save_lead_from_answers(self, bot_id: int, contact_id: int, answers: dict,
-                                event: IncomingEvent) -> None:
+                                event: IncomingEvent, scenario_id: int | None = None) -> None:
+        """Content always gets the raw answers dict, same as before —
+        `mapped` on top of it is additive, not a replacement: a step whose
+        author never set "→ поле лида" (scenario_screen.py) still lands
+        safely in content instead of silently vanishing."""
+        mapped = {}
+        if scenario_id is not None:
+            scenario = self.db.get_scenario(scenario_id)
+            steps = json.loads(scenario["steps"]) if scenario else []
+            for step in steps:
+                lead_field = step.get("lead_field")
+                field = step.get("field")
+                if lead_field in lead_domain.SCENARIO_LEAD_FIELDS and field in answers:
+                    mapped[lead_field] = answers[field]
         self.db.add_lead(
             contact_id, bot_id, answers, status="new",
             source_chat_id=event.chat_id,
             source_type=lead_domain.source_type_from_chat_type(event.chat_type),
             event_source=lead_domain.EVENT_SOURCE_SCENARIO,
+            **mapped,
         )
 
     # ---- scenario continuation (a contact already mid-dialog) -----------
@@ -181,6 +195,10 @@ class RulesEngine:
 
     async def continue_scenario(self, bot_id: int, event: IncomingEvent, send_dm: SendFn, log) -> None:
         contact_id = self.db.upsert_contact(event.contact_telegram_id, event.username)
+        # Captured before submit_answer can mark the session 'done' — once
+        # it does, get_active_scenario_session no longer finds it.
+        session = self.db.get_active_scenario_session(bot_id, event.contact_telegram_id)
+        scenario_id = session["scenario_id"] if session else None
         result = self.scenarios.submit_answer(bot_id, event.contact_telegram_id, event.text)
         if result.error:
             await send_dm(event.contact_telegram_id, result.error)
@@ -189,7 +207,7 @@ class RulesEngine:
             await send_dm(event.contact_telegram_id, result.question)
             return
         if result.done and result.answers is not None:
-            self._save_lead_from_answers(bot_id, contact_id, result.answers, event)
+            self._save_lead_from_answers(bot_id, contact_id, result.answers, event, scenario_id)
 
             # Confirm to the contact first — they're the one waiting on a
             # reply — then hand the summary to the manager.

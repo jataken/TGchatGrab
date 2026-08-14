@@ -83,19 +83,20 @@ conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables_before
 
-# 008 (лид) применена позже, но у неё нет down() — трогает данные, а не
-# только добавляет таблицу, см. её докстринг. rollback_last должен
-# пропустить её и найти 007, а не упасть и не откатить не то.
+# 008 (лид) и 009 (жизненный цикл лида) применены позже, но у них нет
+# down() — обе трогают данные/ограничения таблицы, а не только добавляют
+# что-то новое, см. их докстринги. rollback_last должен пропустить обе и
+# найти 007, а не упасть и не откатить не то.
 undone = migrations.rollback_last(conn)
 print("  откачена миграция:", undone)
-assert undone == "007", "008 без down() должна быть пропущена, а не откачена"
+assert undone == "007", "008/009 без down() должны быть пропущены, а не откачены"
 tables_after = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" not in tables_after, "direction должна исчезнуть после отката"
 assert tables_after == tables_before - {"direction"}, "откат не должен трогать ничего кроме своей таблицы"
 
 applied = {r[0] for r in conn.execute("SELECT id FROM schema_migrations")}
 print("  осталось применённых:", sorted(applied))
-assert applied == {"006", "008"}, "008 не откатывалась — должна остаться применённой"
+assert applied == {"006", "008", "009"}, "008/009 не откатывались — должны остаться применёнными"
 conn.close()
 
 # Оригинальный файл (не копия) не тронут — direction по-прежнему на месте.

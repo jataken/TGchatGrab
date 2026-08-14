@@ -6,18 +6,18 @@ actually works in — edits the business fields, sees why it moved where it
 moved, reads what the contact has said, and can't mark it lost without
 saying why.
 
-Deliberately still a QDialog opened from the existing leads_tab.py list,
-not a new navigation destination — С3 is where the lead becomes its own
-top-level block with a list, filters, and a funnel. This is the "карточка"
-С2 promises, nothing more.
+Still a QDialog opened from leads_tab.py's list rather than its own
+navigation destination — С3 makes leads a top-level block (see
+main_window.py), but the card itself stays a dialog: the list is what
+grew filters and a funnel, not this.
 """
 from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
+    QComboBox, QDateTimeEdit, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit,
     QTabWidget, QVBoxLayout, QWidget,
 )
@@ -109,6 +109,27 @@ class LeadCardDialog(QDialog):
         save_fields_btn.clicked.connect(self._on_save_fields)
         save_row.addWidget(save_fields_btn)
         outer.addLayout(save_row)
+
+        # ---- reminder ------------------------------------------------
+        reminder_row = QHBoxLayout()
+        reminder_row.addWidget(muted("Напоминание"))
+        self.reminder_at = QDateTimeEdit()
+        self.reminder_at.setCalendarPopup(True)
+        self.reminder_at.setDisplayFormat("dd.MM.yyyy HH:mm")
+        self.reminder_at.setDateTime(QDateTime.currentDateTime().addSecs(3600))
+        reminder_row.addWidget(self.reminder_at)
+        self.reminder_text = QLineEdit()
+        self.reminder_text.setPlaceholderText("например: перезвонить, уточнить цену")
+        reminder_row.addWidget(self.reminder_text, 1)
+        set_reminder_btn = button("Поставить", "secondary")
+        set_reminder_btn.clicked.connect(self._on_set_reminder)
+        reminder_row.addWidget(set_reminder_btn)
+        self.clear_reminder_btn = button("Снять", "ghost")
+        self.clear_reminder_btn.clicked.connect(self._on_clear_reminder)
+        reminder_row.addWidget(self.clear_reminder_btn)
+        outer.addLayout(reminder_row)
+        self.reminder_hint = muted("")
+        outer.addWidget(self.reminder_hint)
 
         # ---- tabs: история / переписка / вложения ------------------------
         self.tabs = QTabWidget()
@@ -215,6 +236,19 @@ class LeadCardDialog(QDialog):
         self.email_input.setText(lead["email"] or "")
         self.manager_input.setText(lead["manager"] or "")
 
+        if lead["next_action_at"]:
+            when = str(lead["next_action_at"])[:16].replace("T", " ")
+            self.reminder_hint.setText(
+                f"Напоминание поставлено на {when}"
+                + (f" — {lead['next_action_text']}" if lead["next_action_text"] else ""))
+            dt = QDateTime.fromString(str(lead["next_action_at"])[:16], "yyyy-MM-ddTHH:mm")
+            if dt.isValid():
+                self.reminder_at.setDateTime(dt)
+            self.reminder_text.setText(lead["next_action_text"] or "")
+        else:
+            self.reminder_hint.setText("Напоминание не поставлено.")
+        self.clear_reminder_btn.setEnabled(bool(lead["next_action_at"]))
+
         self._refresh_history()
         self._refresh_correspondence(lead, contact)
         self._refresh_attachments(lead)
@@ -302,6 +336,18 @@ class LeadCardDialog(QDialog):
             email=self.email_input.text().strip() or None,
             manager=self.manager_input.text().strip() or None,
         )
+        self.refresh()
+
+    def _on_set_reminder(self) -> None:
+        qdt = self.reminder_at.dateTime()
+        py_dt = qdt.toPython()
+        iso = py_dt.astimezone().isoformat(timespec="seconds")
+        text = self.reminder_text.text().strip()
+        self.ctx.db.set_lead_field(self.lead_id, next_action_at=iso, next_action_text=text or None)
+        self.refresh()
+
+    def _on_clear_reminder(self) -> None:
+        self.ctx.db.set_lead_field(self.lead_id, next_action_at=None, next_action_text=None)
         self.refresh()
 
     def _on_add_note(self) -> None:

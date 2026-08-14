@@ -338,6 +338,94 @@ _DDL_LEAD_EVENTS_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_lead_events_lead ON lead_events(lead_id, created_at);",
 ]
 
+# Migration "009" — see db/migrations.py._up_lead_lifecycle. A reminder is
+# just two more nullable columns, added the same one-liner-per-column way
+# as migration 008's batch.
+_LEAD_LIFECYCLE_COLUMNS = [
+    ("next_action_at", "TEXT"),        # напоминание: когда вернуться к лиду
+    ("next_action_text", "TEXT"),
+]
+
+_BOT_LEADS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_bot_leads_bot ON bot_leads(bot_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bot_leads_contact ON bot_leads(contact_id);",
+]
+
+
+def _bot_leads_needs_nullable_ids(conn: sqlite3.Connection) -> bool:
+    info = conn.execute("PRAGMA table_info(bot_leads)").fetchall()
+    return any(r[1] == "contact_id" and r[3] for r in info)  # r[3] is the notnull flag
+
+
+def _relax_bot_leads_ids(conn: sqlite3.Connection) -> None:
+    """Drops NOT NULL from bot_leads.contact_id/bot_id — С3 adds leads
+    that never touch a bot (created by hand, or from a collected message
+    or watch hit), and both columns were only ever NOT NULL because every
+    lead used to come from a bot rule. SQLite can't alter a column
+    constraint in place, so the table is rebuilt: the same copy/drop/
+    rename dance as `_migrate_scenario_sessions_unique` above, just for a
+    different constraint. A lead's own identity fields (tg_user_id/
+    username/display_name/phone/email, migration 008) and source_type
+    already cover "who" and "where from" without a contact or a bot, so
+    this is schema catching up to that, not a new idea.
+
+    ВНИМАНИЕ: список колонок здесь фиксирован на момент миграции 009.
+    Всё, что добавляется в bot_leads позже, должно добавляться в
+    migrate() ПОСЛЕ вызова этой функции — иначе перестройка молча
+    выбросит новую колонку.
+    """
+    if not _bot_leads_needs_nullable_ids(conn):
+        return
+    conn.execute("DROP TABLE IF EXISTS bot_leads_new;")
+    conn.execute(
+        """
+        CREATE TABLE bot_leads_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_id INTEGER,
+            bot_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'new',
+            manager TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '{}',
+            tg_user_id INTEGER,
+            username TEXT,
+            display_name TEXT,
+            phone TEXT,
+            email TEXT,
+            source_chat_id INTEGER,
+            source_type TEXT NOT NULL DEFAULT 'bot',
+            direction_id INTEGER,
+            product TEXT,
+            volume TEXT,
+            unit TEXT,
+            deadline TEXT,
+            city TEXT,
+            delivery TEXT,
+            owner TEXT NOT NULL DEFAULT 'local_user',
+            reject_reason TEXT,
+            attachments TEXT NOT NULL DEFAULT '[]'
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO bot_leads_new
+            (id, contact_id, bot_id, status, manager, created_at, updated_at, content,
+             tg_user_id, username, display_name, phone, email,
+             source_chat_id, source_type, direction_id, product, volume, unit,
+             deadline, city, delivery, owner, reject_reason, attachments)
+        SELECT id, contact_id, bot_id, status, manager, created_at, updated_at, content,
+               tg_user_id, username, display_name, phone, email,
+               source_chat_id, source_type, direction_id, product, volume, unit,
+               deadline, city, delivery, owner, reject_reason, attachments
+        FROM bot_leads;
+        """
+    )
+    conn.execute("DROP TABLE bot_leads;")
+    conn.execute("ALTER TABLE bot_leads_new RENAME TO bot_leads;")
+
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

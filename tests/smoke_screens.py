@@ -31,6 +31,7 @@ from chatgrab.bots.manager import BotManager
 from chatgrab.services.watch_service import WatchService
 from chatgrab.services.retention_service import RetentionService
 from chatgrab.services.export_schedule_service import ExportScheduleService
+from chatgrab.services.lead_reminder_service import LeadReminderService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow, NAV_BY_BLOCK, COMMON_ITEMS
 
@@ -44,7 +45,8 @@ ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     backup_service=BackupService(db, paths), security=sec,
     bot_manager=BotManager(db, tg, sec),
     watch_service=WatchService(db), retention_service=RetentionService(db, paths),
-    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)))
+    export_schedule_service=ExportScheduleService(db, ExportService(db, paths)),
+    lead_reminder_service=LeadReminderService(db))
 
 # посевные данные: разные состояния чатов, бот с ошибкой, заявки, сценарий
 for cid, title, uname in [(1001, "Косметическое сырьё · Биржа", "cosmo"),

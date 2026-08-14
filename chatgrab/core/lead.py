@@ -104,6 +104,18 @@ REJECT_REASONS = [
     "другое",
 ]
 
+# С3: which real bot_leads column a scenario step's answer can be mapped
+# onto (scenario_screen.py's per-step "→ поле лида" picker), so a finished
+# scenario can fill in the funnel's own fields instead of leaving
+# everything in the free-form `content` JSON. Deliberately not
+# direction_id — that needs an id from the directions catalogue, not a
+# scenario answer's free text, so it stays a separate, explicit choice.
+SCENARIO_LEAD_FIELDS = ["product", "volume", "unit", "deadline", "city", "delivery", "phone", "email"]
+SCENARIO_LEAD_FIELD_LABELS = {
+    "product": "товар", "volume": "объём", "unit": "единица", "deadline": "срок",
+    "city": "город", "delivery": "доставка", "phone": "телефон", "email": "email",
+}
+
 
 def source_type_from_chat_type(chat_type: str | None) -> str:
     """rules_engine.IncomingEvent.chat_type ('dm' | 'group' | 'channel' |
@@ -151,6 +163,12 @@ def validate_transition(new_status: str, reject_reason: str | None) -> str | Non
     if new_status == LOST and not (reject_reason or "").strip():
         return "Нужно указать причину отказа."
     return None
+
+
+def next_action_due(next_action_at: str | None, now_iso_str: str) -> bool:
+    """Whether a reminder should fire — a plain ISO-string compare, kept
+    here rather than inline in a query so it's testable without sqlite."""
+    return bool(next_action_at) and next_action_at <= now_iso_str
 
 
 def remap_legacy_status(old_status: str) -> str:

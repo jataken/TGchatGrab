@@ -9,12 +9,14 @@ from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QMenu, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
 from ..util import fire, run_blocking
 from ..widgets import button, card, h1, label, muted, plural
+from ...core import lead as lead_domain
+from .bots.lead_card import LeadCardDialog
 
 
 class WatchScreen(QWidget):
@@ -103,6 +105,8 @@ class WatchScreen(QWidget):
         self.hits_table.setShowGrid(False)
         self.hits_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.hits_table.cellDoubleClicked.connect(self._on_open_hit)
+        self.hits_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.hits_table.customContextMenuRequested.connect(self._on_hits_context_menu)
         outer.addWidget(self.hits_table, 1)
 
         self.empty_label = muted(
@@ -266,4 +270,31 @@ class WatchScreen(QWidget):
 
     def _on_mark_all(self) -> None:
         self.ctx.db.mark_watch_hits_seen()
+        self.refresh()
+
+    def _on_hits_context_menu(self, pos) -> None:
+        row = self.hits_table.rowAt(pos.y())
+        item = self.hits_table.item(row, 0) if row >= 0 else None
+        hit_id = item.data(Qt.UserRole) if item else None
+        if hit_id is None:
+            return
+        menu = QMenu(self)
+        create_lead = menu.addAction("Создать лид")
+        chosen = menu.exec(self.hits_table.viewport().mapToGlobal(pos))
+        if chosen == create_lead:
+            self._on_create_lead(hit_id)
+
+    def _on_create_lead(self, hit_id: int) -> None:
+        hits = self.ctx.db.list_watch_hits(limit=10000)
+        hit = next((h for h in hits if h["id"] == hit_id), None)
+        if hit is None:
+            return
+        lead_id = self.ctx.db.add_lead(
+            None, None, {"text": hit["text"] or ""}, status=lead_domain.NEW,
+            tg_user_id=hit["sender_id"], username=hit["sender_username"],
+            display_name=hit["sender_display_name"],
+            source_chat_id=hit["chat_id"], source_type=lead_domain.SOURCE_TYPE_CHAT,
+            event_source=lead_domain.EVENT_SOURCE_MANUAL,
+        )
+        LeadCardDialog(self.ctx, lead_id, parent=self).exec()
         self.refresh()

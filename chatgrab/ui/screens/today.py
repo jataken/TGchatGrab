@@ -332,8 +332,10 @@ class TodayScreen(QWidget):
 
         if new_leads:
             latest = new_leads[0]
-            contact = db.get_contact(latest["contact_id"])
-            handle = f"@{contact['username']}" if contact and contact["username"] else "контакта"
+            contact = db.get_contact(latest["contact_id"]) if latest["contact_id"] else None
+            handle = latest["display_name"] or \
+                (f"@{latest['username']}" if latest["username"] else None) or \
+                (f"@{contact['username']}" if contact and contact["username"] else None) or "контакта"
             col.add_row(
                 f"{len(new_leads)} " +
                 _plural(len(new_leads), "новая заявка", "новые заявки", "новых заявок"),

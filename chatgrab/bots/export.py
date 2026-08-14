@@ -28,10 +28,17 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
 
     wrap = Alignment(vertical="top", wrap_text=True)
     for lead in sorted(leads, key=lambda r: r["created_at"]):
-        contact = db.get_contact(lead["contact_id"])
-        bot = db.get_bot(lead["bot_id"])
-        handle = f"@{contact['username']}" if contact and contact["username"] else ""
-        telegram_id = contact["telegram_id"] if contact else ""
+        # Not every lead has a bot or a contact behind it any more (С3:
+        # manual and message-based creation) — the lead's own identity
+        # fields (С2) are what's authoritative, the joined rows are only
+        # a fallback for older, bot-sourced leads that never got them.
+        contact = db.get_contact(lead["contact_id"]) if lead["contact_id"] else None
+        bot = db.get_bot(lead["bot_id"]) if lead["bot_id"] else None
+        handle = lead["display_name"] or \
+            (f"@{lead['username']}" if lead["username"] else None) or \
+            (f"@{contact['username']}" if contact and contact["username"] else "")
+        telegram_id = lead["tg_user_id"] or (contact["telegram_id"] if contact else "")
+        source_text = bot["name"] if bot else lead_domain.label_for_source_type(lead["source_type"])
         try:
             content = json.loads(lead["content"])
             # Each value comes straight from a Telegram message (scenario
@@ -43,7 +50,7 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         except (json.JSONDecodeError, TypeError):
             summary = ""
         ws.append([
-            lead["created_at"], excel_safe(bot["name"]) if bot else f"бот {lead['bot_id']}",
+            lead["created_at"], excel_safe(source_text),
             excel_safe(handle), telegram_id,
             lead_domain.label_for_status(lead["status"]), excel_safe(lead["manager"] or ""), summary,
         ])

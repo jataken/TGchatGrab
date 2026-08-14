@@ -76,7 +76,7 @@ added = {
     "bot_scenarios": {"kind", "done_template_id"},
     "bot_scenario_sessions": {"step_id"},
     "bot_leads": {"direction_id", "owner", "reject_reason", "attachments",
-                  "source_type", "tg_user_id"},
+                  "source_type", "tg_user_id", "next_action_at", "next_action_text"},
 }
 for table, wanted in added.items():
     missing = wanted - columns(table)
@@ -99,10 +99,22 @@ print("re-migrate OK, rows =", conn.execute("SELECT count(*) FROM bot_scenario_s
 # отражает применённые шаги ровно по одному разу
 applied = {row[0] for row in conn.execute("SELECT id FROM schema_migrations")}
 print("применённые миграции:", sorted(applied))
-assert applied == {"006", "007", "008"}, applied
+assert applied == {"006", "007", "008", "009"}, applied
 tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables, "таблица direction не создалась"
 assert "lead_events" in tables, "таблица lead_events не создалась"
+
+# 009: contact_id/bot_id больше не NOT NULL — лид может существовать без
+# бота и без контакта (ручное создание, лид из найденного сообщения)
+notnull = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(bot_leads)")}
+print("bot_leads.contact_id notnull:", notnull["contact_id"], "· bot_id notnull:", notnull["bot_id"])
+assert notnull["contact_id"] == 0 and notnull["bot_id"] == 0
+conn.execute(
+    "INSERT INTO bot_leads(contact_id, bot_id, status, created_at, updated_at) "
+    "VALUES (NULL, NULL, 'new', '2026-08-14', '2026-08-14')"
+)
+conn.commit()
+print("лид без contact_id/bot_id принят")
 
 before_count = conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
 schema.migrate(conn)

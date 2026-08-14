@@ -693,7 +693,7 @@ class Database:
             return cur.rowcount > 0
 
     def list_watch_hits(self, unseen_only: bool = False, limit: int = 200) -> list[sqlite3.Row]:
-        sql = ("SELECT h.*, r.phrase, m.text, m.date, m.sender_display_name, "
+        sql = ("SELECT h.*, r.phrase, m.text, m.date, m.sender_id, m.sender_display_name, "
                "       m.sender_username, m.link, m.media_path, c.title AS chat_title "
                "FROM watch_hit h "
                "JOIN watch_rule r ON r.id = h.rule_id "
@@ -1028,7 +1028,7 @@ class Database:
             (json.dumps(tags, ensure_ascii=False), contact_id),
         )
 
-    def add_lead(self, contact_id: int, bot_id: int, content: dict, status: str = "new",
+    def add_lead(self, contact_id: int | None, bot_id: int | None, content: dict, status: str = "new",
                  manager: str | None = None, *, tg_user_id: int | None = None,
                  username: str | None = None, display_name: str | None = None,
                  phone: str | None = None, email: str | None = None,
@@ -1048,6 +1048,10 @@ class Database:
         still passes just contact_id/bot_id/content/status, and every new
         field here is optional with a sensible default — a bot-sourced
         lead just doesn't set the ones a human fills in on the card later.
+
+        contact_id/bot_id are None for a lead that never touched a bot —
+        created by hand, or from a plain collected message or watch hit
+        (С3). Migration 009 made both columns nullable for exactly this.
         """
         with self._lock:
             now = now_iso()
@@ -1075,7 +1079,9 @@ class Database:
     def get_lead(self, lead_id: int) -> sqlite3.Row | None:
         return self.query_one("SELECT * FROM bot_leads WHERE id = ?", (lead_id,))
 
-    def list_leads(self, bot_id: int | None = None, status: str | None = None) -> list[sqlite3.Row]:
+    def list_leads(self, bot_id: int | None = None, status: str | None = None, *,
+                    direction_id: int | None = None, source_type: str | None = None,
+                    since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
         sql = "SELECT * FROM bot_leads"
         clauses, params = [], []
         if bot_id is not None:
@@ -1084,6 +1090,18 @@ class Database:
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
+        if direction_id is not None:
+            clauses.append("direction_id = ?")
+            params.append(direction_id)
+        if source_type is not None:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("created_at <= ?")
+            params.append(until)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         # id вторым ключом: время пишется с точностью до секунды, и две
@@ -1091,6 +1109,47 @@ class Database:
         # обновлениями списка.
         sql += " ORDER BY created_at DESC, id DESC"
         return self.query(sql, params)
+
+    def leads_status_counts(self, bot_id: int | None = None) -> dict[str, int]:
+        """Per-status totals for the funnel row on the leads screen —
+        pre-seeded with 0 for every status so the UI never has to guard
+        against a missing key."""
+        sql = "SELECT status, count(*) AS c FROM bot_leads"
+        params: list[Any] = []
+        if bot_id is not None:
+            sql += " WHERE bot_id = ?"
+            params.append(bot_id)
+        sql += " GROUP BY status"
+        counts = {r["status"]: r["c"] for r in self.query(sql, params)}
+        return {s: counts.get(s, 0) for s in lead_domain.ALL_STATUSES}
+
+    def due_lead_reminders(self, now_iso_str: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM bot_leads WHERE next_action_at IS NOT NULL AND next_action_at <= ? "
+            "ORDER BY next_action_at",
+            (now_iso_str,),
+        )
+
+    def fire_lead_reminder(self, lead_id: int) -> None:
+        """Records the reminder in the lead's history and clears the
+        field that made it due — the clearing itself is what keeps a
+        reminder from firing twice, including across a restart, since
+        due_lead_reminders only ever looks at that same field."""
+        lead = self.get_lead(lead_id)
+        if lead is None:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE bot_leads SET next_action_at = NULL, next_action_text = NULL, "
+                "updated_at = ? WHERE id = ?",
+                (now_iso(), lead_id),
+            )
+            self._conn.execute(
+                "INSERT INTO lead_events(lead_id, kind, text, source, created_at) VALUES (?, ?, ?, ?, ?)",
+                (lead_id, lead_domain.EVENT_KIND_REMINDER, lead["next_action_text"],
+                 lead_domain.EVENT_SOURCE_RULE, now_iso()),
+            )
+            self._conn.commit()
 
     def set_lead_field(self, lead_id: int, **fields: Any) -> None:
         if not fields:

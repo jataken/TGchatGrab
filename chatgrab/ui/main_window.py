@@ -29,12 +29,18 @@ from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
 from .tray import TrayController
 
-# The app is two functional blocks — collecting from Telegram chats, and
-# running bots on top of the same account — switched with a segmented
-# control at the top of the sidebar. Each block gets its own short nav
-# list below it; "Подключение" and "Настройки" are shared account-level
-# settings and stay pinned under both, so they don't need duplicating.
-BLOCKS = [("collect", "Сбор"), ("bots", "Боты")]
+# The app is three functional blocks — collecting from Telegram chats,
+# running bots on top of the same account, and the leads those two feed —
+# switched with a segmented control at the top of the sidebar. Each block
+# gets its own short nav list below it; "Подключение" and "Настройки" are
+# shared account-level settings and stay pinned under all of them, so they
+# don't need duplicating.
+#
+# «Лиды» used to be a screen inside «Боты» ("Заявки"). С3 makes leads a
+# top-level block of their own — a bot is now one of three ways a lead
+# gets created (manual, message-based, and scenario/rule-based being the
+# others), so nesting it under «Боты» stopped matching what it actually is.
+BLOCKS = [("collect", "Сбор"), ("bots", "Боты"), ("leads", "Лиды")]
 
 NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     "collect": [
@@ -47,17 +53,19 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     ],
     "bots": [
         ("bots", "Боты"),
-        ("leads", "Заявки"),
         ("rules", "Правила"),
         ("scenario", "Сценарий"),
         ("templates", "Шаблоны"),
         ("botlog", "Журнал"),
     ],
+    "leads": [
+        ("leads", "Заявки"),
+    ],
 }
 
 # Screens that edit one particular bot, and so follow the sidebar's bot
-# selector. «Боты» lists them all and «Заявки»/«Журнал» span them, so
-# those three are deliberately not here.
+# selector. «Боты» lists them all and «Журнал» spans them, so those two
+# are deliberately not here.
 BOT_SCOPED_SCREENS = {"rules", "scenario", "templates"}
 COMMON_ITEMS = [
     ("connect", "Подключение"),
@@ -214,6 +222,7 @@ class MainWindow(QMainWindow):
         # A watch-list match is the one collection event worth interrupting
         # for — it is what the user explicitly asked to be told about.
         ctx.watch_service.on_hit = self._on_watch_hit
+        ctx.lead_reminder_service.on_fire = self._on_lead_reminder
 
         self._switch_block("collect", navigate_to="today")
         self._refresh_sidebar()
@@ -290,6 +299,13 @@ class MainWindow(QMainWindow):
                           f"{where}: {text[:160]}")
         self._refresh_sidebar()
 
+    def _on_lead_reminder(self, lead) -> None:
+        handle = lead["display_name"] or (f"@{lead['username']}" if lead["username"] else None) \
+            or "заявка"
+        text = lead["next_action_text"] or "пора вернуться к этому лиду"
+        self.tray.notify(f"Напоминание: {handle}", text)
+        self._refresh_sidebar()
+
     def _on_bot_selector_changed(self, _index: int) -> None:
         self.ctx.bot_selection.set_current(self.bot_selector.currentData())
 
@@ -361,10 +377,13 @@ class MainWindow(QMainWindow):
             "collect_block", "●" if loading else "", accent=True, button=self.block_buttons["collect"],
             base_label="Сбор",
         )
-        bots_badge = str(new_leads) if new_leads else ("!" if bad_bots else "")
         self._set_badge(
-            "bots_block", bots_badge, accent=not bad_bots, button=self.block_buttons["bots"],
+            "bots_block", "!" if bad_bots else "", accent=False, button=self.block_buttons["bots"],
             base_label="Боты",
+        )
+        self._set_badge(
+            "leads_block", str(new_leads) if new_leads else "", accent=True,
+            button=self.block_buttons["leads"], base_label="Лиды",
         )
 
     def _set_badge(self, key: str, badge: str, accent: bool = False,

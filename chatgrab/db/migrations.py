@@ -122,11 +122,33 @@ def _up_leads(conn: sqlite3.Connection, _ctx: dict) -> None:
             )
 
 
+def _up_lead_lifecycle(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """С3: a lead can carry a reminder, and can exist without a bot or a
+    contact behind it (created by hand, or from a plain collected message
+    or watch hit). See schema._relax_bot_leads_ids for why that needs a
+    table rebuild rather than a plain ALTER.
+
+    No down() — same reasoning as 008: the rebuild isn't a single
+    reversible statement, and the mandatory backup before this runs is
+    the safety net, not a hand-written unwind.
+    """
+    # The rebuild's column list is fixed at the schema this migration was
+    # written against — run it before adding the new columns, not after,
+    # or the rebuild's own INSERT...SELECT silently drops them.
+    schema._relax_bot_leads_ids(conn)
+    for name, coltype in schema._LEAD_LIFECYCLE_COLUMNS:
+        if not schema._column_exists(conn, "bot_leads", name):
+            conn.execute(f"ALTER TABLE bot_leads ADD COLUMN {name} {coltype};")
+    for ddl in schema._BOT_LEADS_INDEXES:
+        conn.execute(ddl)
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
     Migration("007", "direction catalogue", _up_directions, _down_directions),
     Migration("008", "lead model + history", _up_leads),
+    Migration("009", "lead lifecycle: reminders, leads without a bot/contact", _up_lead_lifecycle),
 ]
 
 

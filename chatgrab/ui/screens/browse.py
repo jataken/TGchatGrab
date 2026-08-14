@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
 
 from ..context import AppContext
 from ..widgets import button, card, chip, h1, muted
+from ...core import lead as lead_domain
+from .bots.lead_card import LeadCardDialog
 
 _MEDIA_BADGE_LABELS = {
     "photo": "▣ фото приложено", "video": "▣ видео приложено",
@@ -86,7 +88,26 @@ class MessageCard(QWidget):
         link_btn.clicked.connect(self._open_link)
         badges.addWidget(link_btn)
         badges.addStretch(1)
+        lead_btn = QPushButton("Создать лид")
+        lead_btn.setCursor(Qt.PointingHandCursor)
+        lead_btn.setStyleSheet(
+            "QPushButton { background: rgba(145,132,217,36); color: #d2cefd; border: none; "
+            "border-radius: 6px; padding: 3px 9px; font-size: 11.5px; }"
+        )
+        lead_btn.clicked.connect(self._on_create_lead)
+        badges.addWidget(lead_btn)
         lay.addLayout(badges)
+
+    def _on_create_lead(self) -> None:
+        row = self.row
+        lead_id = self.ctx.db.add_lead(
+            None, None, {"text": row["text"] or ""}, status=lead_domain.NEW,
+            tg_user_id=row["sender_id"], username=row["sender_username"],
+            display_name=row["sender_display_name"],
+            source_chat_id=row["chat_id"], source_type=lead_domain.SOURCE_TYPE_CHAT,
+            event_source=lead_domain.EVENT_SOURCE_MANUAL,
+        )
+        LeadCardDialog(self.ctx, lead_id, parent=self).exec()
 
     def _open_media(self) -> None:
         path = self.ctx.paths.data_dir / self.row["media_path"]

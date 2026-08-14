@@ -22,6 +22,7 @@ from .services.backup_service import BackupService
 from .services.export_schedule_service import ExportScheduleService
 from .services.export_service import ExportService
 from .services.ignore_service import IgnoreService
+from .services.lead_reminder_service import LeadReminderService
 from .services.retention_service import RetentionService
 from .services.watch_service import WatchService
 from .telegram.accounts import AccountRegistry
@@ -98,13 +99,15 @@ def run() -> int:
         db, export_service,
         on_log=lambda text, tone="": collector._log("выгрузка", text, tone),
     )
+    lead_reminder_service = LeadReminderService(db)
 
     ctx = AppContext(
         config=config, paths=PATHS, db=db, tg=tg, collector=collector,
         export_service=export_service, ignore_service=ignore_service,
         backup_service=backup_service, security=security, bot_manager=bot_manager,
         watch_service=watch_service, retention_service=retention_service,
-        export_schedule_service=export_schedule_service, accounts=accounts,
+        export_schedule_service=export_schedule_service,
+        lead_reminder_service=lead_reminder_service, accounts=accounts,
     )
 
     window = MainWindow(ctx)
@@ -114,6 +117,7 @@ def run() -> int:
         with loop:
             loop.create_task(backup_service.run_periodic())
             export_schedule_service.start()
+            lead_reminder_service.start()
             loop.run_forever()
     finally:
         session = diagnostics.current()
