@@ -50,10 +50,17 @@ class TemplatesTab(QWidget):
         right_lay.addWidget(muted("Название"))
         self.name_input = QLineEdit()
         right_lay.addWidget(self.name_input)
-        right_lay.addWidget(muted("Текст — переменные вида {name}, {company}"))
+        right_lay.addWidget(muted("Текст"))
         self.text_input = QPlainTextEdit()
         self.text_input.setMinimumHeight(140)
         right_lay.addWidget(self.text_input, 1)
+        vars_hint = muted(
+            "Подставляются: {имя}, {ник}, {бот}, {менеджер}, {текст} — а также "
+            "любое поле из сценария под тем именем, которое вы ему дали "
+            "(например {объём}). Незнакомое имя останется в тексте как есть."
+        )
+        vars_hint.setWordWrap(True)
+        right_lay.addWidget(vars_hint)
         self.vars_label = muted("")
         right_lay.addWidget(self.vars_label)
 

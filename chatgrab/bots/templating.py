@@ -44,6 +44,24 @@ def render(text: str, values: dict[str, object]) -> str:
     return _VAR_RE.sub(sub, text)
 
 
+# Русские имена тех же переменных.
+#
+# Всё приложение по-русски, поля сценария пользователь тоже называет
+# по-русски («что», «объём»), — и в шаблоне он пишет {имя}, а получает
+# «{имя}» в тексте, ушедшем клиенту. Незнакомое имя намеренно остаётся
+# как есть (см. render), поэтому промах виден только в отправленном
+# сообщении. Дешевле понимать оба написания, чем объяснять одно.
+ALIASES = {
+    "имя": "name",
+    "ник": "username",
+    "бот": "bot_name",
+    "менеджер": "manager",
+    "текст": "text",
+    "теги": "tags",
+    "id": "telegram_id",
+}
+
+
 def context_for(db, bot_id: int, contact_row=None, answers: dict | None = None,
                  event_text: str | None = None) -> dict[str, object]:
     """Assemble what a template may refer to: the contact's own fields, the
@@ -74,6 +92,12 @@ def context_for(db, bot_id: int, contact_row=None, answers: dict | None = None,
 
     if event_text is not None:
         ctx["text"] = event_text
+
+    # Псевдонимы — до ответов сценария: поле, названное «текст», должно
+    # значить ответ клиента, а не исходное сообщение.
+    for alias, canonical in ALIASES.items():
+        if canonical in ctx and alias not in ctx:
+            ctx[alias] = ctx[canonical]
 
     for key, value in (answers or {}).items():
         ctx[key] = value

@@ -927,7 +927,10 @@ class Database:
             params.append(status)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at DESC"
+        # id вторым ключом: время пишется с точностью до секунды, и две
+        # заявки, пришедшие в одну секунду, иначе меняются местами между
+        # обновлениями списка.
+        sql += " ORDER BY created_at DESC, id DESC"
         return self.query(sql, params)
 
     def set_lead_field(self, lead_id: int, **fields: Any) -> None:
