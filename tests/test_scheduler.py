@@ -1,4 +1,6 @@
 import os, sys, asyncio, datetime as dt
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
@@ -6,7 +8,7 @@ from chatgrab.db.database import Database
 from chatgrab.bots.rules_engine import RulesEngine
 from chatgrab.bots.scheduler import TriggerScheduler, REMINDER_KIND
 
-base = "/tmp/cgsched"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgsched"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 
@@ -17,7 +19,13 @@ tpl = db.add_template(bot_id, "Напоминание", "{name}, вы интер
 trig = db.add_trigger(bot_id, "inactivity", {"days": 7})
 db.add_action(trig, "send_dm", {"template_id": tpl}, order_index=0)
 
-now = dt.datetime(2026, 8, 13, 12, 0)
+# От настоящих часов, а не фиксированной датой. Планировщику дату можно
+# подсунуть, а log_activity штампует реальное время — и как только
+# настоящий календарь догонял зашитую сюда дату, «повторное напоминание»
+# оказывалось отправленным раньше, чем контакт «замолчал», и тест начинал
+# падать сам по себе. Ошибки в приложении тут нет: в бою now и есть
+# настоящее время.
+now = dt.datetime.now()
 # a contact who went quiet 10 days ago, and one who spoke yesterday
 old = db.upsert_contact(111, "molchun", "Молчун")
 fresh = db.upsert_contact(222, "aktivnyi", "Активный")

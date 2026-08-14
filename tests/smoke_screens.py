@@ -5,6 +5,9 @@
 только при реальном построении интерфейса.
 """
 import asyncio, os, sys, traceback
+import os
+import tempfile
+import shutil
 from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -31,7 +34,7 @@ from chatgrab.services.export_schedule_service import ExportScheduleService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow, NAV_BY_BLOCK, COMMON_ITEMS
 
-base = "/tmp/cgsmoke"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgsmoke"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 config = AppConfig.load(paths); db = Database(paths.db_path)
 tg = TelegramService(config); sec = SecurityService(config, paths)

@@ -5,6 +5,9 @@
 же базе, тем же движком.
 """
 import asyncio, json, os, sys
+import os
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -12,7 +15,7 @@ from chatgrab.paths import Paths
 from chatgrab.db.database import Database
 from chatgrab.bots.scenario_engine import BRANCHING, END, LINEAR, ScenarioEngine
 
-base = "/tmp/cgbranch"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgbranch"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 

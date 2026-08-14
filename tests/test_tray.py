@@ -1,6 +1,8 @@
 """Трей: сворачивание вместо выхода, уведомления по одному разу на проблему,
 автозапуск не ломается вне Windows."""
 import os, sys, asyncio
+import tempfile
+import shutil
 from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,7 +27,7 @@ from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow
 from chatgrab.ui import tray as tray_mod
 
-base = "/tmp/cgtray"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgtray"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 config = AppConfig.load(paths); db = Database(paths.db_path)
 tg = TelegramService(config); sec = SecurityService(config, paths)
@@ -42,12 +44,20 @@ bot_id = ctx.bot_manager.create_bot("Бот", "userbot", None, "custom", None)
 
 win = MainWindow(ctx)
 
-print("== автозапуск не падает вне Windows ==")
+print("== автозапуск ==")
 print("  поддерживается:", tray_mod.autostart_supported())
-print("  включён:", tray_mod.autostart_enabled())
-assert tray_mod.set_autostart(True) == tray_mod.autostart_supported()
-assert tray_mod.autostart_enabled() in (True, False)
-print("  вызовы безопасны на этой платформе")
+was_enabled = tray_mod.autostart_enabled()
+print("  включён до теста:", was_enabled)
+try:
+    assert tray_mod.set_autostart(True) == tray_mod.autostart_supported()
+    assert tray_mod.autostart_enabled() in (True, False)
+finally:
+    # На Windows это настоящая запись в HKCU\...\Run. Тест обязан вернуть
+    # машину в то состояние, в котором её застал: иначе прогон набора на
+    # своём компьютере тихо прописывал бы приложение в автозапуск.
+    tray_mod.set_autostart(was_enabled)
+assert tray_mod.autostart_enabled() == was_enabled, "тест не восстановил состояние автозапуска"
+print("  состояние восстановлено:", tray_mod.autostart_enabled())
 
 # трей в offscreen недоступен — подменяем на счётчик, логика та же
 notes = []

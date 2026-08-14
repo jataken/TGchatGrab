@@ -1,12 +1,14 @@
 """Оценка выгрузки не тянет тексты сообщений и совпадает с полной выборкой."""
 import os, sys, time
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
 from chatgrab.db.database import Database
 from chatgrab.services.export_service import ExportService, ExportParams
 
-base = "/tmp/cgest"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgest"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 db.add_chat(1, "Биржа", "b", "all", None)

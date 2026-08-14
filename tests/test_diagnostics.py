@@ -1,5 +1,7 @@
 """Диагностическая запись фиксирует переходы, нажатия и скрытые ошибки."""
 import os, sys, asyncio, logging
+import tempfile
+import shutil
 from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -24,7 +26,7 @@ from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow
 from chatgrab import diagnostics
 
-base = "/tmp/cgdiag"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgdiag"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 config = AppConfig.load(paths); db = Database(paths.db_path)
 tg = TelegramService(config); sec = SecurityService(config, paths)

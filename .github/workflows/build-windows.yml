@@ -32,6 +32,11 @@ jobs:
       - name: Прогнать тесты на Windows
         env:
           QT_QPA_PLATFORM: offscreen
+          # Вывод тестов на русском, а консоль Windows по умолчанию cp1252:
+          # без этого каждый print падает с UnicodeEncodeError, и тест
+          # «не проходит» из-за собственного сообщения об успехе.
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
         shell: pwsh
         run: |
           $failed = 0

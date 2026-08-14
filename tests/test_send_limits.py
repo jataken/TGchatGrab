@@ -1,6 +1,8 @@
 """Исходящие сообщения не должны уходить пачкой — это главный способ
 получить ограничение на обычный аккаунт Telegram."""
 import os, sys, asyncio, time
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
@@ -10,7 +12,7 @@ from chatgrab.bots.userbot_runner import UserbotRunner
 from chatgrab.bots import settings as bot_settings
 import datetime as dt
 
-base = "/tmp/cglimits"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cglimits"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 bot_id = db.add_bot("Юзербот", "userbot", None, "custom", None)

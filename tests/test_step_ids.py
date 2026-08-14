@@ -1,10 +1,12 @@
 import os, sys, json
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
 from chatgrab.db.database import Database
 
-base = "/tmp/cgids"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgids"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 bot_id = db.add_bot("B", "userbot", None, "custom", None)

@@ -1,9 +1,10 @@
 import sqlite3, sys, os
+import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.db import schema
 
-db_path = "/tmp/mig_test.db"
+db_path = os.path.join(tempfile.gettempdir(), "mig_test.db")
 if os.path.exists(db_path): os.remove(db_path)
 conn = sqlite3.connect(db_path)
 

@@ -1,6 +1,8 @@
 """Bot API-бот, добавленный в группу, не должен считать сообщения группы
 личной перепиской."""
 import os, sys, asyncio, json
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
@@ -8,7 +10,7 @@ from chatgrab.db.database import Database
 from chatgrab.bots.rules_engine import RulesEngine
 from chatgrab.bots.bot_api_runner import BotApiRunner
 
-base = "/tmp/cgchattype"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgchattype"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 bot_id = db.add_bot("Ассистент", "bot_api", None, "custom", None)

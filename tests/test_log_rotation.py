@@ -1,11 +1,13 @@
 """Основной журнал не растёт бесконечно."""
 import sys, logging
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
 from chatgrab import safety_net
 import os
-base="/tmp/cgrot"; os.system(f"rm -rf {base}")
+base=os.path.join(tempfile.gettempdir(), "cgrot"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 safety_net.LOG_MAX_BYTES = 4096   # уменьшаем, чтобы не писать мегабайты
 safety_net.install(paths)

@@ -1,4 +1,6 @@
 import os, sys, asyncio
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
@@ -22,7 +24,7 @@ assert variables_in("{a} {b} {a}") == ["a", "b"]
 
 # --- engine: send_dm via template ---
 print("\n== движок ==")
-base = "/tmp/cgtpl"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgtpl"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 bot_id = db.add_bot("Бот", "userbot", None, "custom", "@manager")

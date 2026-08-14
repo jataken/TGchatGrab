@@ -6,6 +6,9 @@
 клиентами (в ней лежит access_hash, выданный конкретному аккаунту).
 """
 import asyncio, os, sys
+import os
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -15,7 +18,7 @@ from chatgrab.db.database import Database
 from chatgrab.telegram.service import TelegramService
 from chatgrab.telegram.accounts import AccountRegistry, session_file_for
 
-base = "/tmp/cgacc"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgacc"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 config = AppConfig.load(paths)
 db = Database(paths.db_path)

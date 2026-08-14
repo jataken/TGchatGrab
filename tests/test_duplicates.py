@@ -1,5 +1,7 @@
 """Повторы одного и того же текста узнаются и убираются из выгрузки."""
 import os, sys
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from chatgrab.paths import Paths
@@ -21,7 +23,7 @@ for short in ["да", "в личку", "актуально?", "+", "напиши
 assert fingerprint("") is None
 print(f"  тексты короче {MIN_LENGTH} символов не получают отпечаток")
 
-base = "/tmp/cgdup"; os.system(f"rm -rf {base}")
+base = os.path.join(tempfile.gettempdir(), "cgdup"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
 db = Database(paths.db_path)
 db.add_chat(1, "Биржа", "b", "all", None)
@@ -80,7 +82,7 @@ print("\nТЕСТ ПРОЙДЕН: повторы определяются и ф�
 print("\n== миграция: отпечатки достраиваются для уже собранной базы ==")
 import sqlite3
 from chatgrab.db import schema
-mig = "/tmp/cgdup_old.db"
+mig = os.path.join(tempfile.gettempdir(), "cgdup_old.db")
 if os.path.exists(mig): os.remove(mig)
 conn = sqlite3.connect(mig)
 conn.execute("""CREATE TABLE messages (
