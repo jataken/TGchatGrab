@@ -53,12 +53,21 @@ def autostart_enabled() -> bool:
 
 def set_autostart(enabled: bool) -> bool:
     """Returns the state actually achieved, so the UI can reflect reality
-    rather than the request if the registry write is refused."""
+    rather than the request if the registry write is refused.
+
+    CreateKeyEx, а не OpenKey: ...\\CurrentVersion\\Run существует не в
+    каждом профиле Windows — в свежем, где автозапуск ещё никто не
+    настраивал, его просто нет, и OpenKey падает с «файл не найден».
+    Ошибка при этом выглядела как отказ системы («Windows отклонил запись
+    в реестр»), хотя отклонять было нечего. CreateKeyEx открывает
+    существующий ключ и заводит отсутствующий.
+    """
     if not autostart_supported():
         return False
     import winreg
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                                winreg.KEY_SET_VALUE) as key:
             if enabled:
                 winreg.SetValueEx(key, APP_RUN_NAME, 0, winreg.REG_SZ, _command())
             else:

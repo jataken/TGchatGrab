@@ -9,7 +9,12 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Сборка ни от чего не зависит и ничем не блокируется. Готовый exe в
+  # Artifacts — то, ради чего этот workflow существует; если он появляется
+  # только когда всё остальное зелено, то один упавший тест оставляет без
+  # приложения. Проверки живут в соседней задаче и ничего не гасят.
   build:
+    name: Сборка exe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,67 +29,47 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # Тесты гоняются и здесь, на Windows, а не только на Linux в
-      # соседнем workflow. Причина конкретная: приложение один раз уже
-      # падало при деплое на `%-d` в strftime — это расширение glibc,
-      # которого на Windows нет. Такую поломку не увидит ни один прогон
-      # на Ubuntu, а увидит пользователь при запуске exe.
-      - name: Прогнать тесты на Windows
-        env:
-          QT_QPA_PLATFORM: offscreen
-          # Вывод тестов на русском, а консоль Windows по умолчанию cp1252:
-          # без этого каждый print падает с UnicodeEncodeError, и тест
-          # «не проходит» из-за собственного сообщения об успехе.
-          PYTHONUTF8: "1"
-          PYTHONIOENCODING: "utf-8"
-        shell: pwsh
-        run: |
-          $failed = 0
-          # Именно foreach, а не ForEach-Object: у блока конвейера своя
-          # область видимости, и присваивание $failed в нём наружу не
-          # выходит — упавший тест молча не влиял бы на исход шага.
-          foreach ($t in Get-ChildItem tests/test_*.py) {
-            Write-Host "::group::$($t.Name)"
-            python $t.FullName
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "::error file=tests/$($t.Name)::тест не прошёл на Windows"
-              $failed = 1
-            }
-            Write-Host "::endgroup::"
-          }
-          python tests/smoke_screens.py
-          if ($LASTEXITCODE -ne 0) { $failed = 1 }
-          exit $failed
-
       - name: Узнать версию и метку сборки
         shell: pwsh
         run: |
           $version = (Select-String -Path chatgrab/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           $short = "${{ github.sha }}".Substring(0, 7)
-          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "BUILD_TAG=$version-$short" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "ChatGrab $version ($short)"
 
       - name: Собрать portable ChatGrab.exe
         run: pyinstaller packaging/chatgrab.spec --noconfirm --clean
 
-      # Файл собрался — это ещё не значит, что он запускается. Ровно
-      # здесь ловится то, чего не видно при сборке: не подхваченный
-      # PyInstaller модуль, отсутствующий плагин Qt, ошибка при старте.
-      # Признак успеха — не «процесс жив» (упавший windowed-билд может
-      # висеть на окне с ошибкой), а созданная база и чистый журнал:
-      # значит, приложение дошло до работы и ничего не свалилось.
-      - name: Проверить, что exe действительно запускается
+      - name: Проверить, что exe собрался
         shell: pwsh
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
           if (-not (Test-Path "dist/ChatGrab.exe")) { throw "ChatGrab.exe не найден в dist/" }
           $size = [math]::Round((Get-Item "dist/ChatGrab.exe").Length / 1MB, 1)
           Write-Host "ChatGrab.exe — $size МБ"
 
-          # Абсолютный путь: приложение кладёт данные рядом с exe, и
-          # проверка ниже ищет их именно там.
+      # Выгрузка идёт сразу после сборки, до проверки запуска: даже если
+      # приложение не стартует, файл нужен на руках, чтобы посмотреть на
+      # него самому.
+      - name: Загрузить как артефакт сборки
+        uses: actions/upload-artifact@v4
+        with:
+          # Версия и коммит прямо в имени: иначе, скачав два артефакта с
+          # разницей в неделю, невозможно сказать, который из них новее.
+          name: ChatGrab-${{ env.BUILD_TAG }}-windows
+          path: dist/ChatGrab.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      # Файл собрался — это ещё не значит, что он запускается. Здесь
+      # ловится то, чего при сборке не видно: не подхваченный PyInstaller
+      # модуль, отсутствующий плагин Qt, ошибка при старте. Признак успеха
+      # — не «процесс жив» (упавший windowed-билд может висеть на окне с
+      # ошибкой), а созданная база и чистый журнал.
+      - name: Проверить, что exe действительно запускается
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
           $exe = (Resolve-Path "dist/ChatGrab.exe").Path
           $proc = Start-Process -FilePath $exe -PassThru
           $deadline = (Get-Date).AddSeconds(90)
@@ -120,16 +105,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Загрузить как артефакт сборки
-        uses: actions/upload-artifact@v4
-        with:
-          # Версия и коммит прямо в имени: иначе, скачав два артефакта с
-          # разницей в неделю, невозможно сказать, который из них новее.
-          name: ChatGrab-${{ env.BUILD_TAG }}-windows
-          path: dist/ChatGrab.exe
-          if-no-files-found: error
-          retention-days: 90
-
       - name: Опубликовать релиз (по тегу v*.*.*)
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -139,3 +114,49 @@ jobs:
           gh release create "${{ github.ref_name }}" "dist/ChatGrab.exe" `
             --title "ChatGrab ${{ github.ref_name }}" `
             --notes "Portable-сборка ChatGrab для Windows. Скачайте ChatGrab.exe и запустите — установка не нужна."
+
+  # Отдельно от сборки: приложение один раз уже падало при деплое на `%-d`
+  # в strftime — расширение glibc, которого на Windows нет. Такую поломку
+  # не увидит ни один прогон на Ubuntu, а увидит пользователь при запуске
+  # exe. Красная задача здесь — сигнал, а не запрет на скачивание сборки.
+  tests-windows:
+    name: Тесты на Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Установить зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Прогнать тесты
+        env:
+          QT_QPA_PLATFORM: offscreen
+          # Вывод тестов на русском, а консоль Windows по умолчанию cp1252:
+          # без этого каждый print падает с UnicodeEncodeError, и тест
+          # «не проходит» из-за собственного сообщения об успехе.
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        shell: pwsh
+        run: |
+          $failed = 0
+          # Именно foreach, а не ForEach-Object: у блока конвейера своя
+          # область видимости, и присваивание $failed в нём наружу не
+          # выходит — упавший тест молча не влиял бы на исход шага.
+          foreach ($t in Get-ChildItem tests/test_*.py) {
+            Write-Host "::group::$($t.Name)"
+            python $t.FullName
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error file=tests/$($t.Name)::тест не прошёл на Windows"
+              $failed = 1
+            }
+            Write-Host "::endgroup::"
+          }
+          python tests/smoke_screens.py
+          if ($LASTEXITCODE -ne 0) { $failed = 1 }
+          exit $failed
