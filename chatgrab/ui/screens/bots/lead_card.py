@@ -23,8 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
+from ...util import fire
 from ...widgets import button, label, muted
 from ....core import lead as lead_domain
+from ....integrations import bitrix
 
 
 class LeadCardDialog(QDialog):
@@ -130,6 +132,15 @@ class LeadCardDialog(QDialog):
         outer.addLayout(reminder_row)
         self.reminder_hint = muted("")
         outer.addWidget(self.reminder_hint)
+
+        # ---- Bitrix24 (С6) -----------------------------------------------
+        bitrix_row = QHBoxLayout()
+        self.bitrix_send_btn = button("Отправить в Битрикс24", "secondary")
+        self.bitrix_send_btn.clicked.connect(self._on_send_to_bitrix)
+        bitrix_row.addWidget(self.bitrix_send_btn)
+        self.bitrix_status_label = muted("")
+        bitrix_row.addWidget(self.bitrix_status_label, 1)
+        outer.addLayout(bitrix_row)
 
         # ---- tabs: история / переписка / вложения ------------------------
         self.tabs = QTabWidget()
@@ -249,6 +260,7 @@ class LeadCardDialog(QDialog):
             self.reminder_hint.setText("Напоминание не поставлено.")
         self.clear_reminder_btn.setEnabled(bool(lead["next_action_at"]))
 
+        self._refresh_bitrix_status(lead)
         self._refresh_history()
         self._refresh_correspondence(lead, contact)
         self._refresh_attachments(lead)
@@ -295,6 +307,34 @@ class LeadCardDialog(QDialog):
         self.corr_view.setPlainText("\n".join(lines))
         scrollbar = self.corr_view.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _refresh_bitrix_status(self, lead) -> None:
+        configured = bitrix.get_webhook_url(self.ctx.db, self.ctx.security) is not None
+        queue_entry = self.ctx.db.get_crm_queue_entry(self.lead_id)
+        if not configured:
+            self.bitrix_send_btn.setEnabled(False)
+            self.bitrix_status_label.setText("Bitrix24 не настроен — задайте вебхук в «Настройках».")
+        elif queue_entry is not None:
+            self.bitrix_send_btn.setEnabled(True)
+            attempts = queue_entry["attempts"]
+            self.bitrix_status_label.setText(
+                f"Отправка в очереди (попыток: {attempts})." if attempts else "Отправка в очереди.")
+        elif lead["crm_id"]:
+            self.bitrix_send_btn.setEnabled(True)
+            when = str(lead["crm_synced_at"])[:16].replace("T", " ") if lead["crm_synced_at"] else "?"
+            self.bitrix_status_label.setText(f"В Bitrix24: ID {lead['crm_id']} (синхронизировано {when}).")
+        else:
+            self.bitrix_send_btn.setEnabled(True)
+            self.bitrix_status_label.setText("Ещё не отправлялась в Bitrix24.")
+
+    def _on_send_to_bitrix(self) -> None:
+        self.ctx.bitrix_sync_service.enqueue(self.lead_id)
+        self.refresh()
+        # Ставит в очередь и сразу пробует — иначе клик ждал бы до 30
+        # секунд следующего фонового тика без всякой видимой причины.
+        # Фон остаётся страховкой на случай, если сети сейчас нет.
+        task = fire(self.ctx.bitrix_sync_service.tick(), parent=self, on_error=lambda e: None)
+        task.add_done_callback(lambda t: self.refresh() if not t.cancelled() else None)
 
     def _refresh_attachments(self, lead) -> None:
         self.attachments_list.clear()

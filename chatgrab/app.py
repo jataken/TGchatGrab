@@ -16,9 +16,11 @@ from .bots.crypto import register_bot_token_rotation
 from .bots.manager import BotManager
 from .config import AppConfig
 from .db.database import Database
+from .integrations.bitrix import register_bitrix_rotation
 from .paths import PATHS, resource_path
 from .security import SecurityService
 from .services.backup_service import BackupService
+from .services.bitrix_sync_service import BitrixSyncService
 from .services.export_schedule_service import ExportScheduleService
 from .services.export_service import ExportService
 from .services.ignore_service import IgnoreService
@@ -86,6 +88,7 @@ def run() -> int:
     backup_service = BackupService(db, PATHS)
     bot_manager = BotManager(db, tg, security)
     register_bot_token_rotation(db, security)
+    register_bitrix_rotation(db, security)
 
     accounts = AccountRegistry(db, config, PATHS, tg)
     accounts.ensure_primary_row()
@@ -100,6 +103,9 @@ def run() -> int:
         on_log=lambda text, tone="": collector._log("выгрузка", text, tone),
     )
     lead_reminder_service = LeadReminderService(db)
+    bitrix_sync_service = BitrixSyncService(
+        db, security, on_log=lambda text, tone="": collector._log("Bitrix24", text, tone),
+    )
 
     ctx = AppContext(
         config=config, paths=PATHS, db=db, tg=tg, collector=collector,
@@ -107,7 +113,8 @@ def run() -> int:
         backup_service=backup_service, security=security, bot_manager=bot_manager,
         watch_service=watch_service, retention_service=retention_service,
         export_schedule_service=export_schedule_service,
-        lead_reminder_service=lead_reminder_service, accounts=accounts,
+        lead_reminder_service=lead_reminder_service,
+        bitrix_sync_service=bitrix_sync_service, accounts=accounts,
     )
 
     window = MainWindow(ctx)
@@ -118,6 +125,7 @@ def run() -> int:
             loop.create_task(backup_service.run_periodic())
             export_schedule_service.start()
             lead_reminder_service.start()
+            bitrix_sync_service.start()
             loop.run_forever()
     finally:
         session = diagnostics.current()

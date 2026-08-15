@@ -165,6 +165,23 @@ def _down_outbox(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS outbox_blacklist;")
 
 
+def _up_bitrix(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """С6: a lead's link to its Bitrix24 CRM record, and the send queue
+    that gets it there without ever losing one over a dropped connection.
+
+    No down() — same reasoning as 008/009: this touches bot_leads (two
+    new columns), not just adds a standalone table the way 007/010 did,
+    so it doesn't get the clean-rollback treatment those two did. The
+    mandatory backup before this runs is the safety net.
+    """
+    for name, coltype in schema._LEAD_CRM_COLUMNS:
+        if not schema._column_exists(conn, "bot_leads", name):
+            conn.execute(f"ALTER TABLE bot_leads ADD COLUMN {name} {coltype};")
+    conn.execute(schema._DDL_CRM_QUEUE)
+    for ddl in schema._DDL_CRM_QUEUE_INDEXES:
+        conn.execute(ddl)
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -172,6 +189,7 @@ MIGRATIONS: list[Migration] = [
     Migration("008", "lead model + history", _up_leads),
     Migration("009", "lead lifecycle: reminders, leads without a bot/contact", _up_lead_lifecycle),
     Migration("010", "outbox: send log, drafts, blacklist", _up_outbox, _down_outbox),
+    Migration("011", "Bitrix24: crm_id on leads, send queue", _up_bitrix),
 ]
 
 

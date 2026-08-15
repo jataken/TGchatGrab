@@ -1412,6 +1412,45 @@ class Database:
     def dismiss_draft(self, draft_id: int) -> None:
         self.execute("UPDATE outbox_drafts SET dismissed_at = ? WHERE id = ?", (now_iso(), draft_id))
 
+    # ---- Bitrix24 / CRM sync (С6) -----------------------------------------
+    def enqueue_crm_sync(self, lead_id: int) -> None:
+        """Queues a lead for the next drain tick — due immediately. Safe
+        to call on a lead that's already queued: resets it to due-now
+        rather than adding a second row (UNIQUE(lead_id))."""
+        self.execute(
+            "INSERT INTO crm_queue(lead_id, next_attempt_at, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(lead_id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at",
+            (lead_id, now_iso(), now_iso()),
+        )
+
+    def due_crm_queue(self, now_iso_str: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM crm_queue WHERE next_attempt_at <= ? ORDER BY next_attempt_at", (now_iso_str,))
+
+    def get_crm_queue_entry(self, lead_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM crm_queue WHERE lead_id = ?", (lead_id,))
+
+    def dequeue_crm_sync(self, queue_id: int) -> None:
+        self.execute("DELETE FROM crm_queue WHERE id = ?", (queue_id,))
+
+    def retry_crm_queue(self, queue_id: int, error: str, backoff_seconds: float) -> None:
+        row = self.query_one("SELECT attempts FROM crm_queue WHERE id = ?", (queue_id,))
+        if row is None:
+            return
+        next_attempt = (dt.datetime.now().astimezone() + dt.timedelta(seconds=backoff_seconds)) \
+            .isoformat(timespec="seconds")
+        self.execute(
+            "UPDATE crm_queue SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ?",
+            (next_attempt, error, queue_id),
+        )
+
+    def log_crm_sync(self, lead_id: int, crm_id: str) -> None:
+        self.execute(
+            "INSERT INTO lead_events(lead_id, kind, text, source, created_at) VALUES (?, ?, ?, ?, ?)",
+            (lead_id, lead_domain.EVENT_KIND_SYNC, f"Синхронизировано с Bitrix24 (ID {crm_id}).",
+             lead_domain.EVENT_SOURCE_INTEGRATION, now_iso()),
+        )
+
     # ---- bot templates ---------------------------------------------------
     def add_template(self, bot_id: int | None, name: str, text: str, variables: list[str]) -> int:
         with self._lock:

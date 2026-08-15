@@ -31,6 +31,7 @@ from chatgrab.services.watch_service import WatchService
 from chatgrab.services.retention_service import RetentionService
 from chatgrab.services.export_schedule_service import ExportScheduleService
 from chatgrab.services.lead_reminder_service import LeadReminderService
+from chatgrab.services.bitrix_sync_service import BitrixSyncService
 from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow, NAV_BY_BLOCK, COMMON_ITEMS
 
@@ -45,7 +46,8 @@ ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     bot_manager=BotManager(db, tg, sec),
     watch_service=WatchService(db), retention_service=RetentionService(db, paths),
     export_schedule_service=ExportScheduleService(db, ExportService(db, paths)),
-    lead_reminder_service=LeadReminderService(db))
+    lead_reminder_service=LeadReminderService(db),
+    bitrix_sync_service=BitrixSyncService(db, sec))
 db.add_chat(1, "Биржа", "b", "all", None)
 ctx.bot_manager.create_bot("Бот", "userbot", None, "custom", None)
 

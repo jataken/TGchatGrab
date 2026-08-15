@@ -10,6 +10,7 @@ from ..db.database import Database
 from ..paths import Paths
 from ..security import SecurityService
 from ..services.backup_service import BackupService
+from ..services.bitrix_sync_service import BitrixSyncService
 from ..services.export_schedule_service import ExportScheduleService
 from ..services.export_service import ExportService
 from ..services.ignore_service import IgnoreService
@@ -38,6 +39,7 @@ class AppContext:
     retention_service: RetentionService
     export_schedule_service: ExportScheduleService
     lead_reminder_service: LeadReminderService
+    bitrix_sync_service: BitrixSyncService
     accounts: AccountRegistry | None = None
     # Which bot the «Боты» block's screens are currently editing.
     bot_selection: BotSelection = field(default_factory=BotSelection)

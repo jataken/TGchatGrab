@@ -480,6 +480,33 @@ CREATE TABLE IF NOT EXISTS outbox_blacklist (
 );
 """
 
+# Migration "011" — see db/migrations.py._up_bitrix. A lead's own link to
+# its Bitrix24 CRM record — crm_id absent means never synced.
+_LEAD_CRM_COLUMNS = [
+    ("crm_id", "TEXT"),
+    ("crm_synced_at", "TEXT"),
+]
+
+# One pending send per lead (UNIQUE(lead_id) — enqueueing an already-queued
+# lead just resets next_attempt_at rather than piling up a second row).
+# Rows are deleted on success; a failure stays here with a growing
+# attempts count and a pushed-back next_attempt_at, so "the network was
+# down" and "Bitrix is still rejecting this" look the same from here —
+# both just mean "still pending" — and neither ever loses the lead.
+_DDL_CRM_QUEUE = """
+CREATE TABLE IF NOT EXISTS crm_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER NOT NULL UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+_DDL_CRM_QUEUE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_crm_queue_due ON crm_queue(next_attempt_at);",
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
