@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTime, Qt, QTimer
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox, QSpinBox,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QMessageBox, QScrollArea, QSpinBox, QTimeEdit, QVBoxLayout, QWidget,
 )
 
 from ...context import AppContext
@@ -17,9 +17,10 @@ _PRESET_LABELS = {"b2b": "B2B", "b2c": "B2C", "custom": "CUSTOM"}
 
 
 class SendLimitsDialog(QDialog):
-    """How fast this bot is allowed to send. For a userbot these are the
-    settings that keep the user's own phone number out of trouble, so they
-    live one click from the run/stop button rather than in app settings."""
+    """How fast this bot is allowed to send, and the account-safety layer
+    around that (С4: outbox). For a userbot these are the settings that
+    keep the user's own phone number out of trouble, so they live one
+    click from the run/stop button rather than in app settings."""
 
     def __init__(self, ctx: AppContext, bot_id: int, parent=None):
         super().__init__(parent)
@@ -27,10 +28,19 @@ class SendLimitsDialog(QDialog):
         self.bot_id = bot_id
         bot = ctx.db.get_bot(bot_id)
         self.setWindowTitle("Ограничения отправки")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
+        self.resize(560, 640)
         values = bot_settings.load(bot)
 
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
         intro = muted(
             "Telegram ограничивает аккаунт за пачки исходящих сообщений. "
             "Эти паузы — то, что отличает бота от человека, разбирающего список."
@@ -40,6 +50,16 @@ class SendLimitsDialog(QDialog):
         intro.setWordWrap(True)
         lay.addWidget(intro)
         lay.addSpacing(8)
+
+        counts = ctx.db.outbox_counts(bot_id)
+        self.counters_label = muted(
+            f"Отправлено за час: {counts['hour']} из {int(values['max_per_hour'])} · "
+            f"за сутки: {counts['day']} из {int(values['max_per_day'])} · "
+            f"первых сообщений сегодня: {counts['first_today']} из {int(values['max_first_messages_per_day'])}"
+        )
+        self.counters_label.setWordWrap(True)
+        lay.addWidget(self.counters_label)
+        lay.addSpacing(10)
 
         self.gap = QDoubleSpinBox()
         self.gap.setRange(*bot_settings.BOUNDS["send_gap_seconds"])
@@ -63,13 +83,106 @@ class SendLimitsDialog(QDialog):
         lay.addWidget(muted("Максимум напоминаний за один заход (остальные — в следующий)"))
         lay.addWidget(self.cap)
 
+        self.estimate = muted("")
+        self.estimate.setWordWrap(True)
+        lay.addWidget(self.estimate)
+        for w in (self.gap, self.cap):
+            w.valueChanged.connect(self._update_estimate)
+        self._update_estimate()
+
+        # ---- account-wide limits (С4) --------------------------------
+        lay.addSpacing(10)
+        lay.addWidget(label("ЛИМИТЫ НА АККАУНТ", "kicker"))
+        self.per_hour = QSpinBox()
+        self.per_hour.setRange(*[int(b) for b in bot_settings.BOUNDS["max_per_hour"]])
+        self.per_hour.setValue(int(values["max_per_hour"]))
+        lay.addWidget(muted("Сообщений в час, не больше"))
+        lay.addWidget(self.per_hour)
+        self.per_day = QSpinBox()
+        self.per_day.setRange(*[int(b) for b in bot_settings.BOUNDS["max_per_day"]])
+        self.per_day.setValue(int(values["max_per_day"]))
+        lay.addWidget(muted("Сообщений в сутки, не больше"))
+        lay.addWidget(self.per_day)
+        self.first_per_day = QSpinBox()
+        self.first_per_day.setRange(*[int(b) for b in bot_settings.BOUNDS["max_first_messages_per_day"]])
+        self.first_per_day.setValue(int(values["max_first_messages_per_day"]))
+        lay.addWidget(muted("Из них — первых сообщений новым контактам в сутки, не больше"))
+        lay.addWidget(self.first_per_day)
+        self.contact_cooldown_days = QSpinBox()
+        self.contact_cooldown_days.setRange(*[int(b) for b in bot_settings.BOUNDS["contact_cooldown_days"]])
+        self.contact_cooldown_days.setSuffix(" сут.")
+        self.contact_cooldown_days.setValue(int(values["contact_cooldown_days"]))
+        lay.addWidget(muted("Не писать одному контакту повторно (сообщения по своей инициативе) чаще, чем раз в"))
+        lay.addWidget(self.contact_cooldown_days)
+
+        # ---- quiet hours -----------------------------------------------
+        lay.addSpacing(10)
+        lay.addWidget(label("ТИХИЕ ЧАСЫ", "kicker"))
+        lay.addWidget(muted(
+            "Действуют только на сообщения по инициативе бота (расписание, напоминания молчащим) — "
+            "ответ на входящее уходит в любое время."))
+        window_row = QHBoxLayout()
+        self.quiet_start = QTimeEdit()
+        self.quiet_start.setDisplayFormat("HH:mm")
+        self.quiet_start.setTime(QTime.fromString(str(values["quiet_start"]), "HH:mm"))
+        window_row.addWidget(muted("с"))
+        window_row.addWidget(self.quiet_start)
+        self.quiet_end = QTimeEdit()
+        self.quiet_end.setDisplayFormat("HH:mm")
+        self.quiet_end.setTime(QTime.fromString(str(values["quiet_end"]), "HH:mm"))
+        window_row.addWidget(muted("до"))
+        window_row.addWidget(self.quiet_end)
+        window_row.addStretch(1)
+        lay.addLayout(window_row)
+        self.quiet_weekends = QCheckBox("Не писать по инициативе бота в выходные")
+        self.quiet_weekends.setChecked(bool(values["quiet_weekends"]))
+        lay.addWidget(self.quiet_weekends)
+
+        # ---- safety --------------------------------------------------
+        lay.addSpacing(10)
+        lay.addWidget(label("БЕЗОПАСНОСТЬ", "kicker"))
+        self.dry_run = QCheckBox("Пробный режим — ничего не отправлять, только записывать в журнал")
+        self.dry_run.setChecked(bool(values["dry_run"]))
+        lay.addWidget(self.dry_run)
+        self.auto_send_cold = QCheckBox("Отправлять первое сообщение новому контакту сразу, без черновика")
+        self.auto_send_cold.setChecked(bool(values["auto_send_cold"]))
+        self._auto_send_cold_was = self.auto_send_cold.isChecked()
+        lay.addWidget(self.auto_send_cold)
+        warn = muted(
+            "Выключено по умолчанию не просто так: холодная рассылка от обычного аккаунта — "
+            "самый быстрый способ получить ограничение. Пока выключено, первое сообщение "
+            "по инициативе бота ложится в черновики — их видно на экране «Боты»."
+        )
+        warn.setWordWrap(True)
+        lay.addWidget(warn)
+
+        # ---- per-bot blacklist -----------------------------------------
+        lay.addSpacing(10)
+        lay.addWidget(label("ЧЁРНЫЙ СПИСОК", "kicker"))
+        lay.addWidget(muted("Этому боту, по инициативе или в ответ, не писать этим адресатам никогда"))
+        self.blacklist_list = QListWidget()
+        self.blacklist_list.setMaximumHeight(90)
+        lay.addWidget(self.blacklist_list)
+        bl_row = QHBoxLayout()
+        self.blacklist_input = QLineEdit()
+        self.blacklist_input.setPlaceholderText("telegram id или @username")
+        bl_row.addWidget(self.blacklist_input, 1)
+        add_bl_btn = button("Добавить", "secondary")
+        add_bl_btn.clicked.connect(self._on_add_blacklist)
+        bl_row.addWidget(add_bl_btn)
+        remove_bl_btn = button("Убрать выбранного", "ghost")
+        remove_bl_btn.clicked.connect(self._on_remove_blacklist)
+        bl_row.addWidget(remove_bl_btn)
+        lay.addLayout(bl_row)
+        self._reload_blacklist()
+
         # Аккаунт, от имени которого пишет юзербот. Появляется только
         # когда аккаунтов больше одного и только для юзерботов: у бота
         # через Bot API свой собственный аккаунт по определению.
         self.account_combo = None
         accounts = ctx.db.list_accounts()
         if bot and bot["type"] == "userbot" and len(accounts) > 1:
-            lay.addSpacing(8)
+            lay.addSpacing(10)
             lay.addWidget(muted(
                 "Аккаунт, от имени которого бот пишет. Отдельный номер под рассылку "
                 "означает, что ограничение за отправку не заденет сбор чатов."))
@@ -85,13 +198,6 @@ class SendLimitsDialog(QDialog):
             self.account_combo.setCurrentIndex(max(0, idx))
             lay.addWidget(self.account_combo)
 
-        self.estimate = muted("")
-        self.estimate.setWordWrap(True)
-        lay.addWidget(self.estimate)
-        for w in (self.gap, self.cap):
-            w.valueChanged.connect(self._update_estimate)
-        self._update_estimate()
-
         row = QHBoxLayout()
         row.addStretch(1)
         cancel = button("Отмена", "secondary")
@@ -100,7 +206,7 @@ class SendLimitsDialog(QDialog):
         save = button("Сохранить", "primary")
         save.clicked.connect(self._on_save)
         row.addWidget(save)
-        lay.addLayout(row)
+        outer.addLayout(row)
 
     def _update_estimate(self) -> None:
         gap = self.gap.value()
@@ -112,11 +218,51 @@ class SendLimitsDialog(QDialog):
             f"При этих значениях полный заход напоминаний ({cap} шт.) растянется примерно на {human}."
         )
 
+    def _reload_blacklist(self) -> None:
+        self.blacklist_list.clear()
+        for row in self.ctx.db.list_blacklist(self.bot_id):
+            self.blacklist_list.addItem(row["target"])
+
+    def _on_add_blacklist(self) -> None:
+        target = self.blacklist_input.text().strip()
+        if not target:
+            return
+        self.ctx.db.add_to_blacklist(self.bot_id, target)
+        self.blacklist_input.clear()
+        self._reload_blacklist()
+
+    def _on_remove_blacklist(self) -> None:
+        item = self.blacklist_list.currentItem()
+        if item is None:
+            return
+        self.ctx.db.remove_from_blacklist(self.bot_id, item.text())
+        self._reload_blacklist()
+
     def _on_save(self) -> None:
+        # Turning this on is the one setting invariant 6 explicitly asks
+        # to be guarded — a plain checkbox is too easy to tick without
+        # reading the warning label above it.
+        if self.auto_send_cold.isChecked() and not self._auto_send_cold_was:
+            if QMessageBox.question(
+                self, "Включить рассылку первых сообщений",
+                "Первое сообщение новым контактам будет уходить сразу, без черновика и без клика. "
+                "Это главный способ получить ограничение на обычный аккаунт Telegram. Включить?"
+            ) != QMessageBox.Yes:
+                self.auto_send_cold.setChecked(False)
+
         self.ctx.db.set_bot_field(self.bot_id, settings=bot_settings.dumps({
             "send_gap_seconds": self.gap.value(),
             "dm_cooldown_seconds": self.cooldown.value(),
             "max_reminders_per_tick": self.cap.value(),
+            "max_per_hour": self.per_hour.value(),
+            "max_per_day": self.per_day.value(),
+            "max_first_messages_per_day": self.first_per_day.value(),
+            "contact_cooldown_days": self.contact_cooldown_days.value(),
+            "quiet_start": self.quiet_start.time().toString("HH:mm"),
+            "quiet_end": self.quiet_end.time().toString("HH:mm"),
+            "quiet_weekends": self.quiet_weekends.isChecked(),
+            "dry_run": self.dry_run.isChecked(),
+            "auto_send_cold": self.auto_send_cold.isChecked(),
         }))
         if self.account_combo is not None:
             self.ctx.db.set_bot_field(self.bot_id, account_id=self.account_combo.currentData())

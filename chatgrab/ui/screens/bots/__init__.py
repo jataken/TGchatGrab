@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 from ...context import AppContext
 from ...widgets import label
 from .analytics_tab import AnalyticsTab
+from .drafts_tab import DraftsPanel
 from .list_tab import BotsListTab
 
 
@@ -36,6 +37,12 @@ class BotsScreen(QWidget):
         outer.addWidget(self.list_tab)
 
         outer.addSpacing(18)
+        outer.addWidget(label("ЧЕРНОВИКИ", "kicker"))
+        outer.addSpacing(8)
+        self.drafts_panel = DraftsPanel(ctx)
+        outer.addWidget(self.drafts_panel)
+
+        outer.addSpacing(18)
         outer.addWidget(label("АНАЛИТИКА ПО КОНТАКТАМ", "kicker"))
         outer.addSpacing(8)
         self.analytics_tab = AnalyticsTab(ctx)
@@ -44,4 +51,5 @@ class BotsScreen(QWidget):
 
     def on_show(self, **kwargs) -> None:
         self.list_tab.on_show()
+        self.drafts_panel.on_show()
         self.analytics_tab.on_show()

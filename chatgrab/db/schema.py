@@ -426,6 +426,60 @@ def _relax_bot_leads_ids(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE bot_leads_new RENAME TO bot_leads;")
 
 
+# Migration "010" — see db/migrations.py._up_outbox. Every send a bot
+# attempts, whatever the outcome, so "have we ever messaged this contact"
+# and the hour/day/first-message counters have something to query instead
+# of guessing from bot_activity_log (which only ever logs inbound events).
+_DDL_OUTBOX_SENDS = """
+CREATE TABLE IF NOT EXISTS outbox_sends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL,                     -- sent | blocked | dry_run
+    is_first INTEGER NOT NULL DEFAULT 0,
+    text TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+_DDL_OUTBOX_SENDS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_outbox_sends_bot_time ON outbox_sends(bot_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_outbox_sends_target ON outbox_sends(bot_id, target, created_at);",
+]
+
+# A cold first message (no reply just triggered it, and this contact has
+# never been sent anything) waits here for a click instead of going out —
+# invariant 6. sent_at/dismissed_at both NULL means still pending.
+_DDL_OUTBOX_DRAFTS = """
+CREATE TABLE IF NOT EXISTS outbox_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL,
+    target TEXT NOT NULL,
+    text TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    dismissed_at TEXT
+);
+"""
+_DDL_OUTBOX_DRAFTS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_outbox_drafts_pending "
+    "ON outbox_drafts(bot_id, sent_at, dismissed_at);",
+]
+
+# Scoped per bot, same as bots.settings — not per Telegram account. Several
+# bots sharing one account each keep their own list rather than a shared
+# one; see PLAN.md's С4 journal for why that's an accepted simplification.
+_DDL_OUTBOX_BLACKLIST = """
+CREATE TABLE IF NOT EXISTS outbox_blacklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL,
+    target TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(bot_id, target)
+);
+"""
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

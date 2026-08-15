@@ -15,6 +15,7 @@ python tests/test_templates.py         # подстановка переменн
 python tests/test_scheduler.py         # напоминания по неактивности и расписание
 python tests/test_step_ids.py          # id шагов сценария стабильны при правках
 python tests/test_send_limits.py       # исходящие не уходят пачкой
+python tests/test_outbox.py            # лимиты на аккаунт, тихие часы, чёрный список, черновики
 python tests/test_bot_api_chat_type.py # бот в группе не считает её личкой
 python tests/test_bot_context.py       # выбор бота общий для блока
 python tests/test_gaps.py              # разрывы в собранном считаются верно

@@ -9,6 +9,7 @@ from chatgrab.paths import Paths
 from chatgrab.db.database import Database
 from chatgrab.bots.rules_engine import RulesEngine
 from chatgrab.bots.userbot_runner import UserbotRunner
+from chatgrab.bots.outbox import Outbox
 from chatgrab.bots import settings as bot_settings
 import datetime as dt
 
@@ -41,7 +42,7 @@ db.set_bot_field(bot_id, settings=bot_settings.dumps(
     {"send_gap_seconds": GAP, "dm_cooldown_seconds": 0, "max_reminders_per_tick": 500}))
 
 tg = FakeTg()
-runner = UserbotRunner(tg, db, RulesEngine(db), lambda *a, **k: None, lambda *a, **k: None)
+runner = UserbotRunner(tg, db, RulesEngine(db), lambda *a, **k: None, lambda *a, **k: None, Outbox(db))
 send = runner.make_send(bot_id)
 
 print(f"\n== 10 сообщений разным контактам, gap={GAP}s ==")

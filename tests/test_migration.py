@@ -99,10 +99,13 @@ print("re-migrate OK, rows =", conn.execute("SELECT count(*) FROM bot_scenario_s
 # отражает применённые шаги ровно по одному разу
 applied = {row[0] for row in conn.execute("SELECT id FROM schema_migrations")}
 print("применённые миграции:", sorted(applied))
-assert applied == {"006", "007", "008", "009"}, applied
+assert applied == {"006", "007", "008", "009", "010"}, applied
 tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables, "таблица direction не создалась"
 assert "lead_events" in tables, "таблица lead_events не создалась"
+assert "outbox_sends" in tables, "таблица outbox_sends не создалась"
+assert "outbox_drafts" in tables, "таблица outbox_drafts не создалась"
+assert "outbox_blacklist" in tables, "таблица outbox_blacklist не создалась"
 
 # 009: contact_id/bot_id больше не NOT NULL — лид может существовать без
 # бота и без контакта (ручное создание, лид из найденного сообщения)

@@ -16,6 +16,7 @@ from ..security import SecurityService
 from ..telegram.service import TelegramService
 from .bot_api_runner import BotApiRunner
 from .crypto import decrypt_token, encrypt_token
+from .outbox import Outbox
 from .presets import apply_preset
 from .rules_engine import RulesEngine
 from .scheduler import TriggerScheduler
@@ -34,7 +35,12 @@ class BotManager(QObject):
         self.tg = tg
         self.security = security
         self.rules = RulesEngine(db)
-        self.userbot_runner = UserbotRunner(tg, db, self.rules, self._on_log, self._on_status)
+        # Constructed before either runner — both take it, so every send
+        # either one hands to RulesEngine is already outbox-wrapped at the
+        # one place each runner builds a send_dm, rather than each runner
+        # needing to know about limits/drafts/blacklist itself.
+        self.outbox = Outbox(db, self._on_log)
+        self.userbot_runner = UserbotRunner(tg, db, self.rules, self._on_log, self._on_status, self.outbox)
         self._bot_api_runners: dict[int, BotApiRunner] = {}
         self.log_entries: list[dict] = []
         self._running = False
@@ -69,14 +75,39 @@ class BotManager(QObject):
         self.db.set_bot_field(bot_id, status=status, last_error=error)
         self.bots_changed.emit()
 
-    def _send_for_bot(self, bot_id: int):
-        """The send path for a bot, whichever runner owns it — so the
-        scheduler inherits the userbot's per-contact cooldown and
-        FloodWait handling instead of reimplementing them."""
+    def _raw_send_for_bot(self, bot_id: int):
+        """The runner's own send callable, whichever type owns this bot —
+        not yet outbox-wrapped. Only two callers should ever touch this:
+        _send_for_bot below (wraps it for the scheduler) and send_draft
+        (wraps it fresh per call, since a draft can outlive the runner
+        instance that originally tried to send it)."""
         runner = self._bot_api_runners.get(bot_id)
         if runner is not None:
             return runner.send_dm
         return self.userbot_runner.make_send(bot_id)
+
+    def _send_for_bot(self, bot_id: int):
+        """The scheduler's send path — schedule/inactivity triggers are
+        proactive by definition (nothing from the contact prompted them),
+        so this is where a cold first message becomes a draft instead of
+        going out."""
+        return self.outbox.wrap(bot_id, self._raw_send_for_bot(bot_id), reactive=False)
+
+    # ---- outbox: drafts / blacklist ---------------------------------------
+    async def send_draft(self, draft_id: int) -> None:
+        """A human clicked "send" on a draft — that's the click invariant 6
+        asks for, so this goes out through the *reactive* wrap: still
+        blacklist/dry-run/hour-day-checked, just not re-drafted for being
+        a first message, since resolving exactly that is the point."""
+        draft = self.db.get_draft(draft_id)
+        if draft is None or draft["sent_at"] or draft["dismissed_at"]:
+            return
+        send = self.outbox.wrap(draft["bot_id"], self._raw_send_for_bot(draft["bot_id"]), reactive=True)
+        await send(draft["target"], draft["text"])
+        self.db.mark_draft_sent(draft_id)
+
+    def dismiss_draft(self, draft_id: int) -> None:
+        self.db.dismiss_draft(draft_id)
 
     # ---- lifecycle -------------------------------------------------------
     async def start(self) -> None:
@@ -193,7 +224,8 @@ class BotManager(QObject):
             self.bots_changed.emit()
 
     async def _start_bot_api(self, bot_row) -> None:
-        runner = BotApiRunner(self.db, self.security, self.rules, bot_row, self._on_log, self._on_status)
+        runner = BotApiRunner(self.db, self.security, self.rules, bot_row, self._on_log,
+                               self._on_status, self.outbox)
         self._bot_api_runners[bot_row["id"]] = runner
         await runner.start()
 

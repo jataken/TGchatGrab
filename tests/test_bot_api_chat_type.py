@@ -9,6 +9,7 @@ from chatgrab.paths import Paths
 from chatgrab.db.database import Database
 from chatgrab.bots.rules_engine import RulesEngine
 from chatgrab.bots.bot_api_runner import BotApiRunner
+from chatgrab.bots.outbox import Outbox
 
 base = os.path.join(tempfile.gettempdir(), "cgchattype"); shutil.rmtree(base, ignore_errors=True)
 paths = Paths(Path(base)); paths.ensure()
@@ -29,9 +30,14 @@ class Msg:
 rules = RulesEngine(db)
 row = db.get_bot(bot_id)
 sent, logs = [], []
-runner = BotApiRunner(db, None, rules, row, lambda b, t, tone="": logs.append(t), lambda *a: None)
+runner = BotApiRunner(db, None, rules, row, lambda b, t, tone="": logs.append(t), lambda *a: None, Outbox(db))
 async def fake_send(target, text): sent.append((target, text))
 runner.send_dm = fake_send
+# _handle_message calls _reactive_send, built once in __init__ from the
+# real send_dm (which needs a live aiogram Bot this test never starts) —
+# rebind it to skip the wrap and go straight to the fake, since this test
+# is about trigger/chat-type routing, not outbox behavior.
+runner._reactive_send = fake_send
 
 print("== классификация ==")
 for raw, expect in [("private", "dm"), ("group", "group"), ("supergroup", "group"), ("channel", "channel")]:

@@ -27,13 +27,18 @@ def _redact(text: str) -> str:
 
 
 class BotApiRunner:
-    def __init__(self, db: Database, security, rules: RulesEngine, bot_row, on_log, on_status):
+    def __init__(self, db: Database, security, rules: RulesEngine, bot_row, on_log, on_status, outbox):
         self.db = db
         self.security = security
         self.rules = rules
         self.bot_id = bot_row["id"]
         self._on_log = on_log        # (bot_id, text, tone) -> None
         self._on_status = on_status  # (bot_id, status, error) -> None
+        self.outbox = outbox
+        # Every message this runner hands to RulesEngine arrives because
+        # the contact just wrote something — reactive, always. Built once
+        # here rather than per-message since the wrap itself is stateless.
+        self._reactive_send = outbox.wrap(self.bot_id, self.send_dm, reactive=True)
         self.bot = None
         self.dp = None
         self._poll_task: asyncio.Task | None = None
@@ -153,12 +158,12 @@ class BotApiRunner:
         # next question and put the group's words into their lead.
         if chat_type == "dm" and not is_command \
                 and self.rules.has_active_scenario(self.bot_id, contact_telegram_id):
-            await self.rules.continue_scenario(self.bot_id, event, self.send_dm, self._log)
+            await self.rules.continue_scenario(self.bot_id, event, self._reactive_send, self._log)
             return
 
         triggers = self.rules.triggers_for(self.bot_id, event)
         for trigger in triggers:
-            await self.rules.fire(self.bot_id, trigger, event, self.send_dm, self._log)
+            await self.rules.fire(self.bot_id, trigger, event, self._reactive_send, self._log)
         if not triggers and chat_type == "dm":
             # Only worth logging for DMs — in a busy group this would be
             # one log line per unrelated message.

@@ -143,12 +143,35 @@ def _up_lead_lifecycle(conn: sqlite3.Connection, _ctx: dict) -> None:
         conn.execute(ddl)
 
 
+def _up_outbox(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """С4: three new, purely additive tables backing the outbox layer —
+    a log of every send attempt (for the hour/day/first-message counters
+    and "have we ever messaged them"), pending drafts, and a per-bot
+    blacklist. Nothing existing is touched, so unlike 008/009 this one
+    gets a clean down().
+    """
+    conn.execute(schema._DDL_OUTBOX_SENDS)
+    for ddl in schema._DDL_OUTBOX_SENDS_INDEXES:
+        conn.execute(ddl)
+    conn.execute(schema._DDL_OUTBOX_DRAFTS)
+    for ddl in schema._DDL_OUTBOX_DRAFTS_INDEXES:
+        conn.execute(ddl)
+    conn.execute(schema._DDL_OUTBOX_BLACKLIST)
+
+
+def _down_outbox(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS outbox_sends;")
+    conn.execute("DROP TABLE IF EXISTS outbox_drafts;")
+    conn.execute("DROP TABLE IF EXISTS outbox_blacklist;")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
     Migration("007", "direction catalogue", _up_directions, _down_directions),
     Migration("008", "lead model + history", _up_leads),
     Migration("009", "lead lifecycle: reminders, leads without a bot/contact", _up_lead_lifecycle),
+    Migration("010", "outbox: send log, drafts, blacklist", _up_outbox, _down_outbox),
 ]
 
 

@@ -23,12 +23,13 @@ _logger = logging.getLogger("chatgrab")
 
 
 class UserbotRunner:
-    def __init__(self, tg: TelegramService, db: Database, rules: RulesEngine, on_log, on_status):
+    def __init__(self, tg: TelegramService, db: Database, rules: RulesEngine, on_log, on_status, outbox):
         self.tg = tg
         self.db = db
         self.rules = rules
         self._on_log = on_log        # (bot_id, text, tone) -> None
         self._on_status = on_status  # (bot_id, status, error) -> None
+        self.outbox = outbox
         # Реестр аккаунтов; None — приложение на одном аккаунте.
         self.accounts = None
         # Ключ — (клиент, собеседник): access_hash выдаётся аккаунту, а не
@@ -157,7 +158,10 @@ class UserbotRunner:
             try:
                 incoming = IncomingEvent(contact_telegram_id=contact_telegram_id, username=username,
                                           text=text, chat_id=chat_id, chat_type=chat_type)
-                send_dm = self.make_send(bot_id)
+                # Reactive — this whole loop only runs because a message
+                # just arrived, so whatever a matched rule/scenario sends
+                # back is a reply, never a cold first message.
+                send_dm = self.outbox.wrap(bot_id, self.make_send(bot_id), reactive=True)
                 if chat_type == "dm" and self.rules.has_active_scenario(bot_id, contact_telegram_id):
                     await self.rules.continue_scenario(bot_id, incoming, send_dm, log)
                     continue
