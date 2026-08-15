@@ -1,0 +1,32 @@
+{
+  "key": "after_hours",
+  "version": 1,
+  "label": "Дежурный вне рабочих часов",
+  "description": "Сообщение вне рабочих часов -> обещает срок ответа, собирает телефон, утром — заявка менеджеру.",
+  "variables": [
+    {"name": "manager_name", "type": "text", "label": "Имя менеджера", "default": "менеджер"},
+    {"name": "work_hours_start", "type": "text", "label": "Начало рабочего дня", "default": "09:00"},
+    {"name": "work_hours_end", "type": "text", "label": "Конец рабочего дня", "default": "18:00"}
+  ],
+  "scenario": {
+    "name": "Дежурный вне часов",
+    "done_template": "confirm",
+    "steps": [
+      {"id": "s1",
+       "question": "Сейчас нерабочее время — отвечаем с {{work_hours_start}} до {{work_hours_end}}. Оставьте, пожалуйста, телефон, и {{manager_name}} свяжется с вами утром.",
+       "field": "телефон", "validation": "phone", "lead_field": "phone"}
+    ]
+  },
+  "templates": [
+    {"key": "confirm", "name": "Обращение принято",
+     "text": "Спасибо! {{manager_name}} свяжется с вами, как только начнётся рабочий день.",
+     "variables": [], "done": true}
+  ],
+  "triggers": [
+    {"type": "incoming_dm",
+     "config": {"time_window": {"start": "{{work_hours_start}}", "end": "{{work_hours_end}}", "outside": true}},
+     "actions": [
+       {"type": "run_scenario", "config": {"scenario": true}}
+     ]}
+  ]
+}

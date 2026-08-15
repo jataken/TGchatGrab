@@ -25,6 +25,13 @@ FloodWait handling stays exactly where it already was: userbot_runner and
 BotApiRunner each retry in place and extend their own pause, which this
 layer doesn't need to duplicate — it only decides whether raw_send gets
 called at all.
+
+One exception to `reactive`: a send to the bot's own `manager_chat_id`
+skips the stranger-only checks (quiet hours, cooldown, drafting, the
+first-message-per-day cap) regardless of `reactive`, since the manager
+isn't a prospect being cold-opened — see С5's chat_hunter preset, whose
+notify_manager action is proactive by the same reasoning as its outreach
+message, but obviously shouldn't wait in a drafts queue.
 """
 from __future__ import annotations
 
@@ -70,16 +77,25 @@ class Outbox:
                 self.db.log_outbox(bot_id, key, "blocked", text)
                 return
 
-            limits = bot_settings.load(self.db.get_bot(bot_id))
+            bot = self.db.get_bot(bot_id)
+            limits = bot_settings.load(bot)
 
             if limits["dry_run"]:
                 self.on_log(bot_id, f"пробный режим — сообщение {target} не отправлено", "")
                 self.db.log_outbox(bot_id, key, "dry_run", text)
                 return
 
+            # The bot's own manager isn't a prospect being cold-opened —
+            # they're the one fixed contact the account owner configured
+            # to receive notifications, so quiet hours/cooldown/drafting
+            # (all about "is this a stranger?") don't apply to them even
+            # on a proactive send (chat_hunter's notify_manager action,
+            # a schedule/inactivity trigger's manager summary, etc.).
+            # Blacklist/dry-run/hour-day caps above and below still do.
+            is_manager = bool(bot and bot["manager_chat_id"] and key == str(bot["manager_chat_id"]))
             is_first = self.db.last_outbox_send(bot_id, key) is None
 
-            if not reactive:
+            if not reactive and not is_manager:
                 if not _within_send_window(limits, now):
                     self.on_log(bot_id, f"пропущено сообщение {target} — тихие часы", "warn")
                     self.db.log_outbox(bot_id, key, "blocked", text)
@@ -96,7 +112,7 @@ class Outbox:
                     self.on_log(bot_id, f"первое сообщение {target} отложено в черновики — нужен клик человека", "")
                     return
 
-            if is_first:
+            if is_first and not is_manager:
                 since = (now - dt.timedelta(days=1)).isoformat()
                 first_today = self.db.outbox_count_since(bot_id, since, first_only=True)
                 if first_today >= limits["max_first_messages_per_day"]:

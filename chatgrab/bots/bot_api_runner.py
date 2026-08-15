@@ -35,10 +35,6 @@ class BotApiRunner:
         self._on_log = on_log        # (bot_id, text, tone) -> None
         self._on_status = on_status  # (bot_id, status, error) -> None
         self.outbox = outbox
-        # Every message this runner hands to RulesEngine arrives because
-        # the contact just wrote something — reactive, always. Built once
-        # here rather than per-message since the wrap itself is stateless.
-        self._reactive_send = outbox.wrap(self.bot_id, self.send_dm, reactive=True)
         self.bot = None
         self.dp = None
         self._poll_task: asyncio.Task | None = None
@@ -152,18 +148,24 @@ class BotApiRunner:
             contact_telegram_id=contact_telegram_id, username=username, text=text,
             is_command=is_command, command=command, chat_type=chat_type, chat_id=chat_id,
         )
+        # Reactive only for a DM, same reasoning as userbot_runner.py — a
+        # keyword/chat_message match on a group message is reaching out to
+        # someone who never addressed this bot, which is the cold-open case
+        # outbox.py's draft gate exists for. Built per message rather than
+        # once in __init__ since chat_type isn't known until now.
+        send = self.outbox.wrap(self.bot_id, self.send_dm, reactive=(chat_type == "dm"))
 
         # A scripted dialog is a private, one-to-one thing: continuing one
         # in a group would answer a member's unrelated message with the
         # next question and put the group's words into their lead.
         if chat_type == "dm" and not is_command \
                 and self.rules.has_active_scenario(self.bot_id, contact_telegram_id):
-            await self.rules.continue_scenario(self.bot_id, event, self._reactive_send, self._log)
+            await self.rules.continue_scenario(self.bot_id, event, send, self._log)
             return
 
         triggers = self.rules.triggers_for(self.bot_id, event)
         for trigger in triggers:
-            await self.rules.fire(self.bot_id, trigger, event, self._reactive_send, self._log)
+            await self.rules.fire(self.bot_id, trigger, event, send, self._log)
         if not triggers and chat_type == "dm":
             # Only worth logging for DMs — in a busy group this would be
             # one log line per unrelated message.

@@ -12,6 +12,7 @@ from ...context import AppContext
 from ...widgets import button, card, chip, label, muted, plural as _plural
 from ....bots.rules_engine import RulesEngine
 from ....bots.scenario_engine import BRANCHING, END, LINEAR, format_question, options_of
+from ....bots.templating import render
 from ....core import lead as lead_domain
 
 _VALIDATIONS = [("text", "Любой"), ("phone", "Телефон"), ("number", "Число")]
@@ -844,12 +845,40 @@ class ScenarioScreen(QWidget):
             return
         answers = [a for a in self.test_answers.toPlainText().split("\n") if a.strip()]
         trail = self.rules.scenarios.dry_run(self.selected_scenario_id, answers)
-        lines = []
+        steps = self._steps()
+        lead_fields = {s["field"]: s["lead_field"] for s in steps if s.get("lead_field")}
+        visited = len([s for s in trail if "final_answers" not in s])
+
+        lines = [f"Путь: {visited} из {len(steps)} шагов сценария."]
         for step in trail:
             if "final_answers" in step:
-                lines.append(f"\nЗаявка вышла бы такой: {step['final_answers']}")
+                final = step["final_answers"]
+                lines.append(f"\nЗаявка вышла бы такой: {final}")
+                if lead_fields:
+                    mapped = {lead_fields[f]: v for f, v in final.items() if f in lead_fields}
+                    lines.append(
+                        "В карточку лида попали бы поля: "
+                        + (", ".join(f"{k}={v!r}" for k, v in mapped.items()) if mapped else "(ничего не сопоставлено)")
+                    )
+                # С5: what happens after the last question — the same two
+                # things continue_scenario() does for real, see rules_engine.py.
+                scenario = self.ctx.db.get_scenario(self.selected_scenario_id)
+                template_id = scenario["done_template_id"] if scenario else None
+                if template_id is not None:
+                    template = self.ctx.db.get_template(template_id)
+                    if template is not None:
+                        lines.append(f"Контакту ушло бы: «{render(template['text'], final)}»")
+                    else:
+                        lines.append("Подтверждение не отправилось бы — выбранный шаблон удалён.")
+                bot = self.ctx.db.get_bot(self.selected_bot_id) if self.selected_bot_id else None
+                if bot and bot["manager_chat_id"]:
+                    lines.append(f"Менеджеру ({bot['manager_chat_id']}) ушла бы сводка ответов.")
+                else:
+                    lines.append("Менеджер не уведомился бы — у бота не задан «Кому пересылать заявки».")
             else:
                 line = f"«{step['question']}» → поле {step['field']}"
+                if step["field"] in lead_fields:
+                    line += f" [→ {lead_fields[step['field']]}]"
                 if "answer" in step:
                     line += f" = {step['answer']!r}"
                     if step.get("error"):

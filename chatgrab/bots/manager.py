@@ -17,6 +17,7 @@ from ..telegram.service import TelegramService
 from .bot_api_runner import BotApiRunner
 from .crypto import decrypt_token, encrypt_token
 from .outbox import Outbox
+from . import preset_library
 from .presets import apply_preset
 from .rules_engine import RulesEngine
 from .scheduler import TriggerScheduler
@@ -162,10 +163,18 @@ class BotManager(QObject):
 
     # ---- creation / deletion ---------------------------------------------
     def create_bot(self, name: str, type_: str, token_plain: str | None, preset: str,
-                    manager_chat_id: str | None) -> int:
+                    manager_chat_id: str | None, preset_answers: dict | None = None) -> int:
+        """preset_answers, if given, means `preset` names a JSON library
+        preset (С5) rather than the original b2b/b2c/custom seed — those
+        three stay on the simple, variable-free path they always used
+        (bots/presets.py) since nothing about them needed one."""
         token_enc = encrypt_token(self.security, token_plain) if token_plain else None
         bot_id = self.db.add_bot(name, type_, token_enc, preset=preset, manager_chat_id=manager_chat_id)
-        apply_preset(self.db, bot_id, preset)
+        spec = preset_library.find_spec(preset) if preset_answers is not None else None
+        if spec is not None:
+            preset_library.install(self.db, bot_id, spec, preset_answers)
+        else:
+            apply_preset(self.db, bot_id, preset)
         self.bots_changed.emit()
         return bot_id
 

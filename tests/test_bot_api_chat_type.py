@@ -33,11 +33,9 @@ sent, logs = [], []
 runner = BotApiRunner(db, None, rules, row, lambda b, t, tone="": logs.append(t), lambda *a: None, Outbox(db))
 async def fake_send(target, text): sent.append((target, text))
 runner.send_dm = fake_send
-# _handle_message calls _reactive_send, built once in __init__ from the
-# real send_dm (which needs a live aiogram Bot this test never starts) —
-# rebind it to skip the wrap and go straight to the fake, since this test
-# is about trigger/chat-type routing, not outbox behavior.
-runner._reactive_send = fake_send
+# _handle_message builds its outbox-wrapped send fresh per message from
+# self.send_dm — monkeypatching that attribute is enough, no need to
+# reach past the wrap.
 
 print("== классификация ==")
 for raw, expect in [("private", "dm"), ("group", "group"), ("supergroup", "group"), ("channel", "channel")]:

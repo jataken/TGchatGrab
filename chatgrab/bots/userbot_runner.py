@@ -158,10 +158,15 @@ class UserbotRunner:
             try:
                 incoming = IncomingEvent(contact_telegram_id=contact_telegram_id, username=username,
                                           text=text, chat_id=chat_id, chat_type=chat_type)
-                # Reactive — this whole loop only runs because a message
-                # just arrived, so whatever a matched rule/scenario sends
-                # back is a reply, never a cold first message.
-                send_dm = self.outbox.wrap(bot_id, self.make_send(bot_id), reactive=True)
+                # Reactive only for a DM — the contact wrote directly to
+                # this account, so a reply is expected regardless of hour
+                # or whether they're a stranger. A chat_message/keyword
+                # match on a group message is different: nobody addressed
+                # this account, so reaching out to that message's author
+                # is the same cold-open outbox.py already gates for a
+                # schedule/inactivity trigger — reactive=True here would
+                # let it skip that gate just because *something* arrived.
+                send_dm = self.outbox.wrap(bot_id, self.make_send(bot_id), reactive=(chat_type == "dm"))
                 if chat_type == "dm" and self.rules.has_active_scenario(bot_id, contact_telegram_id):
                     await self.rules.continue_scenario(bot_id, incoming, send_dm, log)
                     continue

@@ -1,0 +1,32 @@
+{
+  "key": "price_request",
+  "version": 1,
+  "label": "Запрос прайса",
+  "description": "Слова про цену/прайс -> уточняет направление и контакт, ставит менеджеру задачу подготовить КП.",
+  "variables": [
+    {"name": "manager_name", "type": "text", "label": "Имя менеджера", "default": "менеджер"},
+    {"name": "directions", "type": "directions", "label": "Направления"}
+  ],
+  "scenario": {
+    "name": "Запрос прайса",
+    "done_template": "confirm",
+    "steps": [
+      {"id": "s1", "question": "По какому направлению нужен прайс?", "field": "направление",
+       "options_from": "directions"},
+      {"id": "s2", "question": "Куда прислать прайс — оставьте телефон или email.", "field": "контакт",
+       "validation": "text"}
+    ]
+  },
+  "templates": [
+    {"key": "confirm", "name": "Прайс готовится",
+     "text": "Спасибо! {{manager_name}} подготовит прайс по выбранному направлению и пришлёт его вам.",
+     "variables": [], "done": true}
+  ],
+  "triggers": [
+    {"type": "keyword",
+     "config": {"keywords": ["прайс", "цена", "цены", "стоимость", "почём", "по чем", "прайс-лист"]},
+     "actions": [
+       {"type": "run_scenario", "config": {"scenario": true}}
+     ]}
+  ]
+}

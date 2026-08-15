@@ -6,7 +6,10 @@ from PyInstaller.utils.hooks import collect_all
 
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
-datas = [(os.path.join(ROOT, "resources", "icon.png"), "resources")]
+datas = [
+    (os.path.join(ROOT, "resources", "icon.png"), "resources"),
+    (os.path.join(ROOT, "presets"), "presets"),
+]
 binaries = []
 hiddenimports = ["telethon.tl.alltlobjects"]
 

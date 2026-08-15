@@ -7,6 +7,7 @@ tag, log, run scenario, notify manager) is identical.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 from dataclasses import dataclass
@@ -43,17 +44,46 @@ def _cfg(trigger_row) -> dict:
         return {}
 
 
+def _parse_hhmm(value: str, default: dt.time) -> dt.time:
+    # Duplicated from bots/scheduler.py rather than imported — scheduler.py
+    # imports this module (RulesEngine), so the reverse import would be
+    # circular. Four lines each; not worth a shared module for.
+    try:
+        hh, mm = value.split(":")
+        return dt.time(int(hh), int(mm))
+    except (ValueError, AttributeError):
+        return default
+
+
+def _within_time_window(cfg: dict, now: dt.datetime) -> bool:
+    """Optional gate on a message-driven trigger — С5's after_hours preset
+    needs "only outside work hours" and the existing schedule/inactivity
+    triggers have no equivalent for a message-triggered rule. Absent
+    "time_window" in config, every trigger matches at any time, same as
+    before this existed."""
+    window = cfg.get("time_window")
+    if not window:
+        return True
+    start = _parse_hhmm(str(window.get("start", "00:00")), dt.time(0, 0))
+    end = _parse_hhmm(str(window.get("end", "23:59")), dt.time(23, 59))
+    t = now.time()
+    inside = start <= t <= end if start <= end else (t >= start or t <= end)
+    return not inside if window.get("outside") else inside
+
+
 class RulesEngine:
     def __init__(self, db: Database):
         self.db = db
         self.scenarios = ScenarioEngine(db)
 
     # ---- matching --------------------------------------------------------
-    def matches(self, trigger_row, event: IncomingEvent) -> bool:
+    def matches(self, trigger_row, event: IncomingEvent, now: dt.datetime | None = None) -> bool:
         if not trigger_row["enabled"]:
             return False
         ttype = trigger_row["type"]
         cfg = _cfg(trigger_row)
+        if not _within_time_window(cfg, now or dt.datetime.now()):
+            return False
         if ttype == "incoming_dm":
             return event.chat_type in (None, "dm")
         if ttype == "command":
@@ -63,7 +93,9 @@ class RulesEngine:
             if not words:
                 return False
             text_l = event.text.lower()
-            return any(w in text_l for w in words)
+            if not any(w in text_l for w in words):
+                return False
+            return not self._has_stop_word(cfg, text_l)
         if ttype == "chat_message":
             if event.chat_type not in ("group", "channel"):
                 return False
@@ -71,16 +103,25 @@ class RulesEngine:
             if wanted_chat is not None and event.chat_id != wanted_chat:
                 return False
             words = [w.strip().lower() for w in cfg.get("keywords", []) if w.strip()]
-            if not words:
-                return True
             text_l = event.text.lower()
-            return any(w in text_l for w in words)
+            if words and not any(w in text_l for w in words):
+                return False
+            return not self._has_stop_word(cfg, text_l)
         # schedule / inactivity triggers aren't message-driven — they're
         # evaluated by their own background tick, not this per-message path.
         return False
 
-    def triggers_for(self, bot_id: int, event: IncomingEvent) -> list:
-        return [t for t in self.db.list_triggers(bot_id) if self.matches(t, event)]
+    @staticmethod
+    def _has_stop_word(cfg: dict, text_l: str) -> bool:
+        """"глицерин продам" не должно читаться как "ищу глицерин" — a
+        stop word skips a match even when a keyword also hit. Used by
+        chat_hunter (С5), which draws both lists from a direction's own
+        keywords/stop_words rather than typing them into the rule twice."""
+        stop_words = [w.strip().lower() for w in cfg.get("stop_words", []) if w.strip()]
+        return any(w in text_l for w in stop_words)
+
+    def triggers_for(self, bot_id: int, event: IncomingEvent, now: dt.datetime | None = None) -> list:
+        return [t for t in self.db.list_triggers(bot_id) if self.matches(t, event, now)]
 
     # ---- execution ---------------------------------------------------
     async def fire(self, bot_id: int, trigger_row, event: IncomingEvent, send_dm: SendFn,

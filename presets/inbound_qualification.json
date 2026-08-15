@@ -1,0 +1,36 @@
+{
+  "key": "inbound_qualification",
+  "version": 1,
+  "label": "Разбор входящей заявки",
+  "description": "Входящее сообщение боту -> направление, объём, срок, город, телефон -> заявка менеджеру.",
+  "variables": [
+    {"name": "manager_name", "type": "text", "label": "Имя менеджера", "default": "менеджер"},
+    {"name": "directions", "type": "directions", "label": "Направления"}
+  ],
+  "scenario": {
+    "name": "Квалификация заявки",
+    "done_template": "confirm",
+    "steps": [
+      {"id": "s1", "question": "Здравствуйте! Какое направление вас интересует — {{directions}}?",
+       "field": "направление", "validation": "text"},
+      {"id": "s2", "question": "Какой объём нужен?", "field": "объём", "validation": "text",
+       "lead_field": "volume"},
+      {"id": "s3", "question": "К какому сроку нужна поставка?", "field": "срок", "validation": "text",
+       "lead_field": "deadline"},
+      {"id": "s4", "question": "В каком городе нужна доставка?", "field": "город", "validation": "text",
+       "lead_field": "city"},
+      {"id": "s5", "question": "Оставьте, пожалуйста, телефон для связи.", "field": "телефон",
+       "validation": "phone", "lead_field": "phone"}
+    ]
+  },
+  "templates": [
+    {"key": "confirm", "name": "Заявка принята",
+     "text": "Спасибо! Заявку передал(а) {{manager_name}}, свяжемся с вами в ближайшее время.",
+     "variables": [], "done": true}
+  ],
+  "triggers": [
+    {"type": "incoming_dm", "config": {}, "actions": [
+      {"type": "run_scenario", "config": {"scenario": true}}
+    ]}
+  ]
+}

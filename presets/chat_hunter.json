@@ -1,0 +1,23 @@
+{
+  "key": "chat_hunter",
+  "version": 1,
+  "label": "Ловля запросов в чатах",
+  "description": "Ключевые слова направлений в отслеживаемых чатах -> менеджеру уведомление, автору — черновик первого сообщения (без автоотправки).",
+  "variables": [
+    {"name": "directions", "type": "directions", "label": "Направления"}
+  ],
+  "templates": [
+    {"key": "outreach", "name": "Первое сообщение",
+     "text": "Здравствуйте! Увидел(а) ваш запрос в чате — можем предложить: {{directions}}. Расскажете подробнее, что нужно?",
+     "variables": []}
+  ],
+  "triggers": [
+    {"type": "chat_message",
+     "config": {"keywords": {"__from_directions__": "keywords"},
+                "stop_words": {"__from_directions__": "stop_words"}},
+     "actions": [
+       {"type": "notify_manager", "config": {}},
+       {"type": "send_dm", "config": {"template": "outreach"}}
+     ]}
+  ]
+}
