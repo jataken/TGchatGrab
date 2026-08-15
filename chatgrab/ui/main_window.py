@@ -18,6 +18,7 @@ from .screens.bots.log_screen import BotLogScreen
 from .screens.bots.rules_screen import RulesScreen
 from .screens.bots.scenario_screen import ScenarioScreen
 from .screens.bots.templates_screen import TemplatesScreen
+from .screens.bitrix_screen import BitrixScreen
 from .screens.browse import BrowseScreen
 from .screens.watch import WatchScreen
 from .screens.chats import ChatsScreen
@@ -70,6 +71,7 @@ BOT_SCOPED_SCREENS = {"rules", "scenario", "templates"}
 COMMON_ITEMS = [
     ("connect", "Подключение"),
     ("directions", "Направления"),
+    ("bitrix", "Bitrix24"),
     ("settings", "Настройки"),
 ]
 
@@ -201,6 +203,7 @@ class MainWindow(QMainWindow):
             "scenario": ScenarioScreen(ctx, self.navigate),
             "templates": TemplatesScreen(ctx, self.navigate),
             "botlog": BotLogScreen(ctx, self.navigate),
+            "bitrix": BitrixScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
         for key in self.screens:

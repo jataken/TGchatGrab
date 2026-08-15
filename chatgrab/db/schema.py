@@ -507,6 +507,16 @@ _DDL_CRM_QUEUE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_crm_queue_due ON crm_queue(next_attempt_at);",
 ]
 
+# Migration "012" — see db/migrations.py._up_bitrix_mapping. Which Bitrix24
+# CRM source a direction's leads get tagged with — NULL means unmapped,
+# integrations/bitrix.py's lead_fields() falls back to SOURCE_ID "OTHER".
+# The lead-status -> Bitrix STATUS_ID mapping doesn't get a column: it's
+# one dict for the whole app, not a per-row attribute, so it lives as JSON
+# in app_settings instead (see bitrix.STATUS_MAP_KEY).
+_DIRECTION_CRM_COLUMNS = [
+    ("crm_source_id", "TEXT"),
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

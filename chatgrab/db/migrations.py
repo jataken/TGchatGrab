@@ -182,6 +182,17 @@ def _up_bitrix(conn: sqlite3.Connection, _ctx: dict) -> None:
         conn.execute(ddl)
 
 
+def _up_bitrix_mapping(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """С7: a direction's own Bitrix24 CRM source, set from the mapping UI
+    on the new dedicated integrations screen. No down() — same reasoning
+    as 008/009/011: an ALTER on an existing table, not a standalone
+    addition 007/010's clean rollback fits.
+    """
+    for name, coltype in schema._DIRECTION_CRM_COLUMNS:
+        if not schema._column_exists(conn, "direction", name):
+            conn.execute(f"ALTER TABLE direction ADD COLUMN {name} {coltype};")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -190,6 +201,7 @@ MIGRATIONS: list[Migration] = [
     Migration("009", "lead lifecycle: reminders, leads without a bot/contact", _up_lead_lifecycle),
     Migration("010", "outbox: send log, drafts, blacklist", _up_outbox, _down_outbox),
     Migration("011", "Bitrix24: crm_id on leads, send queue", _up_bitrix),
+    Migration("012", "Bitrix24: direction -> CRM source mapping", _up_bitrix_mapping),
 ]
 
 

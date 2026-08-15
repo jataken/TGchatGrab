@@ -1451,6 +1451,50 @@ class Database:
              lead_domain.EVENT_SOURCE_INTEGRATION, now_iso()),
         )
 
+    def leads_due_for_auto_crm_sync(self, statuses: list[str] | None = None) -> list[sqlite3.Row]:
+        """С7: candidates for BitrixSyncService's auto-enqueue phase — a
+        lead that's never been synced, or whose status/fields changed
+        since its last sync (crm_synced_at predates updated_at), and
+        isn't already sitting in crm_queue (enqueue_crm_sync's own
+        UNIQUE(lead_id) would just no-op there, but checking here avoids
+        resetting a failing entry's backoff on every single tick).
+
+        statuses, when given, restricts this to the "qualified" auto-send
+        policy's stages — see integrations/bitrix.py's AUTO_SEND_*. None
+        means the "all leads" policy: every status qualifies.
+        """
+        sql = ("SELECT * FROM bot_leads WHERE "
+               "(crm_id IS NULL OR crm_synced_at IS NULL OR crm_synced_at < updated_at) "
+               "AND id NOT IN (SELECT lead_id FROM crm_queue)")
+        params: list[Any] = []
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            sql += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+        return self.query(sql, params)
+
+    def crm_sync_journal(self, limit: int = 100) -> list[dict]:
+        """С7's "журнал синхронизации": what went and what didn't, merged
+        from the two places that already record it — no dedicated table
+        needed. lead_events(kind='sync') is every successful send
+        (log_crm_sync); crm_queue is everything still pending or actively
+        failing, with last_error saying why. Sorted newest first and
+        capped, same as any other activity feed in this app."""
+        sent = self.query(
+            "SELECT lead_id, created_at AS at, text AS detail, 'ok' AS outcome "
+            "FROM lead_events WHERE kind = ? ORDER BY created_at DESC LIMIT ?",
+            (lead_domain.EVENT_KIND_SYNC, limit),
+        )
+        pending = self.query(
+            "SELECT lead_id, created_at AS at, last_error AS detail, "
+            "CASE WHEN attempts = 0 THEN 'pending' ELSE 'retrying' END AS outcome "
+            "FROM crm_queue ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = [dict(r) for r in sent] + [dict(r) for r in pending]
+        rows.sort(key=lambda r: r["at"], reverse=True)
+        return rows[:limit]
+
     # ---- bot templates ---------------------------------------------------
     def add_template(self, bot_id: int | None, name: str, text: str, variables: list[str]) -> int:
         with self._lock:

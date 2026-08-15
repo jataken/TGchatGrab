@@ -107,8 +107,8 @@ assert tables_after2 == tables_after - {"direction"}, "откат не долж�
 
 applied = {r[0] for r in conn.execute("SELECT id FROM schema_migrations")}
 print("  осталось применённых:", sorted(applied))
-assert applied == {"006", "008", "009", "011"}, \
-    "008/009/011 без down() не откатывались — должны остаться применёнными"
+assert applied == {"006", "008", "009", "011", "012"}, \
+    "008/009/011/012 без down() не откатывались — должны остаться применёнными"
 conn.close()
 
 # Оригинальный файл (не копия) не тронут — direction по-прежнему на месте.

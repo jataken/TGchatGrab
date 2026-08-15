@@ -29,6 +29,17 @@ TICK_SECONDS = 30
 BASE_BACKOFF_SECONDS = 60
 MAX_BACKOFF_SECONDS = 30 * 60
 
+# С7's "qualified" auto-send policy: a lead auto-enqueues once it's past
+# the initial NEW stage and hasn't been lost. This lives here rather than
+# in core/lead.py — it's a policy choice this service makes, not a fact
+# about the funnel itself (db/ stays free of it too, same layering rule
+# that kept outbox_counts() from importing bots/settings in С4: the
+# service owns *when* to enqueue, the db method just answers "which rows
+# match this set of statuses").
+QUALIFIED_AUTO_STATUSES = [
+    lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION, lead_domain.WON,
+]
+
 
 def _backoff(attempts: int) -> float:
     return min(BASE_BACKOFF_SECONDS * (2 ** attempts), MAX_BACKOFF_SECONDS)
@@ -72,15 +83,33 @@ class BitrixSyncService:
         webhook_url = bitrix.get_webhook_url(self.db, self.security)
         if not webhook_url:
             return 0
+        self._auto_enqueue()
         due = self.db.due_crm_queue(now.isoformat())
         if not due:
             return 0
         client = self._client_factory(webhook_url)
+        status_map = bitrix.get_status_map(self.db)
         for row in due:
-            await self._process_one(client, row)
+            await self._process_one(client, row, status_map)
         return len(due)
 
-    async def _process_one(self, client: bitrix.BitrixClient, row) -> None:
+    def _auto_enqueue(self) -> None:
+        """С7: policy-driven queuing, run at the top of every tick rather
+        than hooked into every lead-mutation call site — set_lead_status,
+        set_lead_field, and the migration's own backfill would each need
+        their own hook otherwise, and db/ would end up importing this
+        service to fire it (the layering rule this app keeps: db/ never
+        imports bots/ or services/). Polling once per tick costs one cheap
+        query and finds the same leads a hook would, just up to
+        TICK_SECONDS later."""
+        policy = bitrix.get_auto_send_policy(self.db)
+        if policy == bitrix.AUTO_SEND_MANUAL:
+            return
+        statuses = QUALIFIED_AUTO_STATUSES if policy == bitrix.AUTO_SEND_QUALIFIED else None
+        for lead in self.db.leads_due_for_auto_crm_sync(statuses):
+            self.db.enqueue_crm_sync(lead["id"])
+
+    async def _process_one(self, client: bitrix.BitrixClient, row, status_map: dict | None = None) -> None:
         lead_id = row["lead_id"]
         lead = self.db.get_lead(lead_id)
         if lead is None:
@@ -88,7 +117,7 @@ class BitrixSyncService:
             self.db.dequeue_crm_sync(row["id"])
             return
         direction = self.db.get_direction(lead["direction_id"]) if lead["direction_id"] else None
-        fields = bitrix.lead_fields(lead, direction)
+        fields = bitrix.lead_fields(lead, direction, status_map)
         try:
             if lead["crm_id"]:
                 await client.update_lead(lead["crm_id"], fields)

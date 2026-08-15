@@ -14,8 +14,6 @@ from .. import tray
 from ..util import fire
 from ... import __version__, diagnostics
 from ..widgets import button, card, h1, muted, plural
-from ...integrations import bitrix
-from ...integrations.bitrix import BitrixClient, BitrixError
 from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
 from ...services.export_service import DEFAULT_MD_HEADER
@@ -514,47 +512,18 @@ class SettingsScreen(QWidget):
         outer.addWidget(xsched_card)
         outer.addSpacing(24)
 
-        # ---- Bitrix24 (С6 — moves to its own screen in С7) -------------
-        bitrix_card = card()
-        bx_lay = QVBoxLayout(bitrix_card)
-        bx_lay.setContentsMargins(16, 14, 16, 14)
-        bx_lay.addWidget(muted("BITRIX24"))
-        bx_hint = muted(
-            "Входящий вебхук портала (Приложения → Разработчикам → Другое → Входящий "
-            "вебхук, с правами на CRM). Вставьте ссылку целиком, включая /rest/…/…/ на конце."
-        )
-        bx_hint.setWordWrap(True)
-        bx_lay.addWidget(bx_hint)
-
-        self.bitrix_url_input = QLineEdit(bitrix.get_webhook_url(self.ctx.db, self.ctx.security) or "")
-        self.bitrix_url_input.setEchoMode(QLineEdit.Password)
-        self.bitrix_url_input.setPlaceholderText("https://portal.bitrix24.ru/rest/1/xxxxxxxxxxxxxxxx/")
-        bx_url_row = QHBoxLayout()
-        bx_url_row.setContentsMargins(0, 0, 0, 0)
-        bx_url_row.addWidget(self.bitrix_url_input, 1)
-        bx_toggle_btn = button("Показать", "secondary")
-        bx_toggle_btn.setCheckable(True)
-        bx_toggle_btn.clicked.connect(
-            lambda checked: self._toggle_field_visibility(self.bitrix_url_input, bx_toggle_btn, checked)
-        )
-        bx_url_row.addWidget(bx_toggle_btn)
-        bx_lay.addLayout(bx_url_row)
-
-        self.bitrix_status = muted("")
-        self.bitrix_status.setWordWrap(True)
-        bx_lay.addWidget(self.bitrix_status)
-        self._refresh_bitrix_status()
-
-        bx_btn_row = QHBoxLayout()
-        save_bitrix_btn = button("Сохранить", "primary")
-        save_bitrix_btn.clicked.connect(self._save_bitrix)
-        bx_btn_row.addWidget(save_bitrix_btn)
-        self.test_bitrix_btn = button("Проверить подключение", "secondary")
-        self.test_bitrix_btn.clicked.connect(self._on_test_bitrix)
-        bx_btn_row.addWidget(self.test_bitrix_btn)
-        bx_btn_row.addStretch(1)
-        bx_lay.addLayout(bx_btn_row)
-        outer.addWidget(bitrix_card)
+        # ---- integrations pointer (С7: Bitrix24 moved to its own screen) --
+        integrations_card = card()
+        integrations_lay = QHBoxLayout(integrations_card)
+        integrations_lay.setContentsMargins(16, 14, 16, 14)
+        integrations_lay.addWidget(muted(
+            "Подключение к Bitrix24, соответствие статусов и источников — на отдельном экране."
+        ), 1)
+        open_bitrix_btn = button("Bitrix24 →", "secondary")
+        open_bitrix_btn.clicked.connect(lambda: self.navigate("bitrix"))
+        integrations_lay.addWidget(open_bitrix_btn)
+        outer.addWidget(integrations_card)
+        outer.addSpacing(24)
 
         # ---- diagnostics (temporary) -------------------------------------
         diag_card = card()
@@ -1037,46 +1006,6 @@ class SettingsScreen(QWidget):
         )
         QApplication.clipboard().setText(info)
         QMessageBox.information(self, "Скопировано", info)
-
-    def _refresh_bitrix_status(self) -> None:
-        if bitrix.get_webhook_url(self.ctx.db, self.ctx.security):
-            self.bitrix_status.setText(
-                "Вебхук сохранён. Заявки уходят в очередь по кнопке «Отправить в Битрикс24» "
-                "на карточке лида и досылаются сами, пока соединения нет.")
-        else:
-            self.bitrix_status.setText("Вебхук не задан — синхронизация с Bitrix24 выключена.")
-
-    def _save_bitrix(self) -> None:
-        bitrix.set_webhook_url(self.ctx.db, self.ctx.security, self.bitrix_url_input.text())
-        self._refresh_bitrix_status()
-        QMessageBox.information(self, "Bitrix24", "Сохранено.")
-
-    def _on_test_bitrix(self) -> None:
-        url = self.bitrix_url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self, "Bitrix24", "Сначала укажите ссылку вебхука.")
-            return
-        self.test_bitrix_btn.setEnabled(False)
-
-        async def _check() -> str:
-            try:
-                return await BitrixClient(url).ping()
-            except BitrixError as e:
-                raise RuntimeError(str(e)) from e
-
-        def on_error(e):
-            self.test_bitrix_btn.setEnabled(True)
-            QMessageBox.warning(self, "Не получилось подключиться", str(e))
-
-        task = fire(_check(), parent=self, on_error=on_error)
-
-        def _apply(t):
-            self.test_bitrix_btn.setEnabled(True)
-            if t.cancelled() or t.exception() is not None:
-                return
-            QMessageBox.information(self, "Bitrix24", t.result())
-
-        task.add_done_callback(_apply)
 
     def _refresh_diagnostics_status(self) -> None:
         session = diagnostics.current()
