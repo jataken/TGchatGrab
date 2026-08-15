@@ -14,6 +14,8 @@ from .. import tray
 from ..util import fire
 from ... import __version__, diagnostics
 from ..widgets import button, card, h1, muted, plural
+from ...integrations import llm
+from ...integrations.llm import LLMClient, LLMError
 from ...security import WrongPasswordError
 from ...services.backup_service import DEFAULT_BACKUP_SETTINGS, open_in_explorer
 from ...services.export_service import DEFAULT_MD_HEADER
@@ -525,6 +527,61 @@ class SettingsScreen(QWidget):
         outer.addWidget(integrations_card)
         outer.addSpacing(24)
 
+        # ---- LLM-помощник (С9) — опционально, выключен по умолчанию -------
+        llm_card = card()
+        llm_lay = QVBoxLayout(llm_card)
+        llm_lay.setContentsMargins(16, 14, 16, 14)
+        llm_lay.addWidget(muted("LLM-ПОМОЩНИК · ОПЦИОНАЛЬНО, ВЫКЛЮЧЕН ПО УМОЛЧАНИЮ"))
+        llm_hint = muted(
+            "Извлекает поля заявки из переписки, готовит краткое содержание и черновик "
+            "ответа — на карточке лида, по кнопке, ничего не сохраняет само. Без ключа и "
+            "с выключенной галочкой ниже приложение не делает к этому сервису ни одного "
+            "сетевого запроса."
+        )
+        llm_hint.setWordWrap(True)
+        llm_lay.addWidget(llm_hint)
+
+        self.llm_enabled_cb = QCheckBox("Включить помощника")
+        self.llm_enabled_cb.setChecked(bool(self.ctx.db.get_setting(llm.SETTING_KEY_ENABLED, False)))
+        llm_lay.addWidget(self.llm_enabled_cb)
+
+        self.llm_key_input = QLineEdit(llm.get_api_key(self.ctx.db, self.ctx.security) or "")
+        self.llm_key_input.setEchoMode(QLineEdit.Password)
+        self.llm_key_input.setPlaceholderText("ключ API Anthropic")
+        llm_key_row = QHBoxLayout()
+        llm_key_row.setContentsMargins(0, 0, 0, 0)
+        llm_key_row.addWidget(self.llm_key_input, 1)
+        llm_toggle_btn = button("Показать", "secondary")
+        llm_toggle_btn.setCheckable(True)
+        llm_toggle_btn.clicked.connect(
+            lambda checked: self._toggle_field_visibility(self.llm_key_input, llm_toggle_btn, checked)
+        )
+        llm_key_row.addWidget(llm_toggle_btn)
+        llm_lay.addLayout(llm_key_row)
+
+        llm_model_row = QHBoxLayout()
+        llm_model_row.addWidget(muted("Модель"))
+        self.llm_model_input = QLineEdit(llm.get_model(self.ctx.db))
+        llm_model_row.addWidget(self.llm_model_input, 1)
+        llm_lay.addLayout(llm_model_row)
+
+        self.llm_status = muted("")
+        self.llm_status.setWordWrap(True)
+        llm_lay.addWidget(self.llm_status)
+        self._refresh_llm_status()
+
+        llm_btn_row = QHBoxLayout()
+        save_llm_btn = button("Сохранить", "primary")
+        save_llm_btn.clicked.connect(self._save_llm)
+        llm_btn_row.addWidget(save_llm_btn)
+        self.test_llm_btn = button("Проверить подключение", "secondary")
+        self.test_llm_btn.clicked.connect(self._on_test_llm)
+        llm_btn_row.addWidget(self.test_llm_btn)
+        llm_btn_row.addStretch(1)
+        llm_lay.addLayout(llm_btn_row)
+        outer.addWidget(llm_card)
+        outer.addSpacing(24)
+
         # ---- diagnostics (temporary) -------------------------------------
         diag_card = card()
         diag_lay = QVBoxLayout(diag_card)
@@ -606,6 +663,49 @@ class SettingsScreen(QWidget):
     def _toggle_field_visibility(field: QLineEdit, toggle_btn, checked: bool) -> None:
         field.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
         toggle_btn.setText("Скрыть" if checked else "Показать")
+
+    def _refresh_llm_status(self) -> None:
+        if llm.is_enabled(self.ctx.db, self.ctx.security):
+            self.llm_status.setText(f"Включён, модель: {llm.get_model(self.ctx.db)}.")
+        elif llm.get_api_key(self.ctx.db, self.ctx.security):
+            self.llm_status.setText("Ключ сохранён, но помощник выключен галочкой выше.")
+        else:
+            self.llm_status.setText("Выключен — ключ не задан, сетевых запросов к LLM API нет.")
+
+    def _save_llm(self) -> None:
+        llm.set_enabled(self.ctx.db, self.llm_enabled_cb.isChecked())
+        llm.set_api_key(self.ctx.db, self.ctx.security, self.llm_key_input.text())
+        llm.set_model(self.ctx.db, self.llm_model_input.text())
+        self._refresh_llm_status()
+        QMessageBox.information(self, "LLM-помощник", "Сохранено.")
+
+    def _on_test_llm(self) -> None:
+        api_key = self.llm_key_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "LLM-помощник", "Сначала укажите ключ API.")
+            return
+        model = self.llm_model_input.text().strip() or llm.DEFAULT_MODEL
+        self.test_llm_btn.setEnabled(False)
+
+        async def _check() -> str:
+            try:
+                return await LLMClient(api_key, model).ping()
+            except LLMError as e:
+                raise RuntimeError(str(e)) from e
+
+        def on_error(e):
+            self.test_llm_btn.setEnabled(True)
+            QMessageBox.warning(self, "Не получилось подключиться", str(e))
+
+        task = fire(_check(), parent=self, on_error=on_error)
+
+        def _apply(t):
+            self.test_llm_btn.setEnabled(True)
+            if t.cancelled() or t.exception() is not None:
+                return
+            QMessageBox.information(self, "LLM-помощник", f"Подключено. Ответ модели: {t.result()!r}")
+
+        task.add_done_callback(_apply)
 
     def _browse_session(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Файл входа", self.session_path_input.text())

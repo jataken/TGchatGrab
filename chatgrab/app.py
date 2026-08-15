@@ -17,6 +17,7 @@ from .bots.manager import BotManager
 from .config import AppConfig
 from .db.database import Database
 from .integrations.bitrix import register_bitrix_rotation
+from .integrations.llm import register_llm_rotation
 from .paths import PATHS, resource_path
 from .security import SecurityService
 from .services.backup_service import BackupService
@@ -89,6 +90,7 @@ def run() -> int:
     bot_manager = BotManager(db, tg, security)
     register_bot_token_rotation(db, security)
     register_bitrix_rotation(db, security)
+    register_llm_rotation(db, security)
 
     accounts = AccountRegistry(db, config, PATHS, tg)
     accounts.ensure_primary_row()
