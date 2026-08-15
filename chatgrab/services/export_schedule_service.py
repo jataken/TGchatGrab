@@ -97,11 +97,15 @@ class ExportScheduleService:
         result = await loop.run_in_executor(None, lambda: self.export_service.run(params))
 
         files = len(result.output_paths)
+        # С8: the same schedule now also runs leads_report presets, whose
+        # row_count is a count of leads, not messages — the log line
+        # should say what it actually counted.
+        noun = "лид(ов)" if params.kind == "leads_report" else "сообщений"
         self.db.set_export_schedule(
             schedule["id"], last_run_at=now.isoformat(),
-            last_result=f"готово: {files} файл(ов), {result.row_count} сообщений",
+            last_result=f"готово: {files} файл(ов), {result.row_count} {noun}",
         )
         self.on_log(
             f"плановая выгрузка «{schedule['preset_name']}» готова: "
-            f"{files} файл(ов), {result.row_count} сообщений", "ok"
+            f"{files} файл(ов), {result.row_count} {noun}", "ok"
         )

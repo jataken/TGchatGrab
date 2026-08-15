@@ -26,6 +26,7 @@ from .screens.collect import CollectScreen
 from .screens.connect import ConnectScreen
 from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
+from .screens.reports_screen import ReportsScreen
 from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
 from .tray import TrayController
@@ -61,6 +62,7 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     ],
     "leads": [
         ("leads", "Заявки"),
+        ("reports", "Отчёты"),
     ],
 }
 
@@ -199,6 +201,7 @@ class MainWindow(QMainWindow):
             "export": ExportScreen(ctx, self.navigate),
             "bots": BotsScreen(ctx, self.navigate),
             "leads": LeadsScreen(ctx, self.navigate),
+            "reports": ReportsScreen(ctx, self.navigate),
             "rules": RulesScreen(ctx, self.navigate),
             "scenario": ScenarioScreen(ctx, self.navigate),
             "templates": TemplatesScreen(ctx, self.navigate),
