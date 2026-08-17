@@ -1,16 +1,11 @@
-import os, sys, asyncio, datetime as dt
-import tempfile
-import shutil
+import sys, asyncio, datetime as dt
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.bots.rules_engine import RulesEngine
 from chatgrab.bots.scheduler import TriggerScheduler, REMINDER_KIND
 
-base = os.path.join(tempfile.gettempdir(), "cgsched"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgsched")
 
 bot_id = db.add_bot("Дожимщик", "userbot", None, "custom", "@manager")
 db.set_bot_field(bot_id, status="running")

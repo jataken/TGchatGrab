@@ -1,11 +1,9 @@
 """Повторы одного и того же текста узнаются и убираются из выгрузки."""
 import os, sys
 import tempfile
-import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.db.dedup import fingerprint, normalize, MIN_LENGTH
 
 OFFER = "Флаконы ПЭТ 250 мл с помпой в наличии, 12 000 шт на складе в Москве"
@@ -23,9 +21,7 @@ for short in ["да", "в личку", "актуально?", "+", "напиши
 assert fingerprint("") is None
 print(f"  тексты короче {MIN_LENGTH} символов не получают отпечаток")
 
-base = os.path.join(tempfile.gettempdir(), "cgdup"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgdup")
 db.add_chat(1, "Биржа", "b", "all", None)
 db.add_chat(2, "Другая", "d", "all", None)
 

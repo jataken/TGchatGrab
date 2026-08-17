@@ -4,25 +4,17 @@ lead_events/bot_leads, экспорт в Excel строит все четыре 
 """
 import asyncio
 import datetime as dt
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.core import lead as lead_domain
 from chatgrab.core import lead_report
 from chatgrab.services.export_service import ExportParams, ExportService
 from chatgrab.services.export_schedule_service import ExportScheduleService
 
-base = os.path.join(tempfile.gettempdir(), "cgleadreports")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgleadreports")
 
 print("== core.lead_report.conversion(): чистая арифметика ==")
 assert lead_report.conversion(0, 0, 0) == {

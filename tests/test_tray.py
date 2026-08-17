@@ -1,8 +1,6 @@
 """Трей: сворачивание вместо выхода, уведомления по одному разу на проблему,
 автозапуск не ломается вне Windows."""
 import os, sys, asyncio
-import tempfile
-import shutil
 from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -10,15 +8,12 @@ from PySide6.QtWidgets import QApplication
 app = QApplication.instance() or QApplication(sys.argv)
 loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 
-from chatgrab.paths import Paths
-from chatgrab.config import AppConfig
-from chatgrab.db.database import Database
+from _bootstrap import fresh_env
 from chatgrab.telegram.service import TelegramService
 from chatgrab.telegram.collector import Collector
 from chatgrab.services.export_service import ExportService
 from chatgrab.services.ignore_service import IgnoreService
 from chatgrab.services.backup_service import BackupService
-from chatgrab.security import SecurityService
 from chatgrab.bots.manager import BotManager
 from chatgrab.services.watch_service import WatchService
 from chatgrab.services.retention_service import RetentionService
@@ -29,10 +24,8 @@ from chatgrab.ui.context import AppContext
 from chatgrab.ui.main_window import MainWindow
 from chatgrab.ui import tray as tray_mod
 
-base = os.path.join(tempfile.gettempdir(), "cgtray"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-config = AppConfig.load(paths); db = Database(paths.db_path)
-tg = TelegramService(config); sec = SecurityService(config, paths)
+paths, db, config, sec = fresh_env("cgtray")
+tg = TelegramService(config)
 ctx = AppContext(config=config, paths=paths, db=db, tg=tg,
     collector=Collector(db, tg, config, paths),
     export_service=ExportService(db, paths), ignore_service=IgnoreService(db),

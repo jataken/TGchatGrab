@@ -1,10 +1,7 @@
-import os, sys, asyncio
-import tempfile
-import shutil
+import sys, asyncio
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.bots.rules_engine import IncomingEvent, RulesEngine
 from chatgrab.bots import presets
 from chatgrab.bots.templating import render, variables_in
@@ -24,9 +21,7 @@ assert variables_in("{a} {b} {a}") == ["a", "b"]
 
 # --- engine: send_dm via template ---
 print("\n== движок ==")
-base = os.path.join(tempfile.gettempdir(), "cgtpl"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgtpl")
 bot_id = db.add_bot("Бот", "userbot", None, "custom", "@manager")
 presets.apply_preset(db, bot_id, "b2b")
 

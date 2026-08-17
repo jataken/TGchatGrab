@@ -4,28 +4,20 @@
 Поэтому здесь проверяются рядом и ветвящийся сценарий, и линейный на той
 же базе, тем же движком.
 """
-import asyncio, json, os, sys
-import os
-import tempfile
-import shutil
+import asyncio, json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
+from _bootstrap import fresh_env
 from chatgrab.db.database import Database
 from chatgrab.bots.scenario_engine import BRANCHING, END, LINEAR, ScenarioEngine
 
-base = os.path.join(tempfile.gettempdir(), "cgbranch"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db, config, security = fresh_env("cgbranch")
 
 from chatgrab.bots.manager import BotManager
-from chatgrab.config import AppConfig
-from chatgrab.security import SecurityService
 from chatgrab.telegram.service import TelegramService
 
-config = AppConfig.load(paths)
-mgr = BotManager(db, TelegramService(config), SecurityService(config, paths))
+mgr = BotManager(db, TelegramService(config), security)
 bot_id = mgr.create_bot("Приёмная", "userbot", None, "custom", "@manager")
 
 # Развилка: сырьё спрашивают об одном, упаковку — о другом, а «просто

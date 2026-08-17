@@ -5,23 +5,15 @@
 обрабатываться ботом другого, а сущность чата не должна утекать между
 клиентами (в ней лежит access_hash, выданный конкретному аккаунту).
 """
-import asyncio, os, sys
-import os
-import tempfile
-import shutil
+import asyncio, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
-from chatgrab.config import AppConfig
-from chatgrab.db.database import Database
+from _bootstrap import fresh_env
 from chatgrab.telegram.service import TelegramService
 from chatgrab.telegram.accounts import AccountRegistry, session_file_for
 
-base = os.path.join(tempfile.gettempdir(), "cgacc"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-config = AppConfig.load(paths)
-db = Database(paths.db_path)
+paths, db, config, _ = fresh_env("cgacc")
 
 print("== имя файла сессии из имени аккаунта ==")
 taken = set()

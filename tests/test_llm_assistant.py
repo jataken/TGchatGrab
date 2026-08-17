@@ -3,28 +3,16 @@
 доверяет ответу модели вслепую, и — самое важное — выключенный (или
 недонастроенный) помощник не делает ни одного сетевого запроса.
 """
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import aiohttp
 
-from chatgrab.paths import Paths
-from chatgrab.config import AppConfig
-from chatgrab.db.database import Database
-from chatgrab.security import SecurityService
+from _bootstrap import fresh_env
 from chatgrab.integrations import llm
 
-base = os.path.join(tempfile.gettempdir(), "cgllm")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
-config = AppConfig.load(paths)
-security = SecurityService(config, paths)
+paths, db, config, security = fresh_env("cgllm")
 
 print("== parse_field_json: JSON модели не доверяется вслепую ==")
 assert llm.parse_field_json('{"product": "глицерин", "volume": "2000"}') == {

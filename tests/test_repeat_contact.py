@@ -1,15 +1,10 @@
-import os, sys, asyncio
-import tempfile
-import shutil
+import sys, asyncio
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.bots.scenario_engine import ScenarioEngine
 
-base = os.path.join(tempfile.gettempdir(), "cgrepeat"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgrepeat")
 eng = ScenarioEngine(db)
 
 bot_id = db.add_bot("Тест", "userbot", None, "custom", None)

@@ -11,20 +11,15 @@
 
 Сеть не нужна: отправка подменена списком, всё остальное — настоящее.
 """
-import asyncio, json, os, sys
-import os
-import tempfile
-import shutil
+import asyncio, json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
+from _bootstrap import fresh_env
 from chatgrab.db.database import Database
 from chatgrab.bots.rules_engine import IncomingEvent, RulesEngine
 
-base = os.path.join(tempfile.gettempdir(), "cglinear"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db, config, security = fresh_env("cglinear")
 loop = asyncio.new_event_loop()
 
 sent: list[tuple] = []
@@ -38,13 +33,10 @@ logs: list[tuple] = []
 def log(text, tone=""): logs.append((text, tone))
 
 from chatgrab.bots.manager import BotManager
-from chatgrab.config import AppConfig
-from chatgrab.security import SecurityService
 from chatgrab.telegram.service import TelegramService
 
 MANAGER = "@manager"
-config = AppConfig.load(paths)
-mgr = BotManager(db, TelegramService(config), SecurityService(config, paths))
+mgr = BotManager(db, TelegramService(config), security)
 bot_id = mgr.create_bot("Заявки", "userbot", None, "custom", MANAGER)
 
 db.add_chat(1001, "Косметическое сырьё · Биржа", "cosmo", "all", None)

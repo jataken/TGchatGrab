@@ -3,20 +3,13 @@
 """
 import os, sys
 import json
-import shutil
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.core import lead as lead_domain
 
-base = os.path.join(tempfile.gettempdir(), "cgleads")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgleads")
 
 db.add_chat(1001, "Косметическое сырьё · Биржа", "cosmo", "all", None)
 bot_id = db.add_bot("Приёмная", "userbot", None, "custom", "@manager")
@@ -143,11 +136,9 @@ assert funnel["in_progress"] == 0
 assert funnel["closed"] == 1, "LOST должен попадать в «закрыты», а не пропадать"
 
 print("\n== экспорт в Excel подставляет русскую метку, а не сырой код статуса ==")
-import tempfile as _tempfile
 from chatgrab.bots.export import export_leads_xlsx
-from chatgrab.paths import Paths as _Paths
-export_dir = os.path.join(base, "exports")
-xlsx_path = export_leads_xlsx(db, _Paths(Path(base)), folder=export_dir)
+export_dir = os.path.join(paths.root, "exports")
+xlsx_path = export_leads_xlsx(db, paths, folder=export_dir)
 from openpyxl import load_workbook
 wb = load_workbook(xlsx_path)
 ws = wb.active

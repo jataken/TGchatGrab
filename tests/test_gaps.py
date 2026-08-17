@@ -1,15 +1,10 @@
 """Разрывы в собранной последовательности видны и латаются."""
-import os, sys
-import tempfile
-import shutil
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 
-base = os.path.join(tempfile.gettempdir(), "cggaps"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cggaps")
 db.add_chat(1, "Чат", "c", "all", None)
 
 def put(mid):

@@ -1,17 +1,13 @@
 """Плановая выгрузка запускается по времени, а не по расписанию cron,
 и переживает выключенный компьютер."""
-import os, sys, asyncio, json, datetime as dt
-import tempfile
-import shutil
+import sys, asyncio, json, datetime as dt
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.services.export_service import ExportService, ExportParams
 from chatgrab.services.export_schedule_service import ExportScheduleService
 
-base=os.path.join(tempfile.gettempdir(), "cgsched2"); shutil.rmtree(base, ignore_errors=True)
-paths=Paths(Path(base)); paths.ensure(); db=Database(paths.db_path)
+paths, db = fresh_db("cgsched2")
 db.add_chat(1, "Биржа", "b", "all", None)
 for i in range(1, 21):
     db.upsert_message({"chat_id":1,"message_id":i,"chat_title":"Биржа",

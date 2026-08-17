@@ -8,30 +8,19 @@ after_hours только вне часов, chat_hunter собирает клю�
 import asyncio
 import datetime as dt
 import json
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
-from chatgrab.config import AppConfig
-from chatgrab.db.database import Database
-from chatgrab.security import SecurityService
+from _bootstrap import fresh_env
 from chatgrab.telegram.service import TelegramService
 from chatgrab.bots.manager import BotManager
 from chatgrab.bots.rules_engine import IncomingEvent
 from chatgrab.bots import preset_library as pl
 from chatgrab.bots import settings as bot_settings
 
-base = os.path.join(tempfile.gettempdir(), "cgpresets")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
-config = AppConfig.load(paths)
-mgr = BotManager(db, TelegramService(config), SecurityService(config, paths))
+paths, db, config, security = fresh_env("cgpresets")
+mgr = BotManager(db, TelegramService(config), security)
 
 direction_a = db.add_direction("Косметическое сырьё", keywords=["глицерин", "отдушки"],
                                 stop_words=["продам", "ищу работу"])

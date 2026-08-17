@@ -1,14 +1,9 @@
-import os, sys, json
-import tempfile
-import shutil
+import sys, json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 
-base = os.path.join(tempfile.gettempdir(), "cgids"); shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base)); paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgids")
 bot_id = db.add_bot("B", "userbot", None, "custom", None)
 
 sc = db.add_scenario(bot_id, "S", [

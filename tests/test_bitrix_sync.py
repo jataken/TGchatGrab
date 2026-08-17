@@ -4,29 +4,17 @@ update'ом, а не add'ом, отключённая сеть не теряет
 """
 import asyncio
 import datetime as dt
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
-from chatgrab.config import AppConfig
-from chatgrab.db.database import Database
-from chatgrab.security import SecurityService
+from _bootstrap import fresh_env
 from chatgrab.core import lead as lead_domain
 from chatgrab.integrations import bitrix
 from chatgrab.integrations.bitrix import BitrixError
 from chatgrab.services.bitrix_sync_service import BitrixSyncService, _backoff
 
-base = os.path.join(tempfile.gettempdir(), "cgbitrix")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
-config = AppConfig.load(paths)
-security = SecurityService(config, paths)
+paths, db, config, security = fresh_env("cgbitrix")
 
 
 class FakeClient:

@@ -4,23 +4,16 @@
 """
 import asyncio
 import datetime as dt
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
+from _bootstrap import fresh_db
 from chatgrab.db.database import Database
 from chatgrab.bots import settings as bot_settings
 from chatgrab.bots.outbox import Outbox
 
-base = os.path.join(tempfile.gettempdir(), "cgoutbox")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgoutbox")
 outbox = Outbox(db)
 
 

@@ -6,24 +6,17 @@
 import asyncio
 import datetime as dt
 import json
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
+from _bootstrap import fresh_db
 from chatgrab.db.database import Database
 from chatgrab.core import lead as lead_domain
 from chatgrab.bots.rules_engine import IncomingEvent, RulesEngine
 from chatgrab.services.lead_reminder_service import LeadReminderService
 
-base = os.path.join(tempfile.gettempdir(), "cgleadlife")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgleadlife")
 
 direction_a = db.add_direction("Косметическое сырьё", keywords=["глицерин"])
 db.add_direction("Упаковка", keywords=["флакон"])

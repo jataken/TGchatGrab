@@ -1,15 +1,11 @@
 """Ретеншн: старое сначала уходит в архив, только потом удаляется."""
-import os, sys, json, datetime as dt
-import tempfile
-import shutil
+import sys, json, datetime as dt
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 from chatgrab.services.retention_service import RetentionService, cutoff_for
 
-base=os.path.join(tempfile.gettempdir(), "cgret"); shutil.rmtree(base, ignore_errors=True)
-paths=Paths(Path(base)); paths.ensure(); db=Database(paths.db_path)
+paths, db = fresh_db("cgret")
 db.add_chat(1, "Биржа", "b", "all", None)
 
 now = dt.datetime(2026, 8, 14, 12, 0)

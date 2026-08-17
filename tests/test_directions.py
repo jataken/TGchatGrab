@@ -3,20 +3,13 @@
 Плоский список без номенклатуры (PLAN.md, С1) — пять направлений на
 одного человека не требуют позиций и единиц измерения.
 """
-import os, sys
-import shutil
-import tempfile
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chatgrab.paths import Paths
-from chatgrab.db.database import Database
+from _bootstrap import fresh_db
 
-base = os.path.join(tempfile.gettempdir(), "cgdirections")
-shutil.rmtree(base, ignore_errors=True)
-paths = Paths(Path(base))
-paths.ensure()
-db = Database(paths.db_path)
+paths, db = fresh_db("cgdirections")
 
 print("== пусто по умолчанию ==")
 assert db.list_directions() == []
@@ -67,11 +60,7 @@ print("  ", exported)
 assert len(exported["directions"]) == 2
 assert "id" not in exported["directions"][0], "экспорт не должен содержать id — импорт создаёт новые строки"
 
-base2 = os.path.join(tempfile.gettempdir(), "cgdirections2")
-shutil.rmtree(base2, ignore_errors=True)
-paths2 = Paths(Path(base2))
-paths2.ensure()
-db2 = Database(paths2.db_path)
+paths2, db2 = fresh_db("cgdirections2")
 added = db2.import_directions(exported)
 print("  импортировано:", added)
 assert added == 2
