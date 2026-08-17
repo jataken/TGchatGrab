@@ -11,15 +11,12 @@ concatenated back together at call time.
 """
 from __future__ import annotations
 
-import logging
 import re
 
 import aiohttp
 
 from ..db.database import Database
 from ..security import SecurityService
-
-_logger = logging.getLogger("chatgrab")
 
 SETTING_KEY = "bitrix_webhook_url"
 
@@ -103,24 +100,11 @@ def set_auto_send_policy(db: Database, policy: str) -> None:
 def register_bitrix_rotation(db: Database, security: SecurityService) -> None:
     """Same reasoning as bots/crypto.py's register_bot_token_rotation —
     without this, the stored webhook URL would silently become
-    undecryptable the next time the master password's key changed."""
-
-    def _on_rotate(old_password, old_salt_b64, old_iterations,
-                    new_password, new_salt_b64, new_iterations) -> None:
-        stored = db.get_setting(SETTING_KEY)
-        if not stored:
-            return
-        try:
-            plain = (SecurityService.decrypt_with(stored, old_password, old_salt_b64, old_iterations)
-                     if old_password and old_salt_b64 else stored)
-        except Exception:
-            _logger.warning("Bitrix webhook URL unrecoverable during key rotation")
-            return
-        new_stored = (SecurityService.encrypt_with(plain, new_password, new_salt_b64, new_iterations)
-                      if new_password and new_salt_b64 else plain)
-        db.set_setting(SETTING_KEY, new_stored)
-
-    security.add_rotation_listener(_on_rotate)
+    undecryptable the next time the master password's key changed. Р3:
+    delegates to SecurityService.register_setting_rotation() instead of
+    its own copy — see that method's docstring."""
+    security.register_setting_rotation(
+        db, SETTING_KEY, "Bitrix webhook URL unrecoverable during key rotation")
 
 
 # ---- REST client ----------------------------------------------------------

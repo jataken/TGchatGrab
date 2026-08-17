@@ -21,6 +21,7 @@ from typing import Callable
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import AppConfig
+from .db.database import Database
 from .paths import Paths
 
 _logger = logging.getLogger("chatgrab")
@@ -136,6 +137,41 @@ class SecurityService:
                 listener(old_password, old_salt_b64, old_iterations, new_password, new_salt_b64, new_iterations)
             except Exception:
                 _logger.warning("secret rotation listener failed", exc_info=True)
+
+    def register_setting_rotation(self, db: Database, setting_key: str, warning_text: str) -> None:
+        """Р3: the shared shape behind every "keep one encrypted
+        app_settings value valid across the vault's password lifecycle"
+        listener — integrations/bitrix.py's webhook URL and
+        integrations/llm.py's API key both used to carry an
+        almost-identical ~20-line copy of this. Not for bots/crypto.py's
+        bot-token rotation: that one re-encrypts a column on every row of
+        `bots`, not a single `app_settings` key — a structurally
+        different shape of the same idea, not worth forcing in here.
+
+        warning_text is logged (not raised) when the old ciphertext can't
+        be decrypted under the key it's about to lose — e.g. the password
+        was reset as forgotten. The setting is left as unrecoverable
+        ciphertext in that case, exactly like every other rotation
+        listener in the app: the caller re-enters it, same as a Telegram
+        session would need re-authorizing.
+        """
+
+        def _on_rotate(old_password, old_salt_b64, old_iterations,
+                        new_password, new_salt_b64, new_iterations) -> None:
+            stored = db.get_setting(setting_key)
+            if not stored:
+                return
+            try:
+                plain = (self.decrypt_with(stored, old_password, old_salt_b64, old_iterations)
+                         if old_password and old_salt_b64 else stored)
+            except Exception:
+                _logger.warning(warning_text)
+                return
+            new_stored = (self.encrypt_with(plain, new_password, new_salt_b64, new_iterations)
+                          if new_password and new_salt_b64 else plain)
+            db.set_setting(setting_key, new_stored)
+
+        self.add_rotation_listener(_on_rotate)
 
     # ---- secrets other than api_hash/session (e.g. bot tokens) ----------
     def encrypt_secret(self, plaintext: str) -> str:
