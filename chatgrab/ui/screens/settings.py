@@ -13,7 +13,7 @@ from ..context import AppContext
 from .. import tray
 from ..util import fire
 from ... import __version__, diagnostics
-from ..widgets import button, card, h1, muted, plural
+from ..widgets import FieldRow, button, card, h1, muted, plural
 from ...integrations import llm
 from ...integrations.llm import LLMClient, LLMError
 from ...security import WrongPasswordError
@@ -25,6 +25,17 @@ WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
 class SettingsScreen(QWidget):
+    """16 independent sections in one long scrolling page — see PLAN.md's
+    Р4 journal entry. Each lives in its own `_build_*` method (a card
+    widget it returns, or a shared QGridLayout it populates for the two
+    sections — Telegram access and speed — that sit side by side in one
+    grid rather than as separate cards); `__init__` just assembles them
+    in the same order and with the same spacing the page always had.
+    Splitting further into separate files wasn't done here — every
+    section is still a handful of widgets and one save handler, and nothing
+    about that got harder to find once it had its own method name.
+    """
+
     def __init__(self, ctx: AppContext, navigate):
         super().__init__()
         self.ctx = ctx
@@ -61,28 +72,77 @@ class SettingsScreen(QWidget):
         grid.setHorizontalSpacing(28)
         grid.setVerticalSpacing(10)
         outer.addLayout(grid)
+        self._build_telegram_access_grid(grid)
+        self._build_speed_grid(grid)
+        outer.addSpacing(24)
 
-        # ---- Telegram access -------------------------------------------
+        outer.addWidget(self._build_media_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_security_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_schedule_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_ignore_rules_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_authors_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_database_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_tray_card())
+
+        outer.addWidget(self._build_retention_card())
+
+        outer.addWidget(self._build_productivity_card())
+
+        outer.addWidget(self._build_export_schedule_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_integrations_pointer_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_llm_card())
+        outer.addSpacing(24)
+
+        outer.addWidget(self._build_diagnostics_card())
+        self._refresh_diagnostics_status()
+
+        outer.addWidget(self._build_misc_card())
+        outer.addStretch(1)
+
+        self._refresh_rules()
+        self._refresh_authors()
+        self._refresh_db_size()
+        self._refresh_security_section()
+        self._refresh_retention_preview()
+        self._populate_sched_presets()
+        self._refresh_schedules()
+
+    def on_show(self, **kwargs) -> None:
+        self._refresh_rules()
+        self._refresh_authors()
+        self._refresh_db_size()
+        self._refresh_security_section()
+        self._refresh_retention_preview()
+        self._refresh_productivity()
+        self._populate_sched_presets()
+        self._refresh_schedules()
+
+    # ---- section builders ----------------------------------------------
+    def _build_telegram_access_grid(self, grid: QGridLayout) -> None:
         grid.addWidget(muted("ДОСТУП К TELEGRAM"), 0, 0)
         grid.addWidget(QLabel("Ключ приложения (api_id)"), 1, 0)
         self.api_id_input = QLineEdit(self.ctx.config.api_id)
         grid.addWidget(self.api_id_input, 2, 0)
-        grid.addWidget(QLabel("Секрет приложения (api_hash)"), 3, 0)
-        self.api_hash_input = QLineEdit(self.ctx.config.api_hash)
-        self.api_hash_input.setEchoMode(QLineEdit.Password)
-        hash_row = QHBoxLayout()
-        hash_row.setContentsMargins(0, 0, 0, 0)
-        hash_row.addWidget(self.api_hash_input, 1)
-        hash_toggle_btn = button("Показать", "secondary")
-        hash_toggle_btn.setCheckable(True)
-        hash_toggle_btn.clicked.connect(
-            lambda checked: self._toggle_field_visibility(self.api_hash_input, hash_toggle_btn, checked)
-        )
-        hash_row.addWidget(hash_toggle_btn)
-        hash_row_w = QWidget()
-        hash_row_w.setLayout(hash_row)
-        grid.addWidget(hash_row_w, 4, 0)
-        grid.addWidget(QLabel("Файл входа в аккаунт"), 5, 0)
+        self.api_hash_field = FieldRow("Секрет приложения (api_hash)", password=True)
+        self.api_hash_field.set_text(self.ctx.config.api_hash)
+        grid.addWidget(self.api_hash_field, 3, 0)
+        grid.addWidget(QLabel("Файл входа в аккаунт"), 4, 0)
         session_row = QHBoxLayout()
         self.session_path_input = QLineEdit(self.ctx.config.session_path)
         session_row.addWidget(self.session_path_input)
@@ -91,15 +151,15 @@ class SettingsScreen(QWidget):
         session_row.addWidget(session_browse)
         session_row_w = QWidget()
         session_row_w.setLayout(session_row)
-        grid.addWidget(session_row_w, 6, 0)
+        grid.addWidget(session_row_w, 5, 0)
         note = muted("Этот файл даёт полный доступ к аккаунту. Не пересылайте его и не кладите в выгрузки.")
         note.setWordWrap(True)
-        grid.addWidget(note, 7, 0)
+        grid.addWidget(note, 6, 0)
         save_creds_btn = button("Сохранить", "primary")
         save_creds_btn.clicked.connect(self._save_credentials)
-        grid.addWidget(save_creds_btn, 8, 0)
+        grid.addWidget(save_creds_btn, 7, 0)
 
-        # ---- speed ------------------------------------------------------
+    def _build_speed_grid(self, grid: QGridLayout) -> None:
         grid.addWidget(muted("СКОРОСТЬ ЗАГРУЗКИ ИСТОРИИ"), 0, 1)
         grid.addWidget(QLabel("Пауза между запросами истории, с"), 1, 1)
         delay_row = QHBoxLayout()
@@ -127,9 +187,7 @@ class SettingsScreen(QWidget):
         save_speed_btn.clicked.connect(self._save_speed_photos)
         grid.addWidget(save_speed_btn, 4, 1)
 
-        outer.addSpacing(24)
-
-        # ---- media downloads -----------------------------------------------
+    def _build_media_card(self) -> QWidget:
         media_card = card()
         media_lay = QVBoxLayout(media_card)
         media_lay.setContentsMargins(16, 14, 16, 14)
@@ -183,10 +241,9 @@ class SettingsScreen(QWidget):
         save_media_btn = button("Сохранить", "primary")
         save_media_btn.clicked.connect(self._save_media_settings)
         media_lay.addWidget(save_media_btn)
-        outer.addWidget(media_card)
-        outer.addSpacing(24)
+        return media_card
 
-        # ---- master password -----------------------------------------------
+    def _build_security_card(self) -> QWidget:
         self.security_card = card()
         sec_lay = QVBoxLayout(self.security_card)
         sec_lay.setContentsMargins(16, 14, 16, 14)
@@ -200,10 +257,9 @@ class SettingsScreen(QWidget):
         sec_btn_row.addWidget(self.security_toggle_btn)
         sec_btn_row.addStretch(1)
         sec_lay.addLayout(sec_btn_row)
-        outer.addWidget(self.security_card)
-        outer.addSpacing(24)
+        return self.security_card
 
-        # ---- schedule ------------------------------------------------------
+    def _build_schedule_card(self) -> QWidget:
         sched_card = card()
         sched_lay = QVBoxLayout(sched_card)
         sched_lay.setContentsMargins(16, 14, 16, 14)
@@ -236,10 +292,9 @@ class SettingsScreen(QWidget):
         save_sched_btn = button("Сохранить расписание", "primary")
         save_sched_btn.clicked.connect(self._save_schedule)
         sched_lay.addWidget(save_sched_btn)
-        outer.addWidget(sched_card)
-        outer.addSpacing(24)
+        return sched_card
 
-        # ---- ignore rules ------------------------------------------------------
+    def _build_ignore_rules_card(self) -> QWidget:
         ignore_card = card()
         ig_lay = QVBoxLayout(ignore_card)
         ig_lay.setContentsMargins(16, 14, 16, 14)
@@ -277,10 +332,9 @@ class SettingsScreen(QWidget):
         rule_btn_row.addWidget(apply_rules_btn)
         rule_btn_row.addStretch(1)
         ig_lay.addLayout(rule_btn_row)
-        outer.addWidget(ignore_card)
-        outer.addSpacing(24)
+        return ignore_card
 
-        # ---- authors ------------------------------------------------------
+    def _build_authors_card(self) -> QWidget:
         authors_card = card()
         au_lay = QVBoxLayout(authors_card)
         au_lay.setContentsMargins(16, 14, 16, 14)
@@ -297,10 +351,9 @@ class SettingsScreen(QWidget):
         self.authors_table.setMaximumHeight(200)
         self.authors_table.verticalHeader().setVisible(False)
         au_lay.addWidget(self.authors_table)
-        outer.addWidget(authors_card)
-        outer.addSpacing(24)
+        return authors_card
 
-        # ---- database maintenance ------------------------------------------------------
+    def _build_database_card(self) -> QWidget:
         db_card = card()
         db_lay = QVBoxLayout(db_card)
         db_lay.setContentsMargins(16, 14, 16, 14)
@@ -353,10 +406,9 @@ class SettingsScreen(QWidget):
         db_lay.addLayout(action_row)
         self.db_size_label = muted("")
         db_lay.addWidget(self.db_size_label)
-        outer.addWidget(db_card)
-        outer.addSpacing(24)
+        return db_card
 
-        # ---- background operation --------------------------------------
+    def _build_tray_card(self) -> QWidget:
         tray_card = card()
         tray_lay = QVBoxLayout(tray_card)
         tray_lay.setContentsMargins(16, 14, 16, 14)
@@ -385,9 +437,9 @@ class SettingsScreen(QWidget):
         save_tray_btn = button("Сохранить", "primary")
         save_tray_btn.clicked.connect(self._save_tray)
         tray_lay.addWidget(save_tray_btn)
-        outer.addWidget(tray_card)
+        return tray_card
 
-        # ---- retention -----------------------------------------------
+    def _build_retention_card(self) -> QWidget:
         ret_card = card()
         ret_lay = QVBoxLayout(ret_card)
         ret_lay.setContentsMargins(16, 14, 16, 14)
@@ -429,9 +481,9 @@ class SettingsScreen(QWidget):
         ret_btns.addWidget(orphan_btn)
         ret_btns.addStretch(1)
         ret_lay.addLayout(ret_btns)
-        outer.addWidget(ret_card)
+        return ret_card
 
-        # ---- source productivity --------------------------------------
+    def _build_productivity_card(self) -> QWidget:
         prod_card = card()
         prod_lay = QVBoxLayout(prod_card)
         prod_lay.setContentsMargins(16, 14, 16, 14)
@@ -458,9 +510,9 @@ class SettingsScreen(QWidget):
         prod_btns.addWidget(refresh_prod_btn)
         prod_btns.addStretch(1)
         prod_lay.addLayout(prod_btns)
-        outer.addWidget(prod_card)
+        return prod_card
 
-        # ---- scheduled exports ----------------------------------------
+    def _build_export_schedule_card(self) -> QWidget:
         xsched_card = card()
         xsched_lay = QVBoxLayout(xsched_card)
         xsched_lay.setContentsMargins(16, 14, 16, 14)
@@ -511,10 +563,11 @@ class SettingsScreen(QWidget):
         )
         self.sched_empty.setWordWrap(True)
         xsched_lay.addWidget(self.sched_empty)
-        outer.addWidget(xsched_card)
-        outer.addSpacing(24)
+        return xsched_card
 
-        # ---- integrations pointer (С7: Bitrix24 moved to its own screen) --
+    def _build_integrations_pointer_card(self) -> QWidget:
+        """С7: Bitrix24 moved to its own screen — this card is what's left
+        behind on Настройки, pointing at it."""
         integrations_card = card()
         integrations_lay = QHBoxLayout(integrations_card)
         integrations_lay.setContentsMargins(16, 14, 16, 14)
@@ -524,10 +577,10 @@ class SettingsScreen(QWidget):
         open_bitrix_btn = button("Bitrix24 →", "secondary")
         open_bitrix_btn.clicked.connect(lambda: self.navigate("bitrix"))
         integrations_lay.addWidget(open_bitrix_btn)
-        outer.addWidget(integrations_card)
-        outer.addSpacing(24)
+        return integrations_card
 
-        # ---- LLM-помощник (С9) — опционально, выключен по умолчанию -------
+    def _build_llm_card(self) -> QWidget:
+        """С9 — опционально, выключен по умолчанию."""
         llm_card = card()
         llm_lay = QVBoxLayout(llm_card)
         llm_lay.setContentsMargins(16, 14, 16, 14)
@@ -545,19 +598,9 @@ class SettingsScreen(QWidget):
         self.llm_enabled_cb.setChecked(bool(self.ctx.db.get_setting(llm.SETTING_KEY_ENABLED, False)))
         llm_lay.addWidget(self.llm_enabled_cb)
 
-        self.llm_key_input = QLineEdit(llm.get_api_key(self.ctx.db, self.ctx.security) or "")
-        self.llm_key_input.setEchoMode(QLineEdit.Password)
-        self.llm_key_input.setPlaceholderText("ключ API Anthropic")
-        llm_key_row = QHBoxLayout()
-        llm_key_row.setContentsMargins(0, 0, 0, 0)
-        llm_key_row.addWidget(self.llm_key_input, 1)
-        llm_toggle_btn = button("Показать", "secondary")
-        llm_toggle_btn.setCheckable(True)
-        llm_toggle_btn.clicked.connect(
-            lambda checked: self._toggle_field_visibility(self.llm_key_input, llm_toggle_btn, checked)
-        )
-        llm_key_row.addWidget(llm_toggle_btn)
-        llm_lay.addLayout(llm_key_row)
+        self.llm_key_field = FieldRow("Ключ API Anthropic", placeholder="ключ API Anthropic", password=True)
+        self.llm_key_field.set_text(llm.get_api_key(self.ctx.db, self.ctx.security) or "")
+        llm_lay.addWidget(self.llm_key_field)
 
         llm_model_row = QHBoxLayout()
         llm_model_row.addWidget(muted("Модель"))
@@ -579,10 +622,10 @@ class SettingsScreen(QWidget):
         llm_btn_row.addWidget(self.test_llm_btn)
         llm_btn_row.addStretch(1)
         llm_lay.addLayout(llm_btn_row)
-        outer.addWidget(llm_card)
-        outer.addSpacing(24)
+        return llm_card
 
-        # ---- diagnostics (temporary) -------------------------------------
+    def _build_diagnostics_card(self) -> QWidget:
+        """Temporary — see TEMPORARY.md."""
         diag_card = card()
         diag_lay = QVBoxLayout(diag_card)
         diag_lay.setContentsMargins(16, 14, 16, 14)
@@ -613,10 +656,9 @@ class SettingsScreen(QWidget):
         diag_row.addWidget(open_diag_btn)
         diag_row.addStretch(1)
         diag_lay.addLayout(diag_row)
-        outer.addWidget(diag_card)
-        self._refresh_diagnostics_status()
+        return diag_card
 
-        # ---- misc ------------------------------------------------------
+    def _build_misc_card(self) -> QWidget:
         misc_card = card()
         misc_lay = QVBoxLayout(misc_card)
         misc_lay.setContentsMargins(16, 14, 16, 14)
@@ -637,33 +679,9 @@ class SettingsScreen(QWidget):
         save_misc_btn = button("Сохранить", "primary")
         save_misc_btn.clicked.connect(self._save_misc)
         misc_lay.addWidget(save_misc_btn)
-        outer.addWidget(misc_card)
-        outer.addStretch(1)
-
-        self._refresh_rules()
-        self._refresh_authors()
-        self._refresh_db_size()
-        self._refresh_security_section()
-        self._refresh_retention_preview()
-        self._populate_sched_presets()
-        self._refresh_schedules()
-
-    def on_show(self, **kwargs) -> None:
-        self._refresh_rules()
-        self._refresh_authors()
-        self._refresh_db_size()
-        self._refresh_security_section()
-        self._refresh_retention_preview()
-        self._refresh_productivity()
-        self._populate_sched_presets()
-        self._refresh_schedules()
+        return misc_card
 
     # ---- actions -----------------------------------------------------
-    @staticmethod
-    def _toggle_field_visibility(field: QLineEdit, toggle_btn, checked: bool) -> None:
-        field.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
-        toggle_btn.setText("Скрыть" if checked else "Показать")
-
     def _refresh_llm_status(self) -> None:
         if llm.is_enabled(self.ctx.db, self.ctx.security):
             self.llm_status.setText(f"Включён, модель: {llm.get_model(self.ctx.db)}.")
@@ -674,13 +692,13 @@ class SettingsScreen(QWidget):
 
     def _save_llm(self) -> None:
         llm.set_enabled(self.ctx.db, self.llm_enabled_cb.isChecked())
-        llm.set_api_key(self.ctx.db, self.ctx.security, self.llm_key_input.text())
+        llm.set_api_key(self.ctx.db, self.ctx.security, self.llm_key_field.text())
         llm.set_model(self.ctx.db, self.llm_model_input.text())
         self._refresh_llm_status()
         QMessageBox.information(self, "LLM-помощник", "Сохранено.")
 
     def _on_test_llm(self) -> None:
-        api_key = self.llm_key_input.text().strip()
+        api_key = self.llm_key_field.text().strip()
         if not api_key:
             QMessageBox.warning(self, "LLM-помощник", "Сначала укажите ключ API.")
             return
@@ -736,7 +754,7 @@ class SettingsScreen(QWidget):
     def _save_credentials(self) -> None:
         cfg = self.ctx.config
         new_api_id = self.api_id_input.text().strip()
-        new_api_hash = self.api_hash_input.text().strip()
+        new_api_hash = self.api_hash_field.text().strip()
         new_session_path = self.session_path_input.text().strip()
 
         if self.ctx.security.enabled and new_api_hash != cfg.api_hash:
