@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
-from ...widgets import button, label, muted
+from ...format import short_dt
+from ...widgets import LeadStatusPill, button, label, muted
 from ....core import lead as lead_domain
 from .lead_card_assistant import LeadCardAssistantPanel
 from .lead_card_bitrix import LeadCardBitrixPanel
@@ -44,7 +45,7 @@ class LeadCardDialog(QDialog):
         self.title_label = label("", "h1")
         self.title_label.setStyleSheet("font-size: 18px;")
         head.addWidget(self.title_label, 1)
-        self.status_pill = muted("")
+        self.status_pill = LeadStatusPill()
         head.addWidget(self.status_pill)
         outer.addLayout(head)
 
@@ -220,12 +221,9 @@ class LeadCardDialog(QDialog):
         self.setWindowTitle(f"Заявка — {handle}")
         self.title_label.setText(handle)
 
-        bg, fg, _dot = lead_domain.STATUS_COLORS.get(lead["status"], lead_domain.STATUS_COLORS[lead_domain.NEW])
-        self.status_pill.setText(f"●  {lead_domain.label_for_status(lead['status'])}")
-        self.status_pill.setStyleSheet(
-            f"color: {fg}; background: {bg}; border-radius: 6px; padding: 3px 10px; font-size: 12px;")
+        self.status_pill.set_status(lead["status"])
 
-        created = str(lead["created_at"])[:16].replace("T", " ")
+        created = short_dt(lead["created_at"])
         meta_bits = [f"создана {created}", lead_domain.label_for_source_type(lead["source_type"])]
         if lead["phone"]:
             meta_bits.append(lead["phone"])
@@ -250,7 +248,7 @@ class LeadCardDialog(QDialog):
         self.manager_input.setText(lead["manager"] or "")
 
         if lead["next_action_at"]:
-            when = str(lead["next_action_at"])[:16].replace("T", " ")
+            when = short_dt(lead["next_action_at"])
             self.reminder_hint.setText(
                 f"Напоминание поставлено на {when}"
                 + (f" — {lead['next_action_text']}" if lead["next_action_text"] else ""))
@@ -275,7 +273,7 @@ class LeadCardDialog(QDialog):
             self.history_list.addItem("Пока ничего не произошло.")
             return
         for event in reversed(events):  # newest first — that's what you look at
-            when = str(event["created_at"])[:16].replace("T", " ")
+            when = short_dt(event["created_at"])
             source = lead_domain.label_for_event_source(event["source"])
             if event["kind"] == "created":
                 text = f"{when} · заявка создана ({source})"
@@ -305,7 +303,7 @@ class LeadCardDialog(QDialog):
         self.corr_hint.setText(f"{len(messages)} сообщений в собранной истории, от новых к старым.")
         lines = []
         for m in reversed(messages):
-            when = str(m["date"])[:16].replace("T", " ")
+            when = short_dt(m["date"])
             lines.append(f"[{when}] {m['chat_title'] or m['chat_id']}: {m['text']}")
         self.corr_view.setPlainText("\n".join(lines))
         scrollbar = self.corr_view.verticalScrollBar()

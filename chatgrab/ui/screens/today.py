@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
+from ..format import short_dt
 from ..widgets import ActivityBars, fmt_int as _fmt, h1, label, muted, plural as _plural
 from ...core import lead as lead_domain
 
@@ -281,7 +282,7 @@ class TodayScreen(QWidget):
         for c in silent:
             last = db.last_message_date(c["chat_id"])
             detail = "сбор выключен вручную"
-            detail += f", с {str(last)[:16].replace('T', ' ')}" if last else ""
+            detail += f", с {short_dt(last)}" if last else ""
             col.add_row(c["title"], detail, "включить",
                         (lambda cid=c["chat_id"]: self.ctx.collector.set_chat_enabled(cid, True)), "warn")
 

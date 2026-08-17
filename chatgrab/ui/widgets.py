@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from ..core import lead as lead_domain
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
@@ -128,6 +129,35 @@ class StatusPill(QLabel):
         self.setStyleSheet(
             f"color: {s['fg']}; background: {s['bg']}; border-radius: 6px; "
             f"padding: 3px 10px; font-size: 11px;"
+        )
+
+
+class LeadStatusPill(QLabel):
+    """Same idea as StatusPill above, but keyed on
+    lead_domain.STATUS_COLORS (the funnel vocabulary — new/qualified/…/
+    lost) rather than theme.STATUS_STYLES (chat/bot lifecycle status —
+    idle/running/error). Two different domains with two different color
+    tables — not merged into one, same as StatusPill itself stays scoped
+    to its own domain.
+
+    font_size is a constructor argument, not hardcoded like StatusPill's
+    — leads_tab.py's table-row pills and lead_card.py's header pill used
+    slightly different sizes (11.5px vs 12px) before this was shared, and
+    unifying the color/text logic shouldn't force them to also become
+    pixel-identical.
+    """
+
+    def __init__(self, status: str = lead_domain.NEW, font_size: str = "12px"):
+        super().__init__()
+        self._font_size = font_size
+        self.set_status(status)
+
+    def set_status(self, status: str) -> None:
+        bg, fg, _dot = lead_domain.STATUS_COLORS.get(status, lead_domain.STATUS_COLORS[lead_domain.NEW])
+        self.setText(f"●  {lead_domain.label_for_status(status)}")
+        self.setStyleSheet(
+            f"color: {fg}; background: {bg}; border-radius: 6px; "
+            f"padding: 3px 10px; font-size: {self._font_size};"
         )
 
 

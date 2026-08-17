@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
+from ...format import short_dt
 from ...widgets import KeyValue, muted
 from ....core import lead as lead_domain
 
@@ -83,7 +84,7 @@ class AnalyticsTab(QWidget):
             self.ranking_table.setItem(row, 0, item)
             self.ranking_table.setItem(row, 1, QTableWidgetItem(str(r["score"])))
             self.ranking_table.setItem(row, 2, QTableWidgetItem(str(r["activity_count"])))
-            self.ranking_table.setItem(row, 3, QTableWidgetItem(str(r["last_active"])[:16].replace("T", " ")))
+            self.ranking_table.setItem(row, 3, QTableWidgetItem(short_dt(r["last_active"])))
         self.ranking_table.resizeColumnsToContents()
         self.ranking_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
 
@@ -97,7 +98,7 @@ class AnalyticsTab(QWidget):
         for entry in db.activity_for_contact(contact_id, limit=100):
             kind_label = {"message": "сообщение", "trigger_fired": "сработал триггер", "error": "ошибка"}.get(
                 entry["kind"], entry["kind"])
-            self.history_list.addItem(f"{str(entry['timestamp'])[:16].replace('T', ' ')}  ·  {kind_label}")
+            self.history_list.addItem(f"{short_dt(entry['timestamp'])}  ·  {kind_label}")
         leads = [l for l in db.list_leads() if l["contact_id"] == contact_id]
         if leads:
             self.history_list.addItem(f"— {len(leads)} заявок от этого контакта —")

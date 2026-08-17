@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
+from ...format import short_dt
 from ...util import fire, run_blocking
-from ...widgets import button, chip, muted
+from ...widgets import LeadStatusPill, button, chip, muted
 from ....bots.export import export_leads_xlsx
 from ....core import lead as lead_domain
 from .lead_card import LeadCardDialog
@@ -27,15 +28,10 @@ _DATE_RANGES = [
 
 
 def _status_pill(status: str) -> QWidget:
-    bg, fg, _dot = lead_domain.STATUS_COLORS.get(status, lead_domain.STATUS_COLORS[lead_domain.NEW])
     host = QWidget()
     lay = QHBoxLayout(host)
     lay.setContentsMargins(8, 0, 8, 0)
-    pill = muted(f"●  {lead_domain.label_for_status(status)}")
-    pill.setStyleSheet(
-        f"color: {fg}; background: {bg}; border-radius: 6px; padding: 3px 10px; font-size: 11.5px;"
-    )
-    lay.addWidget(pill)
+    lay.addWidget(LeadStatusPill(status, font_size="11.5px"))
     lay.addStretch(1)
     return host
 
@@ -205,7 +201,7 @@ class LeadsTab(QWidget):
 
         self.table.setRowCount(len(leads))
         for row, lead in enumerate(leads):
-            date_item = QTableWidgetItem(str(lead["created_at"])[:16].replace("T", " "))
+            date_item = QTableWidgetItem(short_dt(lead["created_at"]))
             date_item.setData(Qt.UserRole, lead["id"])
             self.table.setItem(row, 0, date_item)
 

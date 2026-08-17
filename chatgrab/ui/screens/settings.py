@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from ..context import AppContext
 from .. import tray
+from ..format import short_dt
 from ..util import fire
 from ... import __version__, diagnostics
 from ..widgets import FieldRow, button, card, h1, muted, plural
@@ -1083,7 +1084,7 @@ class SettingsScreen(QWidget):
             else:
                 period = f"каждые {hours} " + plural(hours, "час", "часа", "часов")
             period += f", не раньше {s['at_hour']:02d}:00"
-            last = (s["last_run_at"] or "")[:16].replace("T", " ") or "ещё не запускалась"
+            last = short_dt(s["last_run_at"]) or "ещё не запускалась"
             self.sched_table.setItem(i, 0, QTableWidgetItem(s["preset_name"]))
             self.sched_table.setItem(i, 1, QTableWidgetItem(period))
             self.sched_table.setItem(i, 2, QTableWidgetItem(last))

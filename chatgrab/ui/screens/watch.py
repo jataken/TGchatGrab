@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
+from ..format import short_dt
 from ..util import fire, run_blocking
 from ..widgets import button, card, h1, label, muted, plural
 from ...core import lead as lead_domain
@@ -236,7 +237,7 @@ class WatchScreen(QWidget):
 
         self.hits_table.setRowCount(len(hits))
         for row, hit in enumerate(hits):
-            when = str(hit["date"] or hit["matched_at"])[:16].replace("T", " ")
+            when = short_dt(hit["date"] or hit["matched_at"])
             item = QTableWidgetItem(when)
             item.setData(Qt.UserRole, hit["id"])
             self.hits_table.setItem(row, 0, item)

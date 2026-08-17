@@ -14,6 +14,7 @@ from typing import Callable
 from PySide6.QtWidgets import QHBoxLayout, QWidget
 
 from ...context import AppContext
+from ...format import short_dt
 from ...util import fire
 from ...widgets import button, muted
 from ....integrations import bitrix
@@ -48,7 +49,7 @@ class LeadCardBitrixPanel(QWidget):
                 f"Отправка в очереди (попыток: {attempts})." if attempts else "Отправка в очереди.")
         elif lead["crm_id"]:
             self.send_btn.setEnabled(True)
-            when = str(lead["crm_synced_at"])[:16].replace("T", " ") if lead["crm_synced_at"] else "?"
+            when = short_dt(lead["crm_synced_at"]) or "?"
             self.status_label.setText(f"В Bitrix24: ID {lead['crm_id']} (синхронизировано {when}).")
         else:
             self.send_btn.setEnabled(True)

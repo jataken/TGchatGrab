@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
+from ..format import short_dt
 from ..util import fire
 from ..widgets import FieldRow, button, card, h1, muted
 from ...core import lead as lead_domain
@@ -353,7 +354,7 @@ class BitrixScreen(QWidget):
             handle = "заявка удалена"
             if lead is not None:
                 handle = lead["display_name"] or lead["username"] or f"заявка №{r['lead_id']}"
-            self.journal_table.setItem(i, 0, QTableWidgetItem((r["at"] or "")[:16].replace("T", " ")))
+            self.journal_table.setItem(i, 0, QTableWidgetItem(short_dt(r["at"])))
             self.journal_table.setItem(i, 1, QTableWidgetItem(handle))
             self.journal_table.setItem(i, 2, QTableWidgetItem(outcome_labels.get(r["outcome"], r["outcome"])))
             self.journal_table.setItem(i, 3, QTableWidgetItem(r["detail"] or ""))

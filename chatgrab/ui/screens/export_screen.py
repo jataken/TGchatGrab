@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..context import AppContext
+from ..format import short_dt
 from ..util import fire, run_blocking
 from ..widgets import button, card, h1, muted, plural
 from ...services.export_service import DEFAULT_TOKEN_LIMIT, ExportParams
@@ -255,7 +256,7 @@ class ExportScreen(QWidget):
     def _populate_log(self) -> None:
         self.log_list.clear()
         for row in self.ctx.db.list_export_log(limit=20):
-            when = row["created_at"][:16].replace("T", " ")
+            when = short_dt(row["created_at"])
             item = QListWidgetItem(f"{when} · {row['format']} · {row['split_mode']}")
             item.setData(Qt.UserRole, row["id"])
             self.log_list.addItem(item)
