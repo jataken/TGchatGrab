@@ -29,6 +29,7 @@ from .mixins.directions import DirectionsMixin
 from .mixins.export import ExportMixin
 from .mixins.ignore_rules import IgnoreRulesMixin
 from .mixins.leads import LeadsMixin
+from .mixins.mail import MailMixin
 from .mixins.maintenance import MaintenanceMixin
 from .mixins.outbox import OutboxMixin
 from .mixins.productivity import ProductivityMixin
@@ -49,7 +50,7 @@ class Database(
     SettingsMixin, ChatsMixin, IgnoreRulesMixin, ExportMixin, SearchMixin,
     DirectionsMixin, AccountsMixin, WatchMixin, RetentionMixin, ProductivityMixin,
     MaintenanceMixin, BotsMixin, LeadsMixin, ReportsMixin, OutboxMixin, CrmMixin,
-    TemplatesMixin, ScenariosMixin, ScenarioSessionsMixin,
+    TemplatesMixin, ScenariosMixin, ScenarioSessionsMixin, MailMixin,
 ):
     def __init__(self, path: Path):
         self.path = path

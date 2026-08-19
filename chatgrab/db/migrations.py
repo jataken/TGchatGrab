@@ -193,6 +193,33 @@ def _up_bitrix_mapping(conn: sqlite3.Connection, _ctx: dict) -> None:
             conn.execute(f"ALTER TABLE direction ADD COLUMN {name} {coltype};")
 
 
+def _up_mail(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П1: mailboxes, folders, messages, threads (empty until П2 populates
+    them), attachments, and full-text search over subject/body — six new,
+    standalone tables. Nothing existing is touched (see the П-2 invariant:
+    no foreign key from mail_* to chats/messages/bot_leads), so this is
+    the clean-rollback shape 007/010 are, not 008/009/011's ALTER-an-
+    existing-table one.
+    """
+    for ddl in (schema._DDL_MAILBOX, schema._DDL_MAIL_FOLDER, schema._DDL_MAIL_THREAD,
+                schema._DDL_MAIL_MESSAGE, schema._DDL_MAIL_ATTACHMENT):
+        conn.execute(ddl)
+    for ddl in schema._DDL_MAIL_INDEXES:
+        conn.execute(ddl)
+    conn.execute(schema._DDL_MAIL_FTS)
+    for ddl in schema._MAIL_FTS_TRIGGERS:
+        conn.execute(ddl)
+
+
+def _down_mail(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS mail_fts;")
+    conn.execute("DROP TABLE IF EXISTS mail_attachment;")
+    conn.execute("DROP TABLE IF EXISTS mail_message;")
+    conn.execute("DROP TABLE IF EXISTS mail_thread;")
+    conn.execute("DROP TABLE IF EXISTS mail_folder;")
+    conn.execute("DROP TABLE IF EXISTS mailbox;")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -202,6 +229,13 @@ MIGRATIONS: list[Migration] = [
     Migration("010", "outbox: send log, drafts, blacklist", _up_outbox, _down_outbox),
     Migration("011", "Bitrix24: crm_id on leads, send queue", _up_bitrix),
     Migration("012", "Bitrix24: direction -> CRM source mapping", _up_bitrix_mapping),
+    # "013" is reserved for С10 (configurable funnels, PLAN.md) — not yet
+    # implemented. Migration ids don't need to be contiguous: the runner
+    # tracks applied ids by presence in schema_migrations, not by counting,
+    # so "014" landing before "013" exists costs nothing and needs no
+    # renumbering once С10 is done.
+    Migration("014", "mail: mailboxes, folders, messages, threads, attachments, search",
+              _up_mail, _down_mail),
 ]
 
 

@@ -18,6 +18,7 @@ from .config import AppConfig
 from .db.database import Database
 from .integrations.bitrix import register_bitrix_rotation
 from .integrations.llm import register_llm_rotation
+from .integrations.mail.credentials import register_mailbox_rotation
 from .paths import PATHS, resource_path
 from .security import SecurityService
 from .services.backup_service import BackupService
@@ -26,6 +27,7 @@ from .services.export_schedule_service import ExportScheduleService
 from .services.export_service import ExportService
 from .services.ignore_service import IgnoreService
 from .services.lead_reminder_service import LeadReminderService
+from .services.mail_service import MailService
 from .services.retention_service import RetentionService
 from .services.watch_service import WatchService
 from .telegram.accounts import AccountRegistry
@@ -91,6 +93,7 @@ def run() -> int:
     register_bot_token_rotation(db, security)
     register_bitrix_rotation(db, security)
     register_llm_rotation(db, security)
+    register_mailbox_rotation(db, security)
 
     accounts = AccountRegistry(db, config, PATHS, tg)
     accounts.ensure_primary_row()
@@ -108,6 +111,9 @@ def run() -> int:
     bitrix_sync_service = BitrixSyncService(
         db, security, on_log=lambda text, tone="": collector._log("Bitrix24", text, tone),
     )
+    mail_service = MailService(
+        db, PATHS, security, on_log=lambda text, tone="": collector._log("почта", text, tone),
+    )
 
     ctx = AppContext(
         config=config, paths=PATHS, db=db, tg=tg, collector=collector,
@@ -116,7 +122,7 @@ def run() -> int:
         watch_service=watch_service, retention_service=retention_service,
         export_schedule_service=export_schedule_service,
         lead_reminder_service=lead_reminder_service,
-        bitrix_sync_service=bitrix_sync_service, accounts=accounts,
+        bitrix_sync_service=bitrix_sync_service, mail_service=mail_service, accounts=accounts,
     )
 
     window = MainWindow(ctx)
@@ -128,6 +134,7 @@ def run() -> int:
             export_schedule_service.start()
             lead_reminder_service.start()
             bitrix_sync_service.start()
+            mail_service.start()
             loop.run_forever()
     finally:
         session = diagnostics.current()

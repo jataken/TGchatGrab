@@ -517,6 +517,159 @@ _DIRECTION_CRM_COLUMNS = [
     ("crm_source_id", "TEXT"),
 ]
 
+# ---- mail (П1) ----------------------------------------------------------
+# A self-contained group of tables, deliberately not touching anything
+# above: no foreign key from mail_* to chats/messages/bot_leads, per the
+# П-2 invariant (PLAN.md, «Почта и Telegram не смешиваются»).
+
+# password (obscured elsewhere; auth_kind stays 'password' until a future
+# session adds 'oauth' — the column exists now so that doesn't need a
+# migration of its own). port/ssl are per-mailbox since a self-hosted
+# corporate server rarely runs on the well-known 993/465 pair the
+# autodetect table assumes for Yandex/Mail.ru/Gmail/Rambler.
+_DDL_MAILBOX = """
+CREATE TABLE IF NOT EXISTS mailbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    imap_host TEXT NOT NULL,
+    imap_port INTEGER NOT NULL DEFAULT 993,
+    smtp_host TEXT,
+    smtp_port INTEGER NOT NULL DEFAULT 465,
+    auth_kind TEXT NOT NULL DEFAULT 'password',   -- password | oauth (oauth: будущая сессия)
+    password_enc TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_sync_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+# One row per IMAP folder discovered on a mailbox, and the incremental
+# state that makes the next sync a UID FETCH instead of a full re-read —
+# see integrations/mail/imap_client.py's module docstring for why
+# UIDVALIDITY, not the message date, is the field that actually matters.
+# `enabled` defaults off for anything but INBOX: listing every folder a
+# corporate mailbox has (dozens, sometimes) and syncing all of them from
+# day one would make the first sync of a real mailbox very slow — folder
+# management beyond INBOX is П4's job, this just leaves room for it.
+_DDL_MAIL_FOLDER = """
+CREATE TABLE IF NOT EXISTS mail_folder (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    uidvalidity INTEGER,
+    last_uid INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    last_synced_at TEXT,
+    UNIQUE(mailbox_id, name)
+);
+"""
+
+# Sparse, deliberately: assembling messages into conversations is П2's
+# job (core/mail_thread.py, by References/In-Reply-To with a normalized-
+# subject fallback). This table and mail_message.thread_id exist from
+# this migration on so П2 only has to populate them, not add a column to
+# a table that may already hold real rows.
+_DDL_MAIL_THREAD = """
+CREATE TABLE IF NOT EXISTS mail_thread (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    subject_norm TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+# `refs` — not `references`, reserved in SQL. body_text is the plain-text
+# part only; body_html_path/has_attachments point at files under
+# Paths.mail_dir rather than storing markup or binaries in the row — the
+# same photo_path-not-photo-bytes choice messages already makes.
+# UNIQUE(mailbox_id, folder, uid) is the identity a UID FETCH re-run
+# resolves against: a UID is only stable within (mailbox, folder,
+# UIDVALIDITY), and a UIDVALIDITY change is handled by wiping the affected
+# rows before resyncing (see mixins/mail.py: reset_mail_folder), not by
+# this constraint.
+_DDL_MAIL_MESSAGE = """
+CREATE TABLE IF NOT EXISTS mail_message (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    folder TEXT NOT NULL,
+    uid INTEGER NOT NULL,
+    thread_id INTEGER,
+    message_id TEXT,
+    in_reply_to TEXT,
+    refs TEXT,
+    subject TEXT NOT NULL DEFAULT '',
+    sender_name TEXT,
+    sender_address TEXT,
+    to_addresses TEXT NOT NULL DEFAULT '[]',
+    date TEXT,
+    body_text TEXT,
+    body_html_path TEXT,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
+    body_fetched INTEGER NOT NULL DEFAULT 0,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    is_outgoing INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(mailbox_id, folder, uid)
+);
+"""
+
+_DDL_MAIL_ATTACHMENT = """
+CREATE TABLE IF NOT EXISTS mail_attachment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT,
+    size_bytes INTEGER,
+    path TEXT,
+    extracted_text TEXT
+);
+"""
+
+_DDL_MAIL_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_mail_message_mailbox_folder_uid "
+    "ON mail_message(mailbox_id, folder, uid);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_message_date ON mail_message(date);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_message_thread ON mail_message(thread_id);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_folder_mailbox ON mail_folder(mailbox_id);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_attachment_message ON mail_attachment(message_id);",
+]
+
+# Same content='...'/content_rowid='id' external-content shape as
+# messages_fts — mail_message stays the source of truth, this is only a
+# search index over it. subject/body_text now; П3 adds attachment text to
+# the same table via the same trigger set, not a separate index.
+_DDL_MAIL_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS mail_fts USING fts5(
+    subject, body_text, content='mail_message', content_rowid='id'
+);
+"""
+
+_MAIL_FTS_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_message_ai AFTER INSERT ON mail_message BEGIN
+        INSERT INTO mail_fts(rowid, subject, body_text)
+        VALUES (new.id, new.subject, new.body_text);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_message_ad AFTER DELETE ON mail_message BEGIN
+        INSERT INTO mail_fts(mail_fts, rowid, subject, body_text)
+        VALUES ('delete', old.id, old.subject, old.body_text);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_message_au AFTER UPDATE ON mail_message BEGIN
+        INSERT INTO mail_fts(mail_fts, rowid, subject, body_text)
+        VALUES ('delete', old.id, old.subject, old.body_text);
+        INSERT INTO mail_fts(rowid, subject, body_text)
+        VALUES (new.id, new.subject, new.body_text);
+    END;
+    """,
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

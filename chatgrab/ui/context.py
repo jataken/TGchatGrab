@@ -15,6 +15,7 @@ from ..services.export_schedule_service import ExportScheduleService
 from ..services.export_service import ExportService
 from ..services.ignore_service import IgnoreService
 from ..services.lead_reminder_service import LeadReminderService
+from ..services.mail_service import MailService
 from ..services.retention_service import RetentionService
 from ..services.watch_service import WatchService
 from ..telegram.accounts import AccountRegistry
@@ -40,6 +41,7 @@ class AppContext:
     export_schedule_service: ExportScheduleService
     lead_reminder_service: LeadReminderService
     bitrix_sync_service: BitrixSyncService
+    mail_service: MailService
     accounts: AccountRegistry | None = None
     # Which bot the «Боты» block's screens are currently editing.
     bot_selection: BotSelection = field(default_factory=BotSelection)

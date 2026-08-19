@@ -26,6 +26,7 @@ from .screens.collect import CollectScreen
 from .screens.connect import ConnectScreen
 from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
+from .screens.mail_settings import MailSettingsScreen
 from .screens.reports_screen import ReportsScreen
 from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
@@ -74,6 +75,10 @@ COMMON_ITEMS = [
     ("connect", "Подключение"),
     ("directions", "Направления"),
     ("bitrix", "Bitrix24"),
+    # Ящики и синхронизация — П1. Живёт здесь, не в BLOCKS, до П2: полный
+    # блок «Почта» (переключатель слева, свой список входящих) появится
+    # только когда будет что показывать, кроме списка ящиков.
+    ("mail_settings", "Почта"),
     ("settings", "Настройки"),
 ]
 
@@ -207,6 +212,7 @@ class MainWindow(QMainWindow):
             "templates": TemplatesScreen(ctx, self.navigate),
             "botlog": BotLogScreen(ctx, self.navigate),
             "bitrix": BitrixScreen(ctx, self.navigate),
+            "mail_settings": MailSettingsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
         for key in self.screens:

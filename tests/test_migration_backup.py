@@ -81,22 +81,33 @@ copy_path = Path(base) / "rollback_copy.db"
 shutil.copy2(paths.db_path, copy_path)
 conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-assert "direction" in tables_before and "outbox_sends" in tables_before
+assert "direction" in tables_before and "outbox_sends" in tables_before and "mailbox" in tables_before
 
-# 010 (outbox) — самая свежая, и у неё есть down() (чистое добавление трёх
-# таблиц, откатить нечего терять) — она и должна откатиться первой.
+# 014 (почта) — теперь самая свежая миграция с down() — таблицы mail_*
+# добавлены с нуля, откатить нечего терять, — и должна откатиться первой.
+undone0 = migrations.rollback_last(conn)
+print("  откачена миграция:", undone0)
+assert undone0 == "014", "014 — самая свежая обратимая миграция, должна откатиться первой"
+tables_after0 = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+removed0 = tables_before - tables_after0
+assert not any(name.startswith("mail") for name in tables_after0), \
+    "все таблицы почты (включая теневые таблицы mail_fts) должны исчезнуть"
+assert all(name.startswith("mail") for name in removed0), \
+    "откат 014 не должен трогать ничего, кроме своих (и своих теневых FTS5) таблиц"
+
+# 010 (outbox) — следующая по свежести с down() (011/012 его не имеют).
 undone = migrations.rollback_last(conn)
 print("  откачена миграция:", undone)
-assert undone == "010", "010 — самая свежая обратимая миграция, должна откатиться первой"
+assert undone == "010", "010 — следующая обратимая миграция после 014"
 tables_after = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert {"outbox_sends", "outbox_drafts", "outbox_blacklist"} - tables_after == \
     {"outbox_sends", "outbox_drafts", "outbox_blacklist"}, "все три таблицы outbox должны исчезнуть"
-assert tables_after == tables_before - {"outbox_sends", "outbox_drafts", "outbox_blacklist"}, \
+assert tables_after == tables_after0 - {"outbox_sends", "outbox_drafts", "outbox_blacklist"}, \
     "откат не должен трогать ничего кроме своих таблиц"
 
 # 008 (лид) и 009 (жизненный цикл лида) — следующие по свежести, но у них
 # нет down() — обе трогают данные/ограничения таблицы, а не только
-# добавляют что-то новое, см. их докстринги. Второй откат должен
+# добавляют что-то новое, см. их докстринги. Следующий откат должен
 # пропустить обе и найти 007, а не упасть и не откатить не то.
 undone2 = migrations.rollback_last(conn)
 print("  откачена миграция:", undone2)
