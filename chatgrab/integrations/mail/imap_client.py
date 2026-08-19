@@ -232,6 +232,11 @@ def _first(data) -> bytes:
     return data[0] if data else b""
 
 
+def _quote_search_term(term: str) -> bytes:
+    escaped = term.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'.encode("utf-8")
+
+
 def _parse_fetch_pairs(data) -> list[tuple[int, bytes]]:
     """imaplib hands FETCH results back as a list mixing (meta, payload)
     tuples with plain closing-paren bytes — only the tuples carry data,
@@ -328,3 +333,56 @@ class ImapClient:
         if not pairs:
             raise ImapError(f"письмо {uid} не найдено в {folder!r}")
         return pairs[0][1]
+
+    def fetch_headers_for_uids(self, folder: str, uids: list[int]) -> list[tuple[int, bytes]]:
+        """Headers for a specific, already-known set of UIDs — used to
+        pull in the headers of search_uids() hits that aren't in the
+        database yet. Same BODY.PEEK[HEADER] as fetch_new_headers, so it
+        never marks anything \\Seen either."""
+        if not uids:
+            return []
+        typ, _ = self._conn.select(folder, readonly=True)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r}")
+        seq = ",".join(str(u) for u in uids)
+        typ, data = self._conn.uid("fetch", seq, "(UID BODY.PEEK[HEADER])")
+        if typ != "OK":
+            raise ImapError(f"не удалось получить письма из {folder!r}")
+        return _parse_fetch_pairs(data)
+
+    def search_uids(self, folder: str, query: str) -> list[int]:
+        """Server-side UID SEARCH over subject and body — reaches mail
+        this app hasn't synced yet, unlike the local FTS5 index. The
+        search term is sent as a UTF-8-encoded quoted string under
+        CHARSET UTF-8, as *bytes* (not str): imaplib's own command
+        encoder defaults to ASCII and would raise on a Cyrillic term
+        passed as a plain str, since it has no idea a CHARSET override is
+        in play three arguments earlier — encoding it ourselves sidesteps
+        that entirely rather than fighting imaplib's literal-continuation
+        machinery for a second occurrence of the same term."""
+        typ, _ = self._conn.select(folder, readonly=True)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r}")
+        term = _quote_search_term(query)
+        typ, data = self._conn.uid(
+            "search", "CHARSET", "UTF-8", "OR", "SUBJECT", term, "BODY", term)
+        if typ != "OK":
+            raise ImapError(f"не удалось выполнить поиск в {folder!r}")
+        raw = _first(data)
+        return [int(x) for x in raw.split()] if raw else []
+
+    def store_seen(self, folder: str, uids: list[int]) -> None:
+        """Pushes \\Seen for exactly these UIDs — the *only* place in this
+        client that sets \\Seen server-side; every fetch elsewhere uses
+        BODY.PEEK specifically to avoid this as a side effect. Needs the
+        folder opened read-write (readonly=False), unlike every other
+        method here."""
+        if not uids:
+            return
+        typ, _ = self._conn.select(folder, readonly=False)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r} для записи")
+        seq = ",".join(str(u) for u in uids)
+        typ, _ = self._conn.uid("store", seq, "+FLAGS", "(\\Seen)")
+        if typ != "OK":
+            raise ImapError(f"не удалось отметить письма прочитанными в {folder!r}")

@@ -16,8 +16,10 @@ its own network calls, just via an executor instead of native async.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
+from ..core import mail_thread
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient
@@ -118,10 +120,64 @@ class MailService:
         highest = folder["last_uid"]
         for uid, raw in pairs:
             fields = imap_client.parse_headers(raw)
-            self.db.upsert_mail_message(mailbox_id, name, uid, **fields)
+            message_id = self.db.upsert_mail_message(mailbox_id, name, uid, **fields)
+            self._assign_thread(mailbox_id, message_id, fields)
             highest = max(highest, uid)
         self.db.set_mail_folder_state(mailbox_id, name, last_uid=highest, last_synced_at=now_iso())
         return len(pairs)
+
+    # ---- threads (П2) — core/mail_thread.py decides, this just does the
+    # database lookups that decision needs ------------------------------
+    def _assign_thread(self, mailbox_id: int, message_id: int, fields: dict) -> None:
+        if self.db.get_mail_message(message_id)["thread_id"]:
+            return  # уже привязано — повторный забор того же письма
+        thread_id = self._find_reference_thread(mailbox_id, fields)
+        if thread_id is None:
+            thread_id = self._find_subject_thread(mailbox_id, fields)
+        if thread_id is None:
+            subject_norm = mail_thread.normalize_subject(fields.get("subject"))
+            thread_id = self.db.create_mail_thread(mailbox_id, subject_norm)
+        self.db.set_message_thread(message_id, thread_id)
+
+    def _find_reference_thread(self, mailbox_id: int, fields: dict) -> int | None:
+        ids = mail_thread.reference_ids(fields.get("refs"), fields.get("in_reply_to"))
+        for msg_id in reversed(ids):  # ближайший родитель — последним в списке
+            row = self.db.get_mail_message_by_message_id(mailbox_id, msg_id)
+            if row is not None and row["thread_id"] is not None:
+                return row["thread_id"]
+        return None
+
+    def _find_subject_thread(self, mailbox_id: int, fields: dict) -> int | None:
+        subject_norm = mail_thread.normalize_subject(fields.get("subject"))
+        if not subject_norm:
+            return None
+        # Excluded on both sides of the comparison below: the mailbox's
+        # own address is on every message in it, so leaving it in would
+        # make "shares a participant" trivially true for any two
+        # same-subject messages regardless of who they're actually with.
+        mailbox = self.db.get_mailbox(mailbox_id)
+        own_address = (mailbox["address"] or "").strip().lower() if mailbox else None
+
+        candidates = [
+            {
+                "id": t["id"],
+                "participants": self.db.thread_participants(t["id"], exclude=own_address),
+                "last_date": self.db.thread_last_date(t["id"]),
+            }
+            for t in self.db.list_mail_threads_by_subject(mailbox_id, subject_norm)
+        ]
+        to_addresses = [a for a in json.loads(fields.get("to_addresses") or "[]")
+                        if (a or "").strip().lower() != own_address]
+        sender_address = fields.get("sender_address")
+        if sender_address and own_address and sender_address.strip().lower() == own_address:
+            sender_address = None
+        message = {
+            "subject": fields.get("subject"),
+            "sender_address": sender_address,
+            "to_addresses": to_addresses,
+            "date": fields.get("date"),
+        }
+        return mail_thread.find_subject_fallback_thread(message, candidates)
 
     # ---- «тело по требованию» -----------------------------------------
     def fetch_body(self, message_id: int) -> None:
@@ -148,6 +204,57 @@ class MailService:
         for att in parsed["attachments"]:
             self.db.add_mail_attachment(
                 message_id, att["filename"], att["content_type"], att["size_bytes"], att["path"])
+
+    # ---- поиск на сервере (П2) ------------------------------------------
+    def search_server(self, mailbox_id: int, folder: str, query: str) -> int:
+        """Reaches mail this app hasn't synced yet — local search_mail()
+        only covers what's already stored. A hit is fetched and stored
+        the same way an ordinary sync would (headers + thread assignment),
+        so it becomes part of the normal local index from then on rather
+        than a one-off result that vanishes next time. Blocking, like
+        every other network call here — route through run_in_executor
+        from the UI. Returns how many *new* messages this pulled in."""
+        mailbox = self.db.get_mailbox(mailbox_id)
+        if mailbox is None:
+            return 0
+        client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+        client.connect(mailbox["address"], self._password_for(mailbox))
+        try:
+            uids = client.search_uids(folder, query)
+            missing = [u for u in uids
+                       if self.db.get_mail_message_by_uid(mailbox_id, folder, u) is None]
+            pairs = client.fetch_headers_for_uids(folder, missing) if missing else []
+        finally:
+            client.close()
+        for uid, raw in pairs:
+            fields = imap_client.parse_headers(raw)
+            message_id = self.db.upsert_mail_message(mailbox_id, folder, uid, **fields)
+            self._assign_thread(mailbox_id, message_id, fields)
+        return len(pairs)
+
+    # ---- «прочитано» — локально и на сервере (П2) -----------------------
+    def push_read_flags(self, mailbox_id: int, items: list[tuple[str, int]]) -> None:
+        """items: [(folder, uid), ...] from db.mark_thread_read() — grouped
+        by folder since STORE is one command per folder, not per message.
+        Best-effort: the local mark already happened and stays, whatever
+        happens here — a failed push just means the server's copy stays
+        unread until the next successful one, the same "network hiccup,
+        not data loss" shape as every other sync failure in this module."""
+        if not items:
+            return
+        by_folder: dict[str, list[int]] = {}
+        for folder, uid in items:
+            by_folder.setdefault(folder, []).append(uid)
+        mailbox = self.db.get_mailbox(mailbox_id)
+        if mailbox is None:
+            return
+        client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+        client.connect(mailbox["address"], self._password_for(mailbox))
+        try:
+            for folder, uids in by_folder.items():
+                client.store_seen(folder, uids)
+        finally:
+            client.close()
 
     # ---- "Проверить подключение" ---------------------------------------
     def test_connection(self, imap_host: str, imap_port: int, address: str, password: str) -> str:

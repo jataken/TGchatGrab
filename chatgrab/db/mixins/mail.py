@@ -8,10 +8,12 @@ mixin composed onto Database.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
 from ..timeutil import now_iso
+from .search import _fts_query
 
 # Header fields an upsert refreshes on every sync. Deliberately not
 # body_text/body_html_path/has_attachments/body_fetched/is_read: those are
@@ -129,6 +131,138 @@ class MailMixin:
             )
             self._conn.commit()
 
+    # ---- threads (П2) --------------------------------------------------
+    # Assembly itself is core/mail_thread.py's job — everything here is
+    # just the queries that logic needs (candidate lookup) or produces
+    # (creating/assigning a thread). See services/mail_service.py for the
+    # orchestration that calls both.
+    def create_mail_thread(self, mailbox_id: int, subject_norm: str) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_thread(mailbox_id, subject_norm, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (mailbox_id, subject_norm, now_iso(), now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_mail_threads_by_subject(self, mailbox_id: int, subject_norm: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_thread WHERE mailbox_id = ? AND subject_norm = ?",
+            (mailbox_id, subject_norm),
+        )
+
+    def thread_participants(self, thread_id: int, exclude: str | None = None) -> set[str]:
+        """exclude is the mailbox's own address, lowercased. Without
+        excluding it, every message in the mailbox trivially "shares a
+        participant" with every other one (the mailbox owner is on both
+        sides of every conversation), which would make the overlap check
+        in core.mail_thread.find_subject_fallback_thread match on nothing
+        but the mailbox's own address — i.e. match everything with the
+        same subject, regardless of who it's actually with."""
+        addrs: set[str] = set()
+        for row in self.query(
+            "SELECT sender_address, to_addresses FROM mail_message WHERE thread_id = ?", (thread_id,)
+        ):
+            if row["sender_address"]:
+                addrs.add(row["sender_address"].strip().lower())
+            try:
+                to_list = json.loads(row["to_addresses"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                to_list = []
+            addrs.update(a.strip().lower() for a in to_list if a)
+        if exclude:
+            addrs.discard(exclude.strip().lower())
+        return addrs
+
+    def thread_last_date(self, thread_id: int) -> str | None:
+        row = self.query_one("SELECT MAX(date) AS d FROM mail_message WHERE thread_id = ?", (thread_id,))
+        return row["d"] if row else None
+
+    def set_message_thread(self, message_id: int, thread_id: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE mail_message SET thread_id = ? WHERE id = ?", (thread_id, message_id))
+            self._conn.execute("UPDATE mail_thread SET updated_at = ? WHERE id = ?", (now_iso(), thread_id))
+            self._conn.commit()
+
+    def list_mail_threads(self, mailbox_id: int, folder: str | None = None,
+                           unread_only: bool = False, with_attachments_only: bool = False,
+                           limit: int = 200) -> list[sqlite3.Row]:
+        """One row per thread that has at least one message, newest
+        activity first — subject/sender shown are the *latest* message's,
+        not the thread's own (a normalized, lowercased subject_norm isn't
+        fit to display)."""
+        clauses = ["t.mailbox_id = ?"]
+        params: list[Any] = [mailbox_id]
+        if folder is not None:
+            clauses.append("EXISTS (SELECT 1 FROM mail_message mf WHERE mf.thread_id = t.id AND mf.folder = ?)")
+            params.append(folder)
+        having = []
+        if unread_only:
+            having.append("unread_count > 0")
+        if with_attachments_only:
+            having.append("has_attachments = 1")
+        having_sql = f" HAVING {' AND '.join(having)}" if having else ""
+        params.append(limit)
+        return self.query(
+            f"""
+            SELECT
+                t.id AS thread_id, t.mailbox_id, t.subject_norm,
+                (SELECT m2.subject FROM mail_message m2 WHERE m2.thread_id = t.id
+                 ORDER BY m2.date DESC, m2.id DESC LIMIT 1) AS subject,
+                (SELECT m2.sender_name FROM mail_message m2 WHERE m2.thread_id = t.id
+                 ORDER BY m2.date DESC, m2.id DESC LIMIT 1) AS sender_name,
+                (SELECT m2.sender_address FROM mail_message m2 WHERE m2.thread_id = t.id
+                 ORDER BY m2.date DESC, m2.id DESC LIMIT 1) AS sender_address,
+                MAX(m.date) AS last_date,
+                COUNT(m.id) AS message_count,
+                SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+                MAX(m.has_attachments) AS has_attachments
+            FROM mail_thread t
+            JOIN mail_message m ON m.thread_id = t.id
+            WHERE {' AND '.join(clauses)}
+            GROUP BY t.id
+            {having_sql}
+            ORDER BY last_date DESC
+            LIMIT ?
+            """,
+            params,
+        )
+
+    def list_thread_messages(self, thread_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_message WHERE thread_id = ? ORDER BY date, id", (thread_id,))
+
+    def mark_thread_read(self, thread_id: int) -> list[sqlite3.Row]:
+        """Marks every unread message in the thread read locally and
+        returns the rows that changed (folder + uid), so the caller can
+        push \\Seen to the server for exactly those — see
+        MailService.push_read_flags(). Returns [] (and touches nothing)
+        if the thread was already fully read, so a caller doesn't need to
+        check first."""
+        rows = self.query(
+            "SELECT * FROM mail_message WHERE thread_id = ? AND is_read = 0", (thread_id,))
+        if rows:
+            self.execute("UPDATE mail_message SET is_read = 1 WHERE thread_id = ?", (thread_id,))
+        return rows
+
+    # ---- search (П2) — local FTS5 only; server-side IMAP SEARCH is
+    # integrations/mail/imap_client.py's job, orchestrated by MailService,
+    # since it needs a live connection this layer never holds ----------
+    def search_mail(self, mailbox_id: int, query: str, folder: str | None = None,
+                     limit: int = 100) -> list[sqlite3.Row]:
+        if not query.strip():
+            return self.list_mail_messages(mailbox_id, folder=folder, limit=limit)
+        sql = (
+            "SELECT m.* FROM mail_fts f JOIN mail_message m ON m.id = f.rowid "
+            "WHERE mail_fts MATCH ? AND m.mailbox_id = ?"
+        )
+        params: list[Any] = [_fts_query(query), mailbox_id]
+        if folder is not None:
+            sql += " AND m.folder = ?"
+            params.append(folder)
+        sql += " ORDER BY m.date DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
     # ---- messages -------------------------------------------------
     def upsert_mail_message(self, mailbox_id: int, folder: str, uid: int, **fields: Any) -> int:
         """Insert a message's header fields, or refresh them in place if
@@ -162,6 +296,16 @@ class MailMixin:
         return self.query_one(
             "SELECT * FROM mail_message WHERE mailbox_id = ? AND folder = ? AND uid = ?",
             (mailbox_id, folder, uid),
+        )
+
+    def get_mail_message_by_message_id(self, mailbox_id: int, message_id: str) -> sqlite3.Row | None:
+        """Looks up a stored message by its RFC822 Message-ID header —
+        the exact-match signal core/mail_thread.py's reference-based
+        threading resolves a References/In-Reply-To entry against."""
+        return self.query_one(
+            "SELECT * FROM mail_message WHERE mailbox_id = ? AND message_id = ? "
+            "ORDER BY id LIMIT 1",
+            (mailbox_id, message_id),
         )
 
     def list_mail_messages(self, mailbox_id: int, folder: str | None = None,

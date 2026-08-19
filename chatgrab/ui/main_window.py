@@ -26,6 +26,7 @@ from .screens.collect import CollectScreen
 from .screens.connect import ConnectScreen
 from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
+from .screens.mail import MailScreen
 from .screens.mail_settings import MailSettingsScreen
 from .screens.reports_screen import ReportsScreen
 from .screens.settings import SettingsScreen
@@ -43,7 +44,7 @@ from .tray import TrayController
 # top-level block of their own — a bot is now one of three ways a lead
 # gets created (manual, message-based, and scenario/rule-based being the
 # others), so nesting it under «Боты» stopped matching what it actually is.
-BLOCKS = [("collect", "Сбор"), ("bots", "Боты"), ("leads", "Лиды")]
+BLOCKS = [("collect", "Сбор"), ("bots", "Боты"), ("leads", "Лиды"), ("mail", "Почта")]
 
 NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     "collect": [
@@ -65,6 +66,12 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
         ("leads", "Заявки"),
         ("reports", "Отчёты"),
     ],
+    # П2: самостоятельный блок теперь, когда есть что показывать помимо
+    # списка ящиков — входящие с цепочками, поиском и пометкой «прочитано».
+    "mail": [
+        ("mail", "Входящие"),
+        ("mail_settings", "Ящики"),
+    ],
 }
 
 # Screens that edit one particular bot, and so follow the sidebar's bot
@@ -75,10 +82,6 @@ COMMON_ITEMS = [
     ("connect", "Подключение"),
     ("directions", "Направления"),
     ("bitrix", "Bitrix24"),
-    # Ящики и синхронизация — П1. Живёт здесь, не в BLOCKS, до П2: полный
-    # блок «Почта» (переключатель слева, свой список входящих) появится
-    # только когда будет что показывать, кроме списка ящиков.
-    ("mail_settings", "Почта"),
     ("settings", "Настройки"),
 ]
 
@@ -212,6 +215,7 @@ class MainWindow(QMainWindow):
             "templates": TemplatesScreen(ctx, self.navigate),
             "botlog": BotLogScreen(ctx, self.navigate),
             "bitrix": BitrixScreen(ctx, self.navigate),
+            "mail": MailScreen(ctx, self.navigate),
             "mail_settings": MailSettingsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
