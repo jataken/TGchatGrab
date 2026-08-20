@@ -115,6 +115,25 @@ def _lead_like_attachment(filenames: list[str]) -> str | None:
     return None
 
 
+def matched_direction(fields: dict, attachments_text: str, directions: list):
+    """П9: which direction's keyword actually matched, for the
+    "направление из сработавшего ключевого слова" prefill when creating
+    a lead from a message — the same subject+body+attachments haystack
+    and same first-match-wins order score()'s own `direction_keyword`
+    signal uses, exposed here as a small standalone lookup instead of
+    threading it out of score()'s return value (that function's contract
+    — a score, a category, and reasons — doesn't need to grow a fourth
+    thing just for this one caller). None if nothing matched."""
+    subject = fields.get("subject") or ""
+    body = fields.get("body_text") or ""
+    haystack = f"{subject}\n{body}\n{attachments_text or ''}"
+    for direction in directions:
+        keywords = direction["keywords"] if "keywords" in direction else []
+        if _contains_any(haystack, keywords or []):
+            return direction
+    return None
+
+
 def score(fields: dict, attachments_text: str, directions: list, settings: dict) -> tuple[int, str, list[str]]:
     """fields — parsed message data the caller already has or computed:
         subject (str), body_text (str), sender_address (str | None),

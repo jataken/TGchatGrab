@@ -132,6 +132,10 @@ class MessagePane(QWidget):
         forward_btn.clicked.connect(lambda: self._on_compose(kind="forward"))
         reply_row.addWidget(forward_btn)
         reply_row.addStretch(1)
+        self.lead_btn = button("", "ghost")
+        self.lead_btn.clicked.connect(self._on_lead_clicked)
+        reply_row.addWidget(self.lead_btn)
+        self._update_lead_button()
         lay.addLayout(reply_row)
 
         self.body_container = QVBoxLayout()
@@ -244,6 +248,26 @@ class MessagePane(QWidget):
         if draft_id is None:
             return
         ComposeDialog(self.ctx, draft_id, parent=self).exec()
+
+    # ---- заявка (П9) -------------------------------------------------------
+    def _update_lead_button(self) -> None:
+        thread = self.ctx.db.get_mail_thread(self.message["thread_id"]) if self.message["thread_id"] else None
+        if thread is not None and thread["lead_id"]:
+            self.lead_btn.setText("Открыть заявку")
+        else:
+            self.lead_btn.setText("Завести заявку")
+
+    def _on_lead_clicked(self) -> None:
+        thread = self.ctx.db.get_mail_thread(self.message["thread_id"]) if self.message["thread_id"] else None
+        if thread is not None and thread["lead_id"]:
+            from ..bots.lead_card import LeadCardDialog
+            LeadCardDialog(self.ctx, thread["lead_id"], parent=self).exec()
+            return
+        from .lead_create_dialog import MailLeadDialog
+        dlg = MailLeadDialog(self.ctx, self.message["id"], parent=self)
+        if dlg.exec() == dlg.Accepted:
+            self._update_lead_button()
+            self._on_changed()
 
     # ---- flags / move / trash (П4) ---------------------------------------
     def _update_trash_button(self) -> None:

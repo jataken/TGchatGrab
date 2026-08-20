@@ -309,6 +309,9 @@ class LeadCardDialog(QDialog):
             self.history_list.addItem(text)
 
     def _refresh_correspondence(self, lead, contact) -> None:
+        if lead["source_type"] == lead_domain.SOURCE_TYPE_EMAIL:
+            self._refresh_mail_correspondence(lead)
+            return
         telegram_id = lead["tg_user_id"] or (contact["telegram_id"] if contact else None)
         if not telegram_id:
             self.corr_hint.setText("У этой заявки нет привязанного Telegram-аккаунта — переписку показать нечем.")
@@ -325,6 +328,32 @@ class LeadCardDialog(QDialog):
             when = short_dt(m["date"])
             lines.append(f"[{when}] {m['chat_title'] or m['chat_id']}: {m['text']}")
         self.corr_view.setPlainText("\n".join(lines))
+        scrollbar = self.corr_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _refresh_mail_correspondence(self, lead) -> None:
+        # П9: an email lead has no tg_user_id — its correspondence is a
+        # mail thread, read straight from the DB (mail_thread/mail_message)
+        # rather than pulling in anything from ui/screens/mail — that
+        # would break the П-2 invariant this card otherwise stays clear of.
+        thread = self.ctx.db.get_mail_thread_by_lead(lead["id"])
+        if thread is None:
+            self.corr_hint.setText("Цепочка письма для этой заявки не найдена.")
+            self.corr_view.setPlainText("")
+            return
+        messages = self.ctx.db.list_thread_messages(thread["id"])
+        if not messages:
+            self.corr_hint.setText("В этой цепочке пока нет писем.")
+            self.corr_view.setPlainText("")
+            return
+        subject = messages[-1]["subject"] or "(без темы)"
+        self.corr_hint.setText(f"{len(messages)} писем в цепочке «{subject}».")
+        lines = []
+        for m in messages:
+            when = short_dt(m["date"])
+            who = m["sender_name"] or m["sender_address"] or "—"
+            lines.append(f"[{when}] {who}: {(m['body_text'] or '').strip()}")
+        self.corr_view.setPlainText("\n\n".join(lines))
         scrollbar = self.corr_view.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 

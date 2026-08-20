@@ -136,6 +136,7 @@ class LeadsMixin:
 
     def list_leads(self, bot_id: int | None = None, status: str | None = None, *,
                     direction_id: int | None = None, source_type: str | None = None,
+                    funnel_id: int | None = None,
                     since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
         sql = "SELECT * FROM bot_leads"
         clauses, params = [], []
@@ -151,6 +152,12 @@ class LeadsMixin:
         if source_type is not None:
             clauses.append("source_type = ?")
             params.append(source_type)
+        if funnel_id is not None:
+            # П9: funnel_id, not source_type — a lead manually moved into
+            # this funnel via transfer_lead_funnel() belongs on this
+            # screen even if it was born on a different channel.
+            clauses.append("funnel_id = ?")
+            params.append(funnel_id)
         if since is not None:
             clauses.append("created_at >= ?")
             params.append(since)

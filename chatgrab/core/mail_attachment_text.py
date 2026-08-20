@@ -142,6 +142,25 @@ def extract_plain_text(path: str) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def read_csv_grid(path: str) -> list[list[str]]:
+    """П9: a .csv's rows as a grid, same shape as read_xlsx_grid()'s
+    per-sheet rows — core/mail_lead_extract.py's table-field extraction
+    works on either without caring which. Same size cap as
+    extract_plain_text(): a hostile multi-hundred-MB "csv" attachment is
+    as much a hang risk here as anywhere else untrusted input is parsed
+    (see this module's own docstring)."""
+    import csv
+    import io
+    data = Path(path).read_bytes()[:MAX_PLAIN_TEXT_BYTES]
+    text = data.decode("utf-8", errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.reader(io.StringIO(text), dialect)
+    return [row for row in reader]
+
+
 def extract_text_for_search(path: str, filename: str | None, content_type: str | None = None) -> str | None:
     """Dispatch by extension. None means "not a format this module
     handles" (PDF, photos, legacy .doc/.xls) — not an error, just nothing

@@ -29,6 +29,17 @@ class FunnelsMixin:
     def get_funnel(self, funnel_id: int) -> sqlite3.Row | None:
         return self.query_one("SELECT * FROM funnel WHERE id = ?", (funnel_id,))
 
+    def get_funnel_by_channel(self, channel: str) -> sqlite3.Row | None:
+        """П9: the funnel a mail lead lands in — migration 020 seeds
+        exactly one funnel with channel="email", the first one by
+        order_index if a second email-channel funnel is ever added by
+        hand (channel isn't unique — a funnel-management free-text field,
+        see funnels_screen.py — this just picks *a* usable one rather
+        than refusing to create a lead over an edge case nobody asked
+        for a UI to prevent)."""
+        return self.query_one(
+            "SELECT * FROM funnel WHERE channel = ? ORDER BY order_index, id LIMIT 1", (channel,))
+
     def default_funnel_id(self) -> int | None:
         """The funnel a new lead lands in when nothing more specific is
         given — the first one by order_index, i.e. the seeded "Телеграм ·

@@ -1,6 +1,7 @@
 """П6: полноэкранный разбор непрочитанного с клавиатуры — одна цепочка
 на экране, J/K листают вперёд/назад, цифра 1-9 ставит/снимает ярлык с
 этой горячей цифрой, E — в архив (и сразу следующая), R — ответить,
+L — завести заявку из письма или открыть уже существующую (П9),
 / — выйти и передать фокус поиску на экране «Почта», Esc — просто выйти.
 
 Отдельный модальный диалог, а не пункт навигации: это *режим* поверх
@@ -67,7 +68,7 @@ class TriageDialog(QDialog):
 
         hint = muted(
             "J/K — вперёд/назад · 1–9 — ярлык · E — в архив · "
-            "R — ответить · / — поиск · Esc — выйти")
+            "R — ответить · L — заявка · / — поиск · Esc — выйти")
         hint.setWordWrap(True)
         outer.addWidget(hint)
 
@@ -190,6 +191,25 @@ class TriageDialog(QDialog):
         if self._on_search:
             self._on_search()
 
+    def _on_lead(self) -> None:
+        # П9: same "already linked → open the lead, else create one"
+        # branch as MessagePane._on_lead_clicked, just reached from the
+        # keyboard on this dialog's current thread instead of a mouse
+        # click on a message row.
+        thread_id = self._current_thread_id()
+        if thread_id is None:
+            return
+        thread = self.ctx.db.get_mail_thread(thread_id)
+        if thread is not None and thread["lead_id"]:
+            from ..bots.lead_card import LeadCardDialog
+            LeadCardDialog(self.ctx, thread["lead_id"], parent=self).exec()
+            return
+        messages = self.ctx.db.list_thread_messages(thread_id)
+        if not messages:
+            return
+        from .lead_create_dialog import MailLeadDialog
+        MailLeadDialog(self.ctx, messages[-1]["id"], parent=self).exec()
+
     # ---- клавиатура -------------------------------------------------------
     def keyPressEvent(self, event) -> None:
         key = event.key()
@@ -202,6 +222,8 @@ class TriageDialog(QDialog):
             self._on_archive()
         elif key == Qt.Key_R:
             self._on_reply()
+        elif key == Qt.Key_L:
+            self._on_lead()
         elif key == Qt.Key_Slash:
             self._on_slash()
         elif text.isdigit() and text != "0":

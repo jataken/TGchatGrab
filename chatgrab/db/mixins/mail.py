@@ -188,6 +188,22 @@ class MailMixin:
             (mailbox_id, subject_norm),
         )
 
+    def get_mail_thread(self, thread_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_thread WHERE id = ?", (thread_id,))
+
+    # ---- lead link (П9) -----------------------------------------------
+    def set_mail_thread_lead(self, thread_id: int, lead_id: int | None) -> None:
+        """The one place either lead_id column is ever written — a
+        whole thread becomes one lead (see schema._MAIL_THREAD_LEAD_
+        COLUMNS's docstring for why mail_message also gets a copy)."""
+        with self._lock:
+            self._conn.execute("UPDATE mail_thread SET lead_id = ? WHERE id = ?", (lead_id, thread_id))
+            self._conn.execute("UPDATE mail_message SET lead_id = ? WHERE thread_id = ?", (lead_id, thread_id))
+            self._conn.commit()
+
+    def get_mail_thread_by_lead(self, lead_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_thread WHERE lead_id = ?", (lead_id,))
+
     def thread_participants(self, thread_id: int, exclude: str | None = None) -> set[str]:
         """exclude is the mailbox's own address, lowercased. Without
         excluding it, every message in the mailbox trivially "shares a
@@ -234,7 +250,17 @@ class MailMixin:
 
     def set_message_thread(self, message_id: int, thread_id: int) -> None:
         with self._lock:
-            self._conn.execute("UPDATE mail_message SET thread_id = ? WHERE id = ?", (thread_id, message_id))
+            thread = self._conn.execute(
+                "SELECT lead_id FROM mail_thread WHERE id = ?", (thread_id,)).fetchone()
+            # П9: a message assigned into an already lead-linked thread
+            # (a customer's reply arriving after the lead was created)
+            # picks up that thread's lead_id too — set_mail_thread_lead()
+            # only back-fills messages that existed *at that moment*, so
+            # this is what keeps a later-arriving reply in sync with it.
+            lead_id = thread["lead_id"] if thread is not None else None
+            self._conn.execute(
+                "UPDATE mail_message SET thread_id = ?, lead_id = ? WHERE id = ?",
+                (thread_id, lead_id, message_id))
             self._conn.execute("UPDATE mail_thread SET updated_at = ? WHERE id = ?", (now_iso(), thread_id))
             self._conn.commit()
 

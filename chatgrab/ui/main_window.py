@@ -28,6 +28,7 @@ from .screens.connect import ConnectScreen
 from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
 from .screens.mail import MailScreen
+from .screens.mail.leads_screen import MailLeadsScreen
 from .screens.mail_settings import MailSettingsScreen
 from .screens.mail_triage import MailTriageScreen
 from .screens.reports_screen import ReportsScreen
@@ -75,6 +76,7 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     "mail": [
         ("mail", "Входящие"),
         ("mail_triage", "Разбор"),
+        ("mail_leads", "Заявки"),
         ("mail_settings", "Ящики"),
     ],
 }
@@ -223,6 +225,7 @@ class MainWindow(QMainWindow):
             "bitrix": BitrixScreen(ctx, self.navigate),
             "mail": MailScreen(ctx, self.navigate),
             "mail_triage": MailTriageScreen(ctx, self.navigate),
+            "mail_leads": MailLeadsScreen(ctx, self.navigate),
             "mail_settings": MailSettingsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }

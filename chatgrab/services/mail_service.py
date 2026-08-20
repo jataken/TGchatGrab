@@ -16,6 +16,7 @@ its own network calls, just via an executor instead of native async.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import shutil
@@ -23,7 +24,8 @@ import threading
 from pathlib import Path
 
 from ..bots.templating import render as render_template
-from ..core import mail_attachment_text, mail_compose, mail_labels, mail_thread, mail_triage
+from ..core import lead as lead_domain
+from ..core import mail_attachment_text, mail_compose, mail_labels, mail_lead_extract, mail_thread, mail_triage
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient, ImapError
@@ -215,6 +217,12 @@ class MailService:
                 # again with the fuller picture once the body is fetched
                 # (fetch_body(), or a "Пересчитать" rescan_triage()).
                 self._score_and_maybe_notify(message_id)
+                # П9: "клиент написал, мы не ответили N часов" — only
+                # for a genuinely incoming message (same Sent-folder
+                # guard triage uses above), and only when this thread is
+                # already linked to a lead; a reply nobody's tracking as
+                # a lead has nothing to remind about.
+                self._maybe_start_reply_reminder(message_id)
         self.db.set_mail_folder_state(mailbox_id, name, last_uid=highest, last_synced_at=now_iso())
         return len(triples)
 
@@ -270,6 +278,137 @@ class MailService:
             "date": fields.get("date"),
         }
         return mail_thread.find_subject_fallback_thread(message, candidates)
+
+    # ---- leads (П9) -----------------------------------------------------
+    # Fixed, not exposed on a settings screen this session — same scope
+    # trim as П5's AUTOSAVE_DEBOUNCE_MS: a real number with a clear
+    # reason (a day feels like the point past which "we owe them a
+    # reply" stops being optional), not a magic constant nobody chose.
+    REPLY_REMINDER_HOURS = 24
+    # Marker text that identifies a reminder as this feature's own — so
+    # clearing it (see _clear_reply_reminder) never touches a human's
+    # own manually-set reminder that just happens to still be pending.
+    _REPLY_REMINDER_TEXT = "клиент написал, нужно ответить"
+
+    def create_lead_from_message(self, message_id: int, *, direction_id: int | None = None,
+                                  product: str | None = None, phone: str | None = None) -> int | None:
+        """The "L"/«Завести заявку» action (П9) — one lead per *thread*,
+        not per message: calling this again for another message in an
+        already-linked thread just returns the existing lead_id rather
+        than creating a second one. Lands in the seeded "Почта · прямой
+        запрос" funnel's first open stage; the email body becomes the
+        opening note (П9: "текст письма в примечании") and the thread
+        (not just this one message) gets linked via
+        set_mail_thread_lead(), so every reply already in the thread —
+        and every one that arrives later — is visible from the lead's
+        own "Переписка" tab.
+        """
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        thread = self.db.get_mail_thread(message["thread_id"]) if message["thread_id"] else None
+        if thread is not None and thread["lead_id"]:
+            return thread["lead_id"]
+        funnel = self.db.get_funnel_by_channel(lead_domain.ORIGIN_CHANNEL_EMAIL)
+        stages = self.db.list_funnel_stages(funnel["id"]) if funnel is not None else []
+        opens = lead_domain.open_stages(stages)
+        status = opens[0]["code"] if opens else "new"
+        lead_id = self.db.add_lead(
+            None, None, {}, status=status,
+            display_name=message["sender_name"] or message["sender_address"],
+            email=message["sender_address"],
+            phone=phone,
+            source_type=lead_domain.SOURCE_TYPE_EMAIL,
+            direction_id=direction_id,
+            product=product or message["subject"],
+            event_source=lead_domain.EVENT_SOURCE_MANUAL,
+            funnel_id=funnel["id"] if funnel is not None else None,
+            origin_channel=lead_domain.ORIGIN_CHANNEL_EMAIL,
+        )
+        if message["thread_id"]:
+            self.db.set_mail_thread_lead(message["thread_id"], lead_id)
+        if message["body_text"]:
+            self.db.add_lead_note(lead_id, message["body_text"], source=lead_domain.EVENT_SOURCE_INTEGRATION)
+        return lead_id
+
+    def suggest_lead_fields(self, message_id: int) -> dict:
+        """"Предлагает машина, подтверждает человек" (П9) — nothing here
+        writes to a lead, it's a plain proposal dict for the mail-lead
+        dialog to show with checkboxes. Body text is scanned by regex
+        (phone/ИНН/объём — core/mail_lead_extract.py); an xlsx/csv
+        attachment additionally gets a real table lookup (a header row's
+        column names mapped to fields), which is more precise than
+        regex whenever it finds a match, so it's layered *over* the
+        body-text proposal rather than replaced by it — a table hit for
+        "volume" wins over a looser regex hit for the same field, but a
+        body-only phone number still comes through untouched. PDF/Word
+        attachments don't have a grid this function can read (see
+        core/mail_lead_extract.py's own docstring) — only the message
+        body's regex extraction covers them, matching the checklist's
+        "из PDF и Word текст разбирается регулярными выражениями" (the
+        message body's own text already goes through that same path).
+        """
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return {}
+        proposals = mail_lead_extract.extract_body_fields(message["body_text"] or "")
+        for attachment in self.db.list_mail_attachments(message_id):
+            path = attachment["path"]
+            if not path:
+                continue
+            ext = Path(path).suffix.lower()
+            try:
+                if ext == ".xlsx":
+                    grid_sheets = mail_attachment_text.read_xlsx_grid(path)
+                    grid = grid_sheets[0][1] if grid_sheets else []
+                elif ext == ".csv":
+                    grid = mail_attachment_text.read_csv_grid(path)
+                else:
+                    continue
+            except Exception:  # noqa: BLE001 — untrusted attachment, never fails the dialog over it
+                continue
+            proposals.update(mail_lead_extract.extract_table_fields(grid))
+        return proposals
+
+    def matched_direction_id(self, message_id: int) -> int | None:
+        """"Направление из сработавшего ключевого слова" (П9) — reuses
+        mail_triage.matched_direction() over the same fields/attachments-
+        text shape score_message() already builds, but without touching
+        the message's own stored score (see _triage_fields())."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        fields, attachments_text = self._triage_fields(message)
+        directions = self._triage_directions()
+        direction = mail_triage.matched_direction(fields, attachments_text, directions)
+        return direction["id"] if direction is not None else None
+
+    def _maybe_start_reply_reminder(self, message_id: int) -> None:
+        message = self.db.get_mail_message(message_id)
+        if message is None or not message["lead_id"]:
+            return
+        due = (dt.datetime.now().astimezone()
+               + dt.timedelta(hours=self.REPLY_REMINDER_HOURS)).isoformat(timespec="seconds")
+        self.db.set_lead_field(message["lead_id"], next_action_at=due,
+                                next_action_text=self._REPLY_REMINDER_TEXT)
+
+    def _clear_reply_reminder(self, thread_id: int | None) -> None:
+        """Called after a reply actually sends (send_draft()) — "ответ
+        клиенту... гасит напоминание «мы ждём ответа»" from the
+        checklist, read the other way round from how it's worded there:
+        it's *our* reply that clears *our own* "we owe them one"
+        reminder. Only clears a reminder that's this feature's own (see
+        _REPLY_REMINDER_TEXT) — never a human's manually-set one that
+        happens to still be pending."""
+        if not thread_id:
+            return
+        thread = self.db.get_mail_thread(thread_id)
+        if thread is None or not thread["lead_id"]:
+            return
+        lead = self.db.get_lead(thread["lead_id"])
+        if lead is None or lead["next_action_text"] != self._REPLY_REMINDER_TEXT:
+            return
+        self.db.set_lead_field(lead["id"], next_action_at=None, next_action_text=None)
 
     # ---- «тело по требованию» -----------------------------------------
     def fetch_body(self, message_id: int) -> None:
@@ -346,10 +485,14 @@ class MailService:
     def _triage_directions(self) -> list[dict]:
         """direction.keywords/stop_words are stored as JSON text — decoded
         here, once per score(), so core/mail_triage.py never has to know
-        that's how they're persisted."""
+        that's how they're persisted. "id" rides along unused by score()
+        itself — matched_direction_id() (П9) reads it off whichever
+        direction matched_direction() picks, and this is the one place
+        that list gets built."""
         out = []
         for d in self.db.list_directions(enabled_only=True):
             out.append({
+                "id": d["id"],
                 "name": d["name"],
                 "keywords": json.loads(d["keywords"] or "[]"),
                 "stop_words": json.loads(d["stop_words"] or "[]"),
@@ -1170,6 +1313,8 @@ class MailService:
         self._append_sent_copy(mailbox, raw)
         self._cleanup_server_draft(mailbox, draft)
         self.db.mark_mail_draft_sent(draft_id)
+        if reply_message is not None:
+            self._clear_reply_reminder(reply_message["thread_id"])
 
     def _append_sent_copy(self, mailbox, raw: bytes) -> None:
         """Best-effort — the message has already left the network by the

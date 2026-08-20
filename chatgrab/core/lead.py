@@ -80,11 +80,15 @@ SOURCE_TYPE_CHAT = "chat"
 SOURCE_TYPE_DM = "dm"
 SOURCE_TYPE_BOT = "bot"
 SOURCE_TYPE_MANUAL = "manual"
+# П9: a lead created from an email thread — see
+# services/mail_service.py: create_lead_from_message().
+SOURCE_TYPE_EMAIL = "email"
 SOURCE_TYPE_LABELS = {
     SOURCE_TYPE_CHAT: "из чата",
     SOURCE_TYPE_DM: "из личных сообщений",
     SOURCE_TYPE_BOT: "от бота",
     SOURCE_TYPE_MANUAL: "добавлен вручную",
+    SOURCE_TYPE_EMAIL: "из почты",
 }
 
 # bot_leads.origin_channel — С10: attribution by first touch, doesn't

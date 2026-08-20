@@ -17,10 +17,14 @@ from chatgrab.core import lead as lead_domain
 paths, db = fresh_db("cgfunnels")
 
 
-print("== миграция 013 сидирует ровно одну воронку с теми же кодами/подписями/цветами ==")
+print("== миграция 013 сидирует «Телеграм · биржа» с теми же кодами/подписями/цветами ==")
 funnels = db.list_funnels()
-assert len(funnels) == 1, funnels
-default_funnel = funnels[0]
+# П9's migration 020 seeds a second funnel ("Почта · прямой запрос") in
+# this same fresh_db() run — 013's own seed is picked out by channel
+# rather than assumed to be the only row, so this test still only
+# verifies what 013 itself produced.
+assert len(funnels) == 2, funnels
+default_funnel = next(f for f in funnels if f["channel"] == lead_domain.DEFAULT_FUNNEL_CHANNEL)
 assert default_funnel["name"] == lead_domain.DEFAULT_FUNNEL_NAME
 assert default_funnel["channel"] == lead_domain.DEFAULT_FUNNEL_CHANNEL
 stages = db.list_funnel_stages(default_funnel["id"])
@@ -42,6 +46,10 @@ print("  ok")
 
 
 print("\n== вторая воронка со своими кодами — в т.ч. совпадающими с первой ==")
+# Своя тестовая воронка, не migration 020's seeded одноимённая — этому
+# тесту (С10) нужна воронка с *произвольными* этапами/кодами, а не
+# П9's конкретный набор, так что она просто заведена отдельно здесь и
+# нигде не смешивается с той, что видна через get_funnel_by_channel().
 mail_funnel_id = db.create_funnel("Почта · прямой запрос", lead_domain.ORIGIN_CHANNEL_EMAIL)
 db.create_funnel_stage(mail_funnel_id, "new", "новое обращение", kind=lead_domain.KIND_OPEN,
                         color_bg="rgba(1,2,3,40)", color_fg="#111", color_dot="#222")
@@ -196,7 +204,11 @@ print("  ok")
 print("\n-- FunnelsScreen: список воронок, добавление воронки и этапа, реордер, удаление --")
 screen = FunnelsScreen(stub_ctx, lambda *a, **kw: None)
 screen.on_show()
-assert screen.funnel_list.count() == 2
+# Три к этому моменту: 013's «Телеграм · биржа», 020's «Почта · прямой
+# запрос», и mail_funnel_id, заведённая этим файлом чуть выше — не та
+# же воронка, что 020's (см. комментарий при её создании), просто ещё
+# одна с тем же каналом "email".
+assert screen.funnel_list.count() == 3
 screen.new_funnel_name.setText("Тестовая воронка")
 screen._on_pick_color("#4f7cff")
 
@@ -212,7 +224,7 @@ try:
     screen._on_add_funnel()
 finally:
     funnels_screen_module.QInputDialog.getText = original_input_dialog
-assert screen.funnel_list.count() == 3
+assert screen.funnel_list.count() == 4
 new_funnel = next(f for f in db.list_funnels() if f["name"] == "Тестовая воронка")
 assert len(db.list_funnel_stages(new_funnel["id"])) == 1, "новая воронка должна сразу получить один этап"
 

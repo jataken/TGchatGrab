@@ -375,6 +375,60 @@ def _up_mail_triage(conn: sqlite3.Connection, _ctx: dict) -> None:
             conn.execute(f"ALTER TABLE mail_message ADD COLUMN {name} {coltype};")
 
 
+# П9's own funnel — separate from С10's DEFAULT_FUNNEL_STAGES (that one
+# is the Telegram funnel's seed data, this one mail's). Lives here, not
+# in core/lead.py, since nothing outside this one migration ever needs
+# to re-seed it — С10's version stays in core/lead.py because
+# test_core_no_qt.py plugs it into the pure functions directly.
+_MAIL_FUNNEL_NAME = "Почта · прямой запрос"
+_MAIL_FUNNEL_STAGES = [
+    {"code": "new", "label": "новый запрос", "kind": "open", "requires_reason": False,
+     "color_bg": "rgba(145,132,217,46)", "color_fg": "#d2cefd", "color_dot": "#b5abfc"},
+    {"code": "qualified", "label": "уточнили детали", "kind": "open", "requires_reason": False,
+     "color_bg": "rgba(100,150,220,40)", "color_fg": "#bcd8f7", "color_dot": "#8fbdf0"},
+    {"code": "quote_sent", "label": "выставлено КП", "kind": "open", "requires_reason": False,
+     "color_bg": "rgba(220,180,90,40)", "color_fg": "#f5dfa0", "color_dot": "#f0cc70"},
+    {"code": "invoiced", "label": "выставлен счёт", "kind": "open", "requires_reason": False,
+     "color_bg": "rgba(220,150,90,46)", "color_fg": "#f0c6a0", "color_dot": "#f0c6a0"},
+    {"code": "shipped", "label": "отгружено", "kind": "won", "requires_reason": False,
+     "color_bg": "rgba(120,190,150,40)", "color_fg": "#bfe5cd", "color_dot": "#7fc79b"},
+    {"code": "lost", "label": "отказ", "kind": "lost", "requires_reason": True,
+     "color_bg": "rgba(180,70,90,40)", "color_fg": "#f0c6cf", "color_dot": "#c98a9a"},
+]
+
+
+def _up_mail_leads(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П9: mail_thread.lead_id/mail_message.lead_id (a whole thread
+    becomes one lead, see schema._MAIL_THREAD_LEAD_COLUMNS's docstring),
+    plus seeding "Почта · прямой запрос" — С10's funnel machinery, a
+    second row in the same funnel/funnel_stage tables the default
+    Telegram funnel already lives in, nothing mail-specific added to
+    that schema. No down() — ALTER on existing tables plus new rows in
+    an existing table, same reasoning as every other ALTER-only step."""
+    for name, coltype in schema._MAIL_THREAD_LEAD_COLUMNS:
+        if not schema._column_exists(conn, "mail_thread", name):
+            conn.execute(f"ALTER TABLE mail_thread ADD COLUMN {name} {coltype};")
+    for name, coltype in schema._MAIL_MESSAGE_LEAD_COLUMNS:
+        if not schema._column_exists(conn, "mail_message", name):
+            conn.execute(f"ALTER TABLE mail_message ADD COLUMN {name} {coltype};")
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    cur = conn.execute(
+        "INSERT INTO funnel(name, channel, order_index, created_at) VALUES (?, ?, 1, ?)",
+        (_MAIL_FUNNEL_NAME, lead_domain.ORIGIN_CHANNEL_EMAIL, now),
+    )
+    funnel_id = cur.lastrowid
+    for i, stage in enumerate(_MAIL_FUNNEL_STAGES):
+        conn.execute(
+            "INSERT INTO funnel_stage"
+            "(funnel_id, code, label, kind, order_index, requires_reason, color_bg, color_fg, color_dot) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (funnel_id, stage["code"], stage["label"], stage["kind"], i,
+             1 if stage["requires_reason"] else 0,
+             stage["color_bg"], stage["color_fg"], stage["color_dot"]),
+        )
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -407,6 +461,10 @@ MIGRATIONS: list[Migration] = [
               _up_mail_labels, _down_mail_labels),
     Migration("019", "mail: triage scoring (bulk-mail header flags + stored score)",
               _up_mail_triage),
+    # PLAN.md's П9 checklist guessed "018" for this before П6 claimed it
+    # (see П6's journal entry) — same non-issue as every prior instance.
+    Migration("020", "mail: thread/message lead_id + seed the mail funnel",
+              _up_mail_leads),
 ]
 
 

@@ -956,6 +956,17 @@ _MAIL_MESSAGE_TRIAGE_COLUMNS = [
     ("triage_reasons", "TEXT"),
 ]
 
+# П9 (migration 020) — mail leads. A thread carries the lead_id (a whole
+# conversation becomes one lead, not one per message); mail_message gets
+# its own copy purely as a fast per-message join key for the "мы не
+# ответили" reminder scan (see services/mail_service.py), which needs
+# "does this incoming message belong to a lead-linked thread" without a
+# join to mail_thread on every tick. Kept in sync by
+# db/mixins/mail.py: set_mail_thread_lead(), which writes both columns
+# together — never set independently anywhere else.
+_MAIL_THREAD_LEAD_COLUMNS = [("lead_id", "INTEGER")]
+_MAIL_MESSAGE_LEAD_COLUMNS = [("lead_id", "INTEGER")]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
