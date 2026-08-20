@@ -33,6 +33,7 @@ from .screens.reports_screen import ReportsScreen
 from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
 from .tray import TrayController
+from .widget_window import WidgetWindow
 
 # The app is three functional blocks — collecting from Telegram chats,
 # running bots on top of the same account, and the leads those two feed —
@@ -234,10 +235,15 @@ class MainWindow(QMainWindow):
         self._sidebar_timer.timeout.connect(self._refresh_sidebar)
         self._sidebar_timer.start(2000)
 
+        # П8: a separate top-level window, not part of the stack above —
+        # constructed before the tray so its show_and_raise can be handed
+        # to TrayController as the "Показать виджет" menu action.
+        self.widget_window = WidgetWindow(ctx, on_open_thread=self._on_widget_open_thread)
+
         # Set before the tray exists: quit_app flips it so closeEvent knows
         # the close is a real exit rather than a minimise-to-tray.
         self.allow_close = False
-        self.tray = TrayController(self, ctx)
+        self.tray = TrayController(self, ctx, on_show_widget=self.widget_window.show_and_raise)
         # A watch-list match is the one collection event worth interrupting
         # for — it is what the user explicitly asked to be told about.
         ctx.watch_service.on_hit = self._on_watch_hit
@@ -335,6 +341,14 @@ class MainWindow(QMainWindow):
             f"Похоже на {category}: {subject}",
             f"{who} · {mailbox['address'] if mailbox else '?'} · балл {score}",
             on_click=lambda: self.navigate("mail", mailbox_id=mailbox_id, thread_id=thread_id))
+
+    def _on_widget_open_thread(self, mailbox_id: int, thread_id: int) -> None:
+        # П8: «клик по письму открывает главное окно на этой цепочке» —
+        # same show/raise/activate the tray icon uses, then the same
+        # deep-link navigate() П7's tray-notification click already goes
+        # through, not a second, parallel path to the same destination.
+        self.tray.show_window()
+        self.navigate("mail", mailbox_id=mailbox_id, thread_id=thread_id)
 
     def _on_bot_selector_changed(self, _index: int) -> None:
         self.ctx.bot_selection.set_current(self.bot_selector.currentData())

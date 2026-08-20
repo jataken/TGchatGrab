@@ -90,9 +90,10 @@ class TrayController:
     unreachable, a bot died. Ordinary collection progress stays in the log,
     or the tray would cry wolf all day and get muted."""
 
-    def __init__(self, window, ctx):
+    def __init__(self, window, ctx, on_show_widget=None):
         self.window = window
         self.ctx = ctx
+        self.on_show_widget = on_show_widget
         self.tray: QSystemTrayIcon | None = None
         self._last_conn_ok: bool | None = None
         self._notified_chat_errors: set[int] = set()
@@ -117,6 +118,10 @@ class TrayController:
         self.open_action = QAction("Открыть ChatGrab", menu)
         self.open_action.triggered.connect(self.show_window)
         menu.addAction(self.open_action)
+        if self.on_show_widget:
+            widget_action = QAction("Показать виджет", menu)
+            widget_action.triggered.connect(self.on_show_widget)
+            menu.addAction(widget_action)
         menu.addSeparator()
         self.status_action = QAction("", menu)
         self.status_action.setEnabled(False)

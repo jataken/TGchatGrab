@@ -97,7 +97,22 @@ for key in keys:
         print(f"FAIL: {key}")
         traceback.print_exc()
 
+# П8: не пункт навигации — отдельное верхнеуровневое окно, строится и
+# проверяется отдельно от цикла по экранам выше.
+try:
+    from chatgrab.ui.widget_window import WidgetWindow
+    widget = WidgetWindow(ctx, on_open_thread=lambda *a: None)
+    widget.show()
+    app.processEvents()
+    widget.refresh()
+    app.processEvents()
+    print("OK:   widget_window")
+except Exception:
+    failed.append("widget_window")
+    print("FAIL: widget_window")
+    traceback.print_exc()
+
 if failed:
     print("\nЭКРАНЫ С ОШИБКАМИ:", ", ".join(failed))
     sys.exit(1)
-print(f"\nВСЕ {len(keys)} ЭКРАНОВ ОТКРЫВАЮТСЯ")
+print(f"\nВСЕ {len(keys)} ЭКРАНОВ ОТКРЫВАЮТСЯ, ВИДЖЕТ СТРОИТСЯ")
