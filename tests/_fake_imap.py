@@ -96,11 +96,25 @@ class FakeImapConnection:
         self.folders[name]["subscribed"] = False
         return "OK", [b"unsubscribed"]
 
+    @staticmethod
+    def _allocate_uid(info: dict) -> int:
+        """Real IMAP UIDs are strictly increasing and never reused, even
+        once every message in a folder has been deleted (RFC 3501) — so
+        this tracks its own counter rather than deriving "next" from
+        whatever's currently present, which would silently reuse an id
+        the moment a folder emptied out and mask a real UID-collision
+        bug the same shape as the one this fake's earlier version did
+        mask (see П5's journal, PLAN.md)."""
+        current = info.get("_uid_counter", max(info["messages"], default=0))
+        next_uid = current + 1
+        info["_uid_counter"] = next_uid
+        return next_uid
+
     def append(self, folder, flags, date_time, message):
         if folder not in self.folders:
             return "NO", [b"no such folder"]
         info = self.folders[folder]
-        next_uid = (max(info["messages"]) + 1) if info["messages"] else 1
+        next_uid = self._allocate_uid(info)
         info["messages"][next_uid] = message
         if flags:
             names = flags.strip("()").split()
@@ -191,7 +205,7 @@ class FakeImapConnection:
             return "NO", [b"no such message"]
         raw = info["messages"].pop(u)
         flags = info.get("flags", {}).pop(u, set())
-        next_uid = (max(dest_info["messages"]) + 1) if dest_info["messages"] else 1
+        next_uid = self._allocate_uid(dest_info)
         dest_info["messages"][next_uid] = raw
         if flags:
             dest_info.setdefault("flags", {})[next_uid] = set(flags)
@@ -208,7 +222,7 @@ class FakeImapConnection:
         if u not in info["messages"]:
             return "NO", [b"no such message"]
         raw = info["messages"][u]
-        next_uid = (max(dest_info["messages"]) + 1) if dest_info["messages"] else 1
+        next_uid = self._allocate_uid(dest_info)
         dest_info["messages"][next_uid] = raw
         return "OK", [b"copied"]
 

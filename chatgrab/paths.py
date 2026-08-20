@@ -56,6 +56,13 @@ class Paths:
     def mail_message_dir(self, mailbox_id: int, uid: int) -> Path:
         return self.mail_dir / str(mailbox_id) / str(uid)
 
+    def mail_draft_dir(self, draft_id: int) -> Path:
+        """П5: files attached to an outgoing draft are copied here — not
+        referenced at their original path — so a draft an app restart
+        finds again isn't broken by the user having since moved or
+        deleted the source file."""
+        return self.mail_dir / "drafts" / str(draft_id)
+
     def photo_path(self, chat_id: int, message_id: int) -> Path:
         return self.photos_dir / str(chat_id) / f"{message_id}.jpg"
 

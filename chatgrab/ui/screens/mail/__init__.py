@@ -22,6 +22,7 @@ from ...format import human_size, short_dt
 from ...util import fire, run_blocking
 from ...widgets import button, card, chip, h1, muted
 from .attachment_view import AttachmentViewerDialog
+from .compose import ComposeDialog, DraftsListDialog
 
 # П-4: "Заявка.pdf.exe" must still read as executable — checked against
 # every dot-separated suffix, not just the last one, so a double
@@ -117,6 +118,19 @@ class MessagePane(QWidget):
 
         top.addWidget(muted(short_dt(message["date"])))
         lay.addLayout(top)
+
+        reply_row = QHBoxLayout()
+        reply_btn = button("Ответить", "ghost")
+        reply_btn.clicked.connect(lambda: self._on_compose(kind="reply"))
+        reply_row.addWidget(reply_btn)
+        reply_all_btn = button("Ответить всем", "ghost")
+        reply_all_btn.clicked.connect(lambda: self._on_compose(kind="reply_all"))
+        reply_row.addWidget(reply_all_btn)
+        forward_btn = button("Переслать", "ghost")
+        forward_btn.clicked.connect(lambda: self._on_compose(kind="forward"))
+        reply_row.addWidget(forward_btn)
+        reply_row.addStretch(1)
+        lay.addLayout(reply_row)
 
         self.body_container = QVBoxLayout()
         self.body_container.setSpacing(6)
@@ -215,6 +229,19 @@ class MessagePane(QWidget):
         # П-4: opens a viewer inside the app — never runs the file, no
         # matter what its extension claims to be.
         AttachmentViewerDialog(self.ctx, attachment, parent=self).exec()
+
+    # ---- ответить / ответить всем / переслать (П5) -------------------------
+    def _on_compose(self, kind: str) -> None:
+        message_id = self.message["id"]
+        if kind == "reply":
+            draft_id = self.ctx.mail_service.start_reply_draft(message_id, reply_all=False)
+        elif kind == "reply_all":
+            draft_id = self.ctx.mail_service.start_reply_draft(message_id, reply_all=True)
+        else:
+            draft_id = self.ctx.mail_service.start_forward_draft(message_id)
+        if draft_id is None:
+            return
+        ComposeDialog(self.ctx, draft_id, parent=self).exec()
 
     # ---- flags / move / trash (П4) ---------------------------------------
     def _update_trash_button(self) -> None:
@@ -322,6 +349,12 @@ class MailScreen(QWidget):
         header.setContentsMargins(40, 22, 40, 10)
         header.addWidget(h1("Почта"))
         header.addStretch(1)
+        self.drafts_btn = button("Черновики", "ghost")
+        self.drafts_btn.clicked.connect(self._on_show_drafts)
+        header.addWidget(self.drafts_btn)
+        compose_btn = button("Написать", "primary")
+        compose_btn.clicked.connect(self._on_compose_new)
+        header.addWidget(compose_btn)
         manage_btn = button("Ящики", "secondary")
         manage_btn.clicked.connect(lambda: self.navigate("mail_settings"))
         header.addWidget(manage_btn)
@@ -344,6 +377,22 @@ class MailScreen(QWidget):
 
     def on_show(self, **kwargs) -> None:
         self._load_mailboxes()
+
+    # ---- написать / черновики (П5) ----------------------------------------
+    def _on_compose_new(self) -> None:
+        if self.selected_mailbox_id is None:
+            QMessageBox.information(self, "Выберите ящик", "Сначала выберите ящик слева.")
+            return
+        draft_id = self.ctx.mail_service.start_new_draft(self.selected_mailbox_id)
+        ComposeDialog(self.ctx, draft_id, parent=self).exec()
+        self._load_threads()
+
+    def _on_show_drafts(self) -> None:
+        if self.selected_mailbox_id is None:
+            QMessageBox.information(self, "Выберите ящик", "Сначала выберите ящик слева.")
+            return
+        DraftsListDialog(self.ctx, self.selected_mailbox_id, parent=self).exec()
+        self._load_threads()
 
     # ---- левая колонка: ящики и папки ----------------------------------
     def _build_mailbox_column(self) -> QWidget:

@@ -83,16 +83,30 @@ conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables_before and "outbox_sends" in tables_before and "mailbox" in tables_before
 
-# 014 (почта) — самая свежая миграция с down(): 015 новее, но у неё
-# down() нет (она ALTER'ит mail_message и пересобирает mail_fts, а не
-# только добавляет новое — тот же случай, что 008/009/011/012 ниже), так
-# что откат пропускает её и берёт 014 — таблицы mail_* добавлены с нуля,
-# откатить нечего терять.
+# 017 (личности и черновики) — теперь самая свежая миграция вообще, и у
+# неё есть down(): mail_identity/mail_draft/mail_draft_attachment —
+# новые, самостоятельные таблицы, ничего существующего не ALTER'ит,
+# откатывать нечего терять, тот же случай, что 007/010/014.
+undone_newest = migrations.rollback_last(conn)
+print("  откачена миграция:", undone_newest)
+assert undone_newest == "017", "017 — самая свежая обратимая миграция, должна откатиться первой"
+tables_after_newest = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert not {"mail_identity", "mail_draft", "mail_draft_attachment"} & tables_after_newest, \
+    "все три таблицы 017 должны исчезнуть"
+assert tables_before - tables_after_newest == {"mail_identity", "mail_draft", "mail_draft_attachment"}, \
+    "откат 017 не должен трогать ничего, кроме своих таблиц"
+
+# 014 (почта) — следующая по свежести с down(): 015/016 новее, но у них
+# down() нет (015 ALTER'ит mail_message и пересобирает mail_fts, 016
+# ALTER'ит mail_folder/mail_message и добавляет mail_action_queue — ни
+# то ни другое не только добавляет новое, тот же случай, что
+# 008/009/011/012 ниже), так что откат пропускает обе и берёт 014 —
+# таблицы mail_* (кроме них) добавлены с нуля, откатить нечего терять.
 undone0 = migrations.rollback_last(conn)
 print("  откачена миграция:", undone0)
-assert undone0 == "014", "014 — самая свежая обратимая миграция, должна откатиться первой"
+assert undone0 == "014", "014 — следующая по свежести обратимая миграция после 017"
 tables_after0 = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-removed0 = tables_before - tables_after0
+removed0 = tables_after_newest - tables_after0
 # mail_action_queue — исключение: её создала 016 (сама без down(), тот же
 # случай, что 015/012 ниже), а не 014, так что откат 014 её не трогает —
 # ровно то же самое "более поздняя ALTER/ADD-таблица переживает откат

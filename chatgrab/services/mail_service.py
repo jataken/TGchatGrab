@@ -18,12 +18,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import threading
+from pathlib import Path
 
-from ..core import mail_attachment_text, mail_thread
+from ..bots.templating import render as render_template
+from ..core import mail_attachment_text, mail_compose, mail_thread
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient, ImapError
+from ..integrations.mail.smtp_client import SmtpClient
 from ..paths import Paths
 from ..security import SecurityService
 
@@ -34,7 +38,7 @@ TICK_SECONDS = 180
 
 class MailService:
     def __init__(self, db: Database, paths: Paths, security: SecurityService,
-                 on_log=None, client_factory=None):
+                 on_log=None, client_factory=None, smtp_factory=None):
         self.db = db
         self.paths = paths
         self.security = security
@@ -43,6 +47,9 @@ class MailService:
         # real socket-backed ImapClient — same seam BitrixSyncService's
         # client_factory uses for aiohttp.
         self._client_factory = client_factory or ImapClient
+        # П5: same seam, for the one place this app sends mail — see
+        # send_draft() and integrations/mail/smtp_client.py.
+        self._smtp_factory = smtp_factory or SmtpClient
         self._task: asyncio.Task | None = None
         # П4: IDLE workers, one per enabled mailbox, live only between
         # start() and stop() — see _ensure_idle_workers(). Kept inert
@@ -661,6 +668,250 @@ class MailService:
             await loop.run_in_executor(None, self._sync_mailbox, mailbox_id)
         except Exception:
             _logger.warning("Почта: ресинк по IDLE-событию ящика %s не удался", mailbox_id, exc_info=True)
+
+    # ---- личности / подпись (П5) -----------------------------------------
+    def render_signature(self, identity_id: int | None) -> str:
+        if not identity_id:
+            return ""
+        identity = self.db.get_mail_identity(identity_id)
+        if identity is None or not identity["signature"]:
+            return ""
+        values = {"имя": identity["display_name"] or "", "email": identity["from_address"] or "",
+                  "дата": now_iso()[:10]}
+        return render_template(identity["signature"], values)
+
+    def _compose_body(self, tail_block: str, identity_id: int | None) -> str:
+        """tail_block is the quoted/forwarded text, or "" for a new
+        message. Placed *after* the signature, since that's where a
+        person types their own new text: above the signature, above any
+        quote — the same layout every mainstream mail client uses."""
+        signature = self.render_signature(identity_id)
+        parts = [""]  # место для собственного текста
+        if signature:
+            parts.append(f"--\n{signature}")
+        if tail_block:
+            parts.append(tail_block)
+        return "\n\n".join(parts)
+
+    # ---- черновики: написать / ответить / переслать (П5) ------------------
+    def start_new_draft(self, mailbox_id: int) -> int:
+        identity = self.db.get_default_mail_identity(mailbox_id)
+        identity_id = identity["id"] if identity else None
+        return self.db.create_mail_draft(
+            mailbox_id, kind="new", identity_id=identity_id, body_text=self._compose_body("", identity_id))
+
+    def start_reply_draft(self, message_id: int, reply_all: bool = False) -> int | None:
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        to, cc, identity_id = self._reply_recipients(message, reply_all)
+        quoted = mail_compose.quote_body(
+            message["body_text"] or "",
+            mail_compose.quote_header(message["sender_name"], message["sender_address"], message["date"]))
+        return self.db.create_mail_draft(
+            message["mailbox_id"], kind="reply_all" if reply_all else "reply", identity_id=identity_id,
+            in_reply_to_message_id=message_id, to_addresses=to, cc_addresses=cc,
+            subject=mail_compose.reply_subject(message["subject"]),
+            body_text=self._compose_body(quoted, identity_id))
+
+    def _reply_recipients(self, message, reply_all: bool) -> tuple[list[str], list[str], int | None]:
+        mailbox = self.db.get_mailbox(message["mailbox_id"])
+        identity = self.db.get_default_mail_identity(message["mailbox_id"])
+        own_address = (mailbox["address"] or "").strip().lower() if mailbox else None
+        to = [message["sender_address"]] if message["sender_address"] else []
+        cc: list[str] = []
+        if reply_all:
+            already = {a.strip().lower() for a in to if a}
+            for addr in json.loads(message["to_addresses"] or "[]"):
+                key = (addr or "").strip().lower()
+                if key and key != own_address and key not in already:
+                    cc.append(addr)
+                    already.add(key)
+        return to, cc, (identity["id"] if identity else None)
+
+    def start_forward_draft(self, message_id: int) -> int | None:
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        identity = self.db.get_default_mail_identity(message["mailbox_id"])
+        identity_id = identity["id"] if identity else None
+        block = mail_compose.forward_block(
+            message["sender_name"], message["sender_address"], message["date"],
+            json.loads(message["to_addresses"] or "[]"), message["subject"], message["body_text"])
+        draft_id = self.db.create_mail_draft(
+            message["mailbox_id"], kind="forward", identity_id=identity_id,
+            in_reply_to_message_id=message_id, subject=mail_compose.forward_subject(message["subject"]),
+            body_text=self._compose_body(block, identity_id))
+        for att in self.db.list_mail_attachments(message_id):
+            if att["path"] and Path(att["path"]).exists():
+                self._copy_into_draft(draft_id, att["filename"], att["path"])
+        return draft_id
+
+    def create_llm_draft(self, message_id: int, generated_text: str) -> int | None:
+        """П-1: the LLM path (ui/screens/mail/compose.py calls
+        integrations/llm.py directly, the same way lead_card_assistant.py
+        already does for Telegram leads) lands here and *only* here —
+        this method writes a draft, author='assistant', and does not
+        send anything; sending still needs the same human click through
+        the same confirmation screen as any other draft."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        to, cc, identity_id = self._reply_recipients(message, reply_all=False)
+        quoted = mail_compose.quote_body(
+            message["body_text"] or "",
+            mail_compose.quote_header(message["sender_name"], message["sender_address"], message["date"]))
+        body = self._compose_body(f"{generated_text}\n\n{quoted}" if generated_text else quoted, identity_id)
+        return self.db.create_mail_draft(
+            message["mailbox_id"], kind="reply", identity_id=identity_id,
+            in_reply_to_message_id=message_id, to_addresses=to, cc_addresses=cc,
+            subject=mail_compose.reply_subject(message["subject"]), body_text=body, author="assistant")
+
+    # ---- вложения черновика (П5) ------------------------------------------
+    def add_draft_attachment(self, draft_id: int, source_path: str) -> None:
+        source = Path(source_path)
+        dest_dir = self.paths.mail_draft_dir(draft_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / source.name
+        shutil.copy2(source, dest)
+        self.db.add_mail_draft_attachment(draft_id, source.name, str(dest), dest.stat().st_size)
+
+    def _copy_into_draft(self, draft_id: int, filename: str, source_path: str) -> None:
+        dest_dir = self.paths.mail_draft_dir(draft_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / filename
+        shutil.copy2(source_path, dest)
+        self.db.add_mail_draft_attachment(draft_id, filename, str(dest), dest.stat().st_size)
+
+    # ---- сохранение черновика на сервере (П5) ------------------------------
+    def sync_draft_to_server(self, draft_id: int) -> None:
+        """Best-effort, like every other network call here — a failure
+        leaves the draft exactly as saved locally (autosave, separate
+        from this), just not mirrored to the server's Drafts folder
+        yet. Deletes any previous server copy before appending the new
+        one — IMAP has no "replace an APPEND", so a re-saved draft is a
+        fresh message server-side, same as every real mail client's own
+        drafts sync. The new copy's own UID isn't returned reliably by
+        APPEND (APPENDUID needs UIDPLUS) — read back afterward from
+        mail_folder.last_uid straight after resyncing Drafts, the same
+        "ask the server what's actually there" approach used for a
+        confirmed move (П4), on the same single-writer assumption that
+        holds for one person's own drafts folder."""
+        draft = self.db.get_mail_draft(draft_id)
+        if draft is None:
+            return
+        mailbox = self.db.get_mailbox(draft["mailbox_id"])
+        if mailbox is None:
+            return
+        drafts_folder = self.db.get_mail_folder_by_special_use(mailbox["id"], "Drafts")
+        if drafts_folder is None:
+            return
+        raw = self._build_draft_mime(draft, mailbox)
+        client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+        try:
+            client.connect(mailbox["address"], self._password_for(mailbox))
+        except Exception as e:
+            _logger.info("Почта: черновик %s не сохранён на сервере — нет соединения: %s", draft_id, e)
+            return
+        try:
+            if draft["server_uid"]:
+                try:
+                    client.permanently_delete(drafts_folder["name"], draft["server_uid"])
+                except ImapError:
+                    pass
+            client.append_message(drafts_folder["name"], raw, flags=["\\Draft"])
+            self._sync_one_folder(client, mailbox["id"], self.db.get_mail_folder(mailbox["id"], drafts_folder["name"]))
+        finally:
+            client.close()
+        updated_folder = self.db.get_mail_folder(mailbox["id"], drafts_folder["name"])
+        if updated_folder and updated_folder["last_uid"]:
+            self.db.update_mail_draft(draft_id, server_uid=updated_folder["last_uid"])
+
+    def _build_draft_mime(self, draft, mailbox) -> bytes:
+        identity = self.db.get_mail_identity(draft["identity_id"]) if draft["identity_id"] else None
+        from_address = identity["from_address"] if identity else mailbox["address"]
+        from_name = identity["display_name"] if identity else (mailbox["display_name"] or "")
+        to = json.loads(draft["to_addresses"] or "[]")
+        cc = json.loads(draft["cc_addresses"] or "[]")
+        attachments = [(a["filename"], a["path"]) for a in self.db.list_mail_draft_attachments(draft["id"])
+                       if a["path"]]
+        return mail_compose.build_mime_message(
+            from_address, from_name, to, cc, draft["subject"] or "(без темы)", draft["body_text"],
+            attachments=attachments)
+
+    # ---- отправка (П5) — единственная функция во всём приложении, которая
+    # отправляет письмо; вызывается только с экрана подтверждения отправки,
+    # который нельзя проскочить (П-1) --------------------------------------
+    def send_draft(self, draft_id: int) -> None:
+        draft = self.db.get_mail_draft(draft_id)
+        if draft is None:
+            raise ValueError("черновик не найден")
+        mailbox = self.db.get_mailbox(draft["mailbox_id"])
+        if mailbox is None:
+            raise ValueError("ящик не найден")
+        to = json.loads(draft["to_addresses"] or "[]")
+        cc = json.loads(draft["cc_addresses"] or "[]")
+        if not to:
+            raise ValueError("не указан получатель")
+        if not mailbox["smtp_host"]:
+            raise ValueError("для этого ящика не задан SMTP-сервер — укажите его в настройках ящика")
+
+        identity = self.db.get_mail_identity(draft["identity_id"]) if draft["identity_id"] else None
+        from_address = identity["from_address"] if identity else mailbox["address"]
+
+        reply_message = (self.db.get_mail_message(draft["in_reply_to_message_id"])
+                          if draft["in_reply_to_message_id"] else None)
+        in_reply_to = reply_message["message_id"] if reply_message else None
+        references = (mail_compose.build_references(reply_message["refs"], reply_message["message_id"])
+                      if reply_message else None)
+        attachments = [(a["filename"], a["path"]) for a in self.db.list_mail_draft_attachments(draft_id)
+                       if a["path"]]
+        raw = mail_compose.build_mime_message(
+            from_address, identity["display_name"] if identity else (mailbox["display_name"] or ""),
+            to, cc, draft["subject"] or "(без темы)", draft["body_text"],
+            in_reply_to=in_reply_to, references=references, attachments=attachments)
+
+        smtp = self._smtp_factory(mailbox["smtp_host"], mailbox["smtp_port"] or 465)
+        smtp.send(mailbox["address"], self._password_for(mailbox), from_address, to + cc, raw)
+
+        self._append_sent_copy(mailbox, raw)
+        self._cleanup_server_draft(mailbox, draft)
+        self.db.mark_mail_draft_sent(draft_id)
+
+    def _append_sent_copy(self, mailbox, raw: bytes) -> None:
+        """Best-effort — the message has already left the network by the
+        time this runs, so a failure here means "Sent doesn't have a
+        copy yet", never "undo the send that already happened"."""
+        try:
+            sent_folder = self.db.get_mail_folder_by_special_use(mailbox["id"], "Sent")
+            if sent_folder is None:
+                return
+            client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+            client.connect(mailbox["address"], self._password_for(mailbox))
+            try:
+                client.append_message(sent_folder["name"], raw, flags=["\\Seen"])
+                self._sync_one_folder(client, mailbox["id"], self.db.get_mail_folder(mailbox["id"], sent_folder["name"]))
+            finally:
+                client.close()
+        except Exception:
+            _logger.warning("Почта: письмо отправлено, но копия в Sent не сохранена (ящик %s)",
+                             mailbox["id"], exc_info=True)
+
+    def _cleanup_server_draft(self, mailbox, draft) -> None:
+        if not draft["server_uid"]:
+            return
+        try:
+            drafts_folder = self.db.get_mail_folder_by_special_use(mailbox["id"], "Drafts")
+            if drafts_folder is None:
+                return
+            client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+            client.connect(mailbox["address"], self._password_for(mailbox))
+            try:
+                client.permanently_delete(drafts_folder["name"], draft["server_uid"])
+            finally:
+                client.close()
+        except Exception:
+            _logger.info("Почта: письмо отправлено, серверная копия черновика не убрана (ящик %s)", mailbox["id"])
 
     # ---- "Проверить подключение" ---------------------------------------
     def test_connection(self, imap_host: str, imap_port: int, address: str, password: str) -> str:

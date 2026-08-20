@@ -794,6 +794,60 @@ _DDL_MAIL_ACTION_QUEUE_INDEXES = [
     "ON mail_action_queue(message_id) WHERE applied_at IS NULL;",
 ]
 
+# П5 (migration 017) — sending. mail_identity: several "From" personas
+# per mailbox (own name vs. a department alias), each with its own
+# signature. mail_draft: everything a compose window needs to survive an
+# app restart before a human clicks Send — author distinguishes a
+# person-written draft from an LLM-generated one (П-1: the LLM path
+# always lands here, never sends on its own). mail_draft_attachment
+# mirrors mail_attachment's shape but for files the user is about to
+# send, not ones that arrived.
+_DDL_MAIL_IDENTITY = """
+CREATE TABLE IF NOT EXISTS mail_identity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    from_address TEXT NOT NULL,
+    signature TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_MAIL_DRAFT = """
+CREATE TABLE IF NOT EXISTS mail_draft (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    identity_id INTEGER,
+    in_reply_to_message_id INTEGER,
+    kind TEXT NOT NULL DEFAULT 'new',        -- new | reply | reply_all | forward
+    to_addresses TEXT NOT NULL DEFAULT '[]',
+    cc_addresses TEXT NOT NULL DEFAULT '[]',
+    subject TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT 'human',    -- human | assistant (П-1: always a draft, never sent by itself)
+    server_uid INTEGER,                      -- копия в Drafts на сервере, если синхронизирован
+    updated_at TEXT NOT NULL,
+    sent_at TEXT
+);
+"""
+
+_DDL_MAIL_DRAFT_ATTACHMENT = """
+CREATE TABLE IF NOT EXISTS mail_draft_attachment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    size_bytes INTEGER
+);
+"""
+
+_DDL_MAIL_SEND_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_mail_identity_mailbox ON mail_identity(mailbox_id);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_draft_mailbox ON mail_draft(mailbox_id) WHERE sent_at IS NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_mail_draft_attachment_draft ON mail_draft_attachment(draft_id);",
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

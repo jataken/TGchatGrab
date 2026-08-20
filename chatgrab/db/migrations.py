@@ -284,6 +284,23 @@ def _up_mail_ops(conn: sqlite3.Connection, _ctx: dict) -> None:
         conn.execute(ddl)
 
 
+def _up_mail_send(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П5: identities and drafts — two new, standalone tables (plus
+    attachments-for-a-draft), nothing existing altered, so this gets the
+    clean-rollback shape 007/010/014 do, not 008/011/015/016's ALTER one.
+    """
+    for ddl in (schema._DDL_MAIL_IDENTITY, schema._DDL_MAIL_DRAFT, schema._DDL_MAIL_DRAFT_ATTACHMENT):
+        conn.execute(ddl)
+    for ddl in schema._DDL_MAIL_SEND_INDEXES:
+        conn.execute(ddl)
+
+
+def _down_mail_send(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS mail_draft_attachment;")
+    conn.execute("DROP TABLE IF EXISTS mail_draft;")
+    conn.execute("DROP TABLE IF EXISTS mail_identity;")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -304,6 +321,7 @@ MIGRATIONS: list[Migration] = [
               _up_mail_attachments),
     Migration("016", "mail: folder special-use, message flags, offline action queue",
               _up_mail_ops),
+    Migration("017", "mail: identities and drafts (sending)", _up_mail_send, _down_mail_send),
 ]
 
 

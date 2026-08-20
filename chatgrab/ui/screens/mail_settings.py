@@ -1,11 +1,11 @@
 """Почта → ящики: добавить, проверить подключение, включить/выключить,
-удалить, управлять папками (П4).
+удалить, управлять папками (П4) и личностями отправителя (П5).
 """
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QScrollArea, QVBoxLayout, QWidget,
+    QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
@@ -162,6 +162,107 @@ class FolderManagerDialog(QDialog):
         self._run(_go)
 
 
+class IdentityManagerDialog(QDialog):
+    """Add/edit/delete "From" personas for one mailbox, and pick which
+    one is the default a new draft starts with — П5's "несколько
+    личностей на ящик" (own name vs. a department alias, each its own
+    signature)."""
+
+    def __init__(self, ctx: AppContext, mailbox_id: int, mailbox_address: str, parent=None):
+        super().__init__(parent)
+        self.ctx = ctx
+        self.mailbox_id = mailbox_id
+        self.setWindowTitle(f"Личности — {mailbox_address}")
+        self.resize(560, 560)
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(muted(
+            "Личность — это «от кого» и подпись письма. Первая добавленная "
+            "становится личностью по умолчанию."))
+
+        form = card()
+        form_lay = QVBoxLayout(form)
+        self.name_field = FieldRow("Имя", placeholder="Иван Иванов")
+        form_lay.addWidget(self.name_field)
+        self.address_field = FieldRow("Адрес отправителя", placeholder=mailbox_address)
+        self.address_field.set_text(mailbox_address)
+        form_lay.addWidget(self.address_field)
+        form_lay.addWidget(muted("Подпись — можно использовать {имя}, {email}, {дата}"))
+        self.signature_edit = QPlainTextEdit()
+        self.signature_edit.setMaximumHeight(100)
+        form_lay.addWidget(self.signature_edit)
+        add_btn = button("Добавить личность", "secondary")
+        add_btn.clicked.connect(self._on_add)
+        form_lay.addWidget(add_btn)
+        outer.addWidget(form)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        self.list_box = QVBoxLayout(inner)
+        self.list_box.setSpacing(6)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        close_btn = button("Закрыть", "secondary")
+        close_btn.clicked.connect(self.accept)
+        outer.addWidget(close_btn)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        while self.list_box.count():
+            item = self.list_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        identities = self.ctx.db.list_mail_identities(self.mailbox_id)
+        if not identities:
+            self.list_box.addWidget(muted("Пока ни одной личности — используется адрес ящика без подписи."))
+        for identity in identities:
+            self.list_box.addWidget(self._build_row(identity))
+        self.list_box.addStretch(1)
+
+    def _build_row(self, identity) -> QWidget:
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        title = f"{identity['display_name']} <{identity['from_address']}>"
+        if identity["is_default"]:
+            title += "  · по умолчанию"
+        rl.addWidget(QLabel(title), 1)
+        if not identity["is_default"]:
+            default_btn = button("Сделать основной", "ghost")
+            default_btn.clicked.connect(lambda _c, i=identity["id"]: self._on_set_default(i))
+            rl.addWidget(default_btn)
+        del_btn = button("Удалить", "ghost")
+        del_btn.clicked.connect(lambda _c, i=identity["id"]: self._on_delete(i))
+        rl.addWidget(del_btn)
+        return row
+
+    def _on_add(self) -> None:
+        name = self.name_field.text().strip()
+        address = self.address_field.text().strip()
+        if not name or not address:
+            return
+        is_first = not self.ctx.db.list_mail_identities(self.mailbox_id)
+        self.ctx.db.add_mail_identity(
+            self.mailbox_id, name, address,
+            signature=self.signature_edit.toPlainText().strip() or None, is_default=is_first)
+        self.name_field.set_text("")
+        self.signature_edit.setPlainText("")
+        self._refresh()
+
+    def _on_set_default(self, identity_id: int) -> None:
+        self.ctx.db.set_mail_identity_default(identity_id, self.mailbox_id)
+        self._refresh()
+
+    def _on_delete(self, identity_id: int) -> None:
+        self.ctx.db.delete_mail_identity(identity_id)
+        self._refresh()
+
+
 def _ask_text(parent, title: str, label: str, initial: str) -> tuple[str, bool]:
     from PySide6.QtWidgets import QInputDialog
     return QInputDialog.getText(parent, title, label, text=initial)
@@ -220,14 +321,29 @@ class MailSettingsScreen(QWidget):
         lay.addWidget(self.advanced_btn)
 
         self.advanced_box = QWidget()
-        adv_lay = QHBoxLayout(self.advanced_box)
-        adv_lay.setContentsMargins(0, 0, 0, 0)
+        adv_outer = QVBoxLayout(self.advanced_box)
+        adv_outer.setContentsMargins(0, 0, 0, 0)
+        adv_outer.setSpacing(8)
+        adv_lay = QHBoxLayout()
         adv_lay.setSpacing(10)
         self.imap_host_field = FieldRow("IMAP-сервер", placeholder="imap.example.com")
         adv_lay.addWidget(self.imap_host_field, 1)
         self.imap_port_field = FieldRow("Порт")
         self.imap_port_field.set_text("993")
         adv_lay.addWidget(self.imap_port_field)
+        adv_outer.addLayout(adv_lay)
+        # П5: без SMTP-сервера отправка невозможна — для известных
+        # провайдеров (KNOWN_PROVIDERS) он определяется вместе с IMAP,
+        # но при ручном вводе сервера угадывать SMTP-хост так же, как
+        # IMAP-хост, было бы неверно чаще, чем верно.
+        smtp_lay = QHBoxLayout()
+        smtp_lay.setSpacing(10)
+        self.smtp_host_field = FieldRow("SMTP-сервер (для отправки)", placeholder="smtp.example.com")
+        smtp_lay.addWidget(self.smtp_host_field, 1)
+        self.smtp_port_field = FieldRow("Порт")
+        self.smtp_port_field.set_text("465")
+        smtp_lay.addWidget(self.smtp_port_field)
+        adv_outer.addLayout(smtp_lay)
         lay.addWidget(self.advanced_box)
         self.advanced_box.setVisible(False)
 
@@ -260,7 +376,12 @@ class MailSettingsScreen(QWidget):
                 port = int(self.imap_port_field.text().strip() or "993")
             except ValueError:
                 port = 993
-            return host, port, None, 465
+            smtp_host = self.smtp_host_field.text().strip() or None
+            try:
+                smtp_port = int(self.smtp_port_field.text().strip() or "465")
+            except ValueError:
+                smtp_port = 465
+            return host, port, smtp_host, smtp_port
         return autodetect(self.address_field.text().strip())
 
     def _on_test(self) -> None:
@@ -375,6 +496,9 @@ class MailSettingsScreen(QWidget):
         folders_btn = button("Папки", "ghost")
         folders_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_manage_folders(m, a))
         rl.addWidget(folders_btn)
+        identities_btn = button("Личности", "ghost")
+        identities_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_manage_identities(m, a))
+        rl.addWidget(identities_btn)
         toggle_btn = button("Выключить" if mb["enabled"] else "Включить", "ghost")
         toggle_btn.clicked.connect(lambda _c, m=mb["id"], en=mb["enabled"]: self._on_toggle(m, en))
         rl.addWidget(toggle_btn)
@@ -385,6 +509,9 @@ class MailSettingsScreen(QWidget):
 
     def _on_manage_folders(self, mailbox_id: int, address: str) -> None:
         FolderManagerDialog(self.ctx, mailbox_id, address, parent=self).exec()
+
+    def _on_manage_identities(self, mailbox_id: int, address: str) -> None:
+        IdentityManagerDialog(self.ctx, mailbox_id, address, parent=self).exec()
 
     def _on_toggle(self, mailbox_id: int, currently_enabled: int) -> None:
         self.ctx.db.set_mailbox_field(mailbox_id, enabled=0 if currently_enabled else 1)

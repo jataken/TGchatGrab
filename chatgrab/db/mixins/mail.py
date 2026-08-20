@@ -518,3 +518,111 @@ class MailMixin:
             "SELECT 1 FROM mail_action_queue WHERE message_id = ? AND applied_at IS NULL LIMIT 1",
             (message_id,))
         return row is not None
+
+    # ---- identities (П5) -------------------------------------------------
+    def add_mail_identity(self, mailbox_id: int, display_name: str, from_address: str,
+                           signature: str | None = None, is_default: bool = False) -> int:
+        if is_default:
+            self.execute("UPDATE mail_identity SET is_default = 0 WHERE mailbox_id = ?", (mailbox_id,))
+        cur = self.execute(
+            "INSERT INTO mail_identity(mailbox_id, display_name, from_address, signature, "
+            "is_default, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (mailbox_id, display_name.strip(), from_address.strip(), signature,
+             1 if is_default else 0, now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_mail_identities(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_identity WHERE mailbox_id = ? ORDER BY is_default DESC, display_name",
+            (mailbox_id,))
+
+    def get_mail_identity(self, identity_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_identity WHERE id = ?", (identity_id,))
+
+    def get_default_mail_identity(self, mailbox_id: int) -> sqlite3.Row | None:
+        row = self.query_one(
+            "SELECT * FROM mail_identity WHERE mailbox_id = ? AND is_default = 1", (mailbox_id,))
+        if row is not None:
+            return row
+        return self.query_one(
+            "SELECT * FROM mail_identity WHERE mailbox_id = ? ORDER BY id LIMIT 1", (mailbox_id,))
+
+    def set_mail_identity_default(self, identity_id: int, mailbox_id: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE mail_identity SET is_default = 0 WHERE mailbox_id = ?", (mailbox_id,))
+            self._conn.execute("UPDATE mail_identity SET is_default = 1 WHERE id = ?", (identity_id,))
+            self._conn.commit()
+
+    def update_mail_identity(self, identity_id: int, **fields: Any) -> None:
+        cols = {k: v for k, v in fields.items()
+                if k in ("display_name", "from_address", "signature")}
+        if not cols:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(f"UPDATE mail_identity SET {set_clause} WHERE id = ?",
+                     (*cols.values(), identity_id))
+
+    def delete_mail_identity(self, identity_id: int) -> None:
+        self.execute("DELETE FROM mail_identity WHERE id = ?", (identity_id,))
+
+    # ---- drafts (П5) -------------------------------------------------
+    def create_mail_draft(self, mailbox_id: int, kind: str = "new", identity_id: int | None = None,
+                           in_reply_to_message_id: int | None = None, to_addresses: list | None = None,
+                           cc_addresses: list | None = None, subject: str = "",
+                           body_text: str = "", author: str = "human") -> int:
+        cur = self.execute(
+            "INSERT INTO mail_draft(mailbox_id, identity_id, in_reply_to_message_id, kind, "
+            "to_addresses, cc_addresses, subject, body_text, author, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mailbox_id, identity_id, in_reply_to_message_id, kind,
+             json.dumps(to_addresses or [], ensure_ascii=False),
+             json.dumps(cc_addresses or [], ensure_ascii=False),
+             subject, body_text, author, now_iso()),
+        )
+        return cur.lastrowid
+
+    def get_mail_draft(self, draft_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_draft WHERE id = ?", (draft_id,))
+
+    def list_mail_drafts(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_draft WHERE mailbox_id = ? AND sent_at IS NULL ORDER BY updated_at DESC",
+            (mailbox_id,))
+
+    def update_mail_draft(self, draft_id: int, **fields: Any) -> None:
+        cols = {k: v for k, v in fields.items() if k in (
+            "identity_id", "to_addresses", "cc_addresses", "subject", "body_text", "server_uid")}
+        if not cols:
+            return
+        for key in ("to_addresses", "cc_addresses"):
+            if key in cols and not isinstance(cols[key], str):
+                cols[key] = json.dumps(cols[key], ensure_ascii=False)
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(
+            f"UPDATE mail_draft SET {set_clause}, updated_at = ? WHERE id = ?",
+            (*cols.values(), now_iso(), draft_id))
+
+    def mark_mail_draft_sent(self, draft_id: int) -> None:
+        self.execute("UPDATE mail_draft SET sent_at = ? WHERE id = ?", (now_iso(), draft_id))
+
+    def delete_mail_draft(self, draft_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM mail_draft_attachment WHERE draft_id = ?", (draft_id,))
+            self._conn.execute("DELETE FROM mail_draft WHERE id = ?", (draft_id,))
+            self._conn.commit()
+
+    def add_mail_draft_attachment(self, draft_id: int, filename: str, path: str,
+                                   size_bytes: int | None = None) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_draft_attachment(draft_id, filename, path, size_bytes) "
+            "VALUES (?, ?, ?, ?)",
+            (draft_id, filename, path, size_bytes))
+        return cur.lastrowid
+
+    def list_mail_draft_attachments(self, draft_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_draft_attachment WHERE draft_id = ? ORDER BY id", (draft_id,))
+
+    def remove_mail_draft_attachment(self, attachment_id: int) -> None:
+        self.execute("DELETE FROM mail_draft_attachment WHERE id = ?", (attachment_id,))
