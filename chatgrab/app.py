@@ -27,6 +27,7 @@ from .services.export_schedule_service import ExportScheduleService
 from .services.export_service import ExportService
 from .services.ignore_service import IgnoreService
 from .services.lead_reminder_service import LeadReminderService
+from .services.mail_retention_service import MailRetentionService
 from .services.mail_service import MailService
 from .services.retention_service import RetentionService
 from .services.watch_service import WatchService
@@ -103,6 +104,7 @@ def run() -> int:
     watch_service = WatchService(db)
     collector.watch_service = watch_service
     retention_service = RetentionService(db, PATHS)
+    mail_retention_service = MailRetentionService(db, PATHS)
     export_schedule_service = ExportScheduleService(
         db, export_service,
         on_log=lambda text, tone="": collector._log("выгрузка", text, tone),
@@ -122,7 +124,8 @@ def run() -> int:
         watch_service=watch_service, retention_service=retention_service,
         export_schedule_service=export_schedule_service,
         lead_reminder_service=lead_reminder_service,
-        bitrix_sync_service=bitrix_sync_service, mail_service=mail_service, accounts=accounts,
+        bitrix_sync_service=bitrix_sync_service, mail_service=mail_service,
+        mail_retention_service=mail_retention_service, accounts=accounts,
     )
 
     window = MainWindow(ctx)

@@ -31,6 +31,8 @@ from .mixins.funnels import FunnelsMixin
 from .mixins.ignore_rules import IgnoreRulesMixin
 from .mixins.leads import LeadsMixin
 from .mixins.mail import MailMixin
+from .mixins.mail_contacts import MailContactsMixin
+from .mixins.mail_filters import MailFiltersMixin
 from .mixins.maintenance import MaintenanceMixin
 from .mixins.outbox import OutboxMixin
 from .mixins.productivity import ProductivityMixin
@@ -52,6 +54,7 @@ class Database(
     DirectionsMixin, AccountsMixin, WatchMixin, RetentionMixin, ProductivityMixin,
     MaintenanceMixin, BotsMixin, LeadsMixin, ReportsMixin, OutboxMixin, CrmMixin,
     TemplatesMixin, ScenariosMixin, ScenarioSessionsMixin, MailMixin, FunnelsMixin,
+    MailFiltersMixin, MailContactsMixin,
 ):
     def __init__(self, path: Path):
         self.path = path

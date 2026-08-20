@@ -28,7 +28,11 @@ from .screens.connect import ConnectScreen
 from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
 from .screens.mail import MailScreen
+from .screens.mail.attachments_screen import MailAttachmentsScreen
+from .screens.mail.contacts_screen import MailContactsScreen
+from .screens.mail.filters_screen import MailFiltersScreen
 from .screens.mail.leads_screen import MailLeadsScreen
+from .screens.mail.reports_screen import MailReportsScreen
 from .screens.mail_settings import MailSettingsScreen
 from .screens.mail_triage import MailTriageScreen
 from .screens.reports_screen import ReportsScreen
@@ -77,6 +81,10 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
         ("mail", "Входящие"),
         ("mail_triage", "Разбор"),
         ("mail_leads", "Заявки"),
+        ("mail_filters", "Фильтры"),
+        ("mail_contacts", "Адресная книга"),
+        ("mail_attachments", "Вложения"),
+        ("mail_reports", "Отчёты"),
         ("mail_settings", "Ящики"),
     ],
 }
@@ -226,6 +234,10 @@ class MainWindow(QMainWindow):
             "mail": MailScreen(ctx, self.navigate),
             "mail_triage": MailTriageScreen(ctx, self.navigate),
             "mail_leads": MailLeadsScreen(ctx, self.navigate),
+            "mail_filters": MailFiltersScreen(ctx, self.navigate),
+            "mail_contacts": MailContactsScreen(ctx, self.navigate),
+            "mail_attachments": MailAttachmentsScreen(ctx, self.navigate),
+            "mail_reports": MailReportsScreen(ctx, self.navigate),
             "mail_settings": MailSettingsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }

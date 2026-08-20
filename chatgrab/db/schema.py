@@ -967,6 +967,77 @@ _MAIL_MESSAGE_TRIAGE_COLUMNS = [
 _MAIL_THREAD_LEAD_COLUMNS = [("lead_id", "INTEGER")]
 _MAIL_MESSAGE_LEAD_COLUMNS = [("lead_id", "INTEGER")]
 
+# П10 (migration 021) — filters, their journal, and the address book.
+#
+# mail_filter: mailbox_id NULL means "every mailbox" — a filter isn't
+# forced to pick one. conditions is a JSON list of {field, op, value},
+# all ANDed (core/mail_filter.py's matches()); OR across filters comes
+# for free from just having more than one. No delete action exists in
+# this table's own shape (label_id/move_to_folder/mark_read/no_notify
+# only) — "фильтр никогда не удаляет" is structural here, not a runtime
+# check that could be bypassed.
+_DDL_MAIL_FILTER = """
+CREATE TABLE IF NOT EXISTS mail_filter (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    conditions TEXT NOT NULL DEFAULT '[]',
+    label_id INTEGER,
+    move_to_folder TEXT,
+    mark_read INTEGER NOT NULL DEFAULT 0,
+    no_notify INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+"""
+
+# mail_filter_log: one row per (filter, message) hit — "каждое
+# срабатывание пишется в журнал". undo_data is JSON with whatever the
+# reversal needs (previous folder, whether it was unread before, which
+# label/thread to unlabel) — see MailService.undo_filter_hit(). undone
+# tracks whether that reversal already happened, so the same log row
+# can't be undone twice.
+_DDL_MAIL_FILTER_LOG = """
+CREATE TABLE IF NOT EXISTS mail_filter_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filter_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    applied_at TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    undo_data TEXT NOT NULL DEFAULT '{}',
+    undone INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+# mail_contact: address is the natural key (lowercased on write) —
+# "собирается из истории переписки" (source='auto', upserted as mail
+# arrives) plus "ручные записи" (source='manual', added from the
+# address-book screen or a CSV import). group_name is one plain text
+# tag per contact, not a many-to-many groups table — enough to filter
+# the address-book screen by group without a second junction table for
+# a feature this small.
+_DDL_MAIL_CONTACT = """
+CREATE TABLE IF NOT EXISTS mail_contact (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    group_name TEXT,
+    source TEXT NOT NULL DEFAULT 'auto',
+    message_count INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+_DDL_MAIL_FILTER_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_mail_filter_mailbox ON mail_filter(mailbox_id, order_index);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_filter_log_filter ON mail_filter_log(filter_id);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_filter_log_message ON mail_filter_log(message_id);",
+    "CREATE INDEX IF NOT EXISTS idx_mail_contact_group ON mail_contact(group_name);",
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

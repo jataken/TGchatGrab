@@ -6,6 +6,7 @@ main_window.py.
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
 import shutil
 from pathlib import Path
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 from ...context import AppContext
 from ...format import human_size, short_dt
 from ...util import fire, run_blocking
-from ...widgets import button, card, chip, h1, muted
+from ...widgets import button, card, chip, h1, muted, plural
 from .attachment_view import AttachmentViewerDialog
 from .compose import ComposeDialog, DraftsListDialog
 from .triage import TriageDialog
@@ -391,6 +392,20 @@ class MailScreen(QWidget):
         header_widget.setLayout(header)
         outer.addWidget(header_widget)
 
+        # П10: "фильтры спрятали N писем" — nothing here vanishes silently,
+        # this is the one place that says how much left the plain list
+        # this tick and where to go look at it.
+        self.filters_banner = button("", "ghost")
+        self.filters_banner.clicked.connect(lambda: self.navigate("mail_filters"))
+        self.filters_banner.setVisible(False)
+        banner_row = QHBoxLayout()
+        banner_row.setContentsMargins(40, 0, 40, 8)
+        banner_row.addWidget(self.filters_banner)
+        banner_row.addStretch(1)
+        banner_widget = QWidget()
+        banner_widget.setLayout(banner_row)
+        outer.addWidget(banner_widget)
+
         self.splitter = QSplitter(Qt.Horizontal)
         outer.addWidget(self.splitter, 1)
 
@@ -406,10 +421,20 @@ class MailScreen(QWidget):
 
     def on_show(self, mailbox_id: int | None = None, thread_id: int | None = None, **kwargs) -> None:
         self._load_mailboxes()
+        self._refresh_filters_banner()
         if mailbox_id is not None and thread_id is not None:
             # П7: «клик по уведомлению открывает цепочку» — the mailbox
             # and thread a triage hit fired for.
             self._select_thread(mailbox_id, thread_id)
+
+    def _refresh_filters_banner(self) -> None:
+        since = (dt.datetime.now().astimezone() - dt.timedelta(hours=24)).isoformat(timespec="seconds")
+        n = self.ctx.db.count_filter_hits_since(since)
+        self.filters_banner.setVisible(n > 0)
+        if n > 0:
+            self.filters_banner.setText(
+                f"Фильтры спрятали {n} " + plural(n, "письмо", "письма", "писем")
+                + " за последние сутки →")
 
     def _select_thread(self, mailbox_id: int, thread_id: int) -> None:
         for i in range(self.mailbox_list.count()):
@@ -737,11 +762,18 @@ class MailScreen(QWidget):
         lay.addWidget(self.undo_bar)
         self._last_action: dict | None = None
 
+        subject_row = QHBoxLayout()
         self.reading_subject = QLabel("")
         self.reading_subject.setTextFormat(Qt.PlainText)
         self.reading_subject.setWordWrap(True)
         self.reading_subject.setStyleSheet("font-size: 16px; font-weight: 600;")
-        lay.addWidget(self.reading_subject)
+        subject_row.addWidget(self.reading_subject, 1)
+        # П10: "экспорт переписки в существующие форматы" — the whole
+        # open thread, one click, next to what it's a thread *of*.
+        self.export_thread_btn = button("Экспорт", "ghost")
+        self.export_thread_btn.clicked.connect(self._on_export_thread)
+        subject_row.addWidget(self.export_thread_btn)
+        lay.addLayout(subject_row)
 
         self.reading_scroll = QScrollArea()
         self.reading_scroll.setWidgetResizable(True)
@@ -756,6 +788,14 @@ class MailScreen(QWidget):
         lay.insertWidget(1, self.reading_hint)
         self.reading_scroll.setVisible(False)
         return w
+
+    def _on_export_thread(self) -> None:
+        if self.selected_thread_id is None:
+            return
+        path = self.ctx.mail_service.export_thread_markdown(self.selected_thread_id)
+        if path is None:
+            return
+        QMessageBox.information(self, "Готово", f"Переписка сохранена: {path}")
 
     def _on_thread_selected(self, current: QListWidgetItem, _previous) -> None:
         if current is None:

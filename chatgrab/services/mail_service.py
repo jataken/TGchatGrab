@@ -19,13 +19,14 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import re
 import shutil
 import threading
 from pathlib import Path
 
 from ..bots.templating import render as render_template
 from ..core import lead as lead_domain
-from ..core import mail_attachment_text, mail_compose, mail_labels, mail_lead_extract, mail_thread, mail_triage
+from ..core import mail_attachment_text, mail_compose, mail_filter, mail_labels, mail_lead_extract, mail_thread, mail_triage
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient, ImapError
@@ -205,18 +206,28 @@ class MailService:
         highest = folder["last_uid"]
         for uid, raw, flags in triples:
             fields = imap_client.parse_headers(raw)
+            # П10: the mailbox's own \Sent folder (RFC 6154 SPECIAL-USE,
+            # already detected per П4) is a message's own is_outgoing —
+            # the same signal the "folder != Sent" guard below already
+            # reads, just also written to the row now that the
+            # response-speed report needs it stored, not just checked
+            # in passing at sync time.
+            fields["is_outgoing"] = 1 if folder["special_use"] == "Sent" else 0
             message_id = self.db.upsert_mail_message(mailbox_id, name, uid, **fields)
             self._assign_thread(mailbox_id, message_id, fields)
             self.db.sync_message_flags(mailbox_id, name, uid, flags)
             highest = max(highest, uid)
+            suppress_notify = self._apply_mail_filters(message_id, fields, mailbox_id, body_fetched=False)
             if folder["special_use"] != "Sent":
+                self.db.upsert_mail_contact_from_message(fields.get("sender_address"), fields.get("sender_name"))
                 # П7: scored right away off whatever's on hand (headers —
                 # body isn't fetched yet at this point, see fetch_body())
                 # so a notification can fire the moment mail arrives, not
                 # only once someone opens it. score_message() gets called
                 # again with the fuller picture once the body is fetched
                 # (fetch_body(), or a "Пересчитать" rescan_triage()).
-                self._score_and_maybe_notify(message_id)
+                if not suppress_notify:
+                    self._score_and_maybe_notify(message_id)
                 # П9: "клиент написал, мы не ответили N часов" — only
                 # for a genuinely incoming message (same Sent-folder
                 # guard triage uses above), and only when this thread is
@@ -410,6 +421,109 @@ class MailService:
             return
         self.db.set_lead_field(lead["id"], next_action_at=None, next_action_text=None)
 
+    # ---- фильтры (П10) ---------------------------------------------------
+    def _filter_fields(self, message_id: int, header_fields: dict | None, mailbox_id: int) -> dict:
+        """core/mail_filter.matches()'s input — assembled from whatever
+        this message currently has, same "read the row back, don't trust
+        the caller's snapshot" approach _triage_fields() uses, since
+        this runs both right after upsert (header_fields still fresh)
+        and again from fetch_body() (nothing but the stored row to go
+        on)."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return {}
+        attachments = self.db.list_mail_attachments(message_id) if message["body_fetched"] else []
+        return {
+            "subject": (header_fields or {}).get("subject") or message["subject"] or "",
+            "body_text": message["body_text"] or "",
+            "sender_address": (header_fields or {}).get("sender_address") or message["sender_address"],
+            "has_attachments": bool(message["has_attachments"]),
+            "total_attachment_bytes": sum(a["size_bytes"] or 0 for a in attachments),
+            "mailbox_id": mailbox_id,
+        }
+
+    def _apply_mail_filters(self, message_id: int, header_fields: dict | None,
+                             mailbox_id: int, body_fetched: bool) -> bool:
+        """Runs every enabled filter for this mailbox against the
+        message, applies whichever ones match, logs each hit, and
+        returns whether any of them asked for "не уведомлять" — the one
+        thing the notification pipeline itself needs to know.
+
+        Called twice per message in the normal flow, same staged
+        evaluation as triage: once at header-sync time (sender/domain/
+        subject/mailbox conditions only — has_attachment/size can't
+        match yet, the body isn't fetched), and again once fetch_body()
+        actually has one (filter_already_applied() stops a filter that
+        already matched at header time from firing — and logging — a
+        second time; one that only starts matching once the body's in
+        fires for the first time here, same "score twice" precedent
+        score_message()/rescan_triage() already set)."""
+        filters = self.db.list_mail_filters(mailbox_id=mailbox_id, enabled_only=True)
+        if not filters:
+            return False
+        fields = self._filter_fields(message_id, header_fields, mailbox_id)
+        message = self.db.get_mail_message(message_id)
+        suppress_notify = False
+        for filt in filters:
+            if self.db.filter_already_applied(filt["id"], message_id):
+                continue
+            try:
+                conditions = json.loads(filt["conditions"] or "[]")
+            except json.JSONDecodeError:
+                continue
+            if not mail_filter.matches(conditions, fields):
+                continue
+            undo_data: dict = {}
+            parts: list[str] = []
+            if filt["label_id"] and message and message["thread_id"]:
+                self.set_thread_label(message["thread_id"], filt["label_id"], True)
+                undo_data["label_id"] = filt["label_id"]
+                undo_data["thread_id"] = message["thread_id"]
+                label = self.db.get_mail_label(filt["label_id"])
+                parts.append(f"ярлык «{label['name']}»" if label else "ярлык")
+            if filt["move_to_folder"] and message and filt["move_to_folder"] != message["folder"]:
+                undo_data["previous_folder"] = message["folder"]
+                undo_data["moved_message_id"] = message_id
+                self.move_message(message_id, filt["move_to_folder"])
+                parts.append(f"папка «{filt['move_to_folder']}»")
+            if filt["mark_read"] and message and not message["is_read"]:
+                self.mark_read(message_id, True)
+                undo_data["was_unread"] = True
+                undo_data["marked_message_id"] = message_id
+                parts.append("прочитано")
+            if filt["no_notify"]:
+                suppress_notify = True
+                parts.append("без уведомления")
+            summary = f"«{filt['name']}»: " + ("; ".join(parts) if parts else "без действий")
+            self.db.log_filter_hit(filt["id"], message_id, summary, undo_data)
+        return suppress_notify
+
+    def undo_filter_hit(self, log_id: int) -> bool:
+        """The one-button reversal "фильтр... отменяется одной кнопкой"
+        requires — reads back whatever _apply_mail_filters() stored in
+        undo_data and reverses exactly that, nothing more (a label added
+        by the filter comes off; a message moved by the filter moves
+        back; a message marked read by the filter goes back to unread —
+        only if it was actually unread before, so undo can't mark
+        something read that a human read for real in the meantime).
+        False if the entry doesn't exist or was already undone — the
+        caller (the UI) treats that as "nothing to do," not an error."""
+        entry = self.db.get_filter_log_entry(log_id)
+        if entry is None or entry["undone"]:
+            return False
+        try:
+            undo_data = json.loads(entry["undo_data"] or "{}")
+        except json.JSONDecodeError:
+            undo_data = {}
+        if "label_id" in undo_data and "thread_id" in undo_data:
+            self.set_thread_label(undo_data["thread_id"], undo_data["label_id"], False)
+        if "previous_folder" in undo_data and "moved_message_id" in undo_data:
+            self.move_message(undo_data["moved_message_id"], undo_data["previous_folder"])
+        if undo_data.get("was_unread") and "marked_message_id" in undo_data:
+            self.mark_read(undo_data["marked_message_id"], False)
+        self.db.mark_filter_log_undone(log_id)
+        return True
+
     # ---- «тело по требованию» -----------------------------------------
     def fetch_body(self, message_id: int) -> None:
         """Full body + attachments for one already-synced message,
@@ -442,6 +556,12 @@ class MailService:
             # user is looking at right now anyway. No new notification
             # fires from here — the user already opened it.
             self.score_message(message_id)
+        # П10: has_attachment/size conditions couldn't match at
+        # header-sync time — this is the one re-check that gives them a
+        # real chance to, same reasoning as the rescore just above.
+        # No notification suppression to act on here (the user's already
+        # looking at the message, same as the score_message() call above).
+        self._apply_mail_filters(message_id, None, message["mailbox_id"], body_fetched=True)
 
     def _sent_folder_name(self, mailbox_id: int) -> str | None:
         sent = self.db.get_mail_folder_by_special_use(mailbox_id, "Sent")
@@ -616,11 +736,22 @@ class MailService:
             triples = client.fetch_headers_for_uids(folder, missing) if missing else []
         finally:
             client.close()
+        folder_row = self.db.get_mail_folder(mailbox_id, folder)
+        is_outgoing = 1 if folder_row and folder_row["special_use"] == "Sent" else 0
         for uid, raw, flags in triples:
             fields = imap_client.parse_headers(raw)
+            fields["is_outgoing"] = is_outgoing
             message_id = self.db.upsert_mail_message(mailbox_id, folder, uid, **fields)
             self._assign_thread(mailbox_id, message_id, fields)
             self.db.sync_message_flags(mailbox_id, folder, uid, flags)
+            if not is_outgoing:
+                self.db.upsert_mail_contact_from_message(fields.get("sender_address"), fields.get("sender_name"))
+            # Filters deliberately don't run over a server search result
+            # — someone reaching for a specific old message by hand isn't
+            # the "new mail arriving" moment filters exist to act on, and
+            # silently moving/labeling what they just searched for out
+            # from under them would be a worse surprise than not applying
+            # a filter here at all.
         return len(triples)
 
     # ---- «прочитано» — локально и на сервере (П2) -----------------------
@@ -1350,6 +1481,38 @@ class MailService:
                 client.close()
         except Exception:
             _logger.info("Почта: письмо отправлено, серверная копия черновика не убрана (ящик %s)", mailbox["id"])
+
+    # ---- экспорт переписки (П10) ------------------------------------------
+    def export_thread_markdown(self, thread_id: int) -> Path | None:
+        """"Экспорт переписки в существующие форматы" — Markdown, the
+        same plain-text-with-headers shape lead_card.py's own
+        correspondence tab and triage.py already format a thread into,
+        just written to a file instead of a QPlainTextEdit. Deliberately
+        not routed through export_service.py's ExportParams pipeline —
+        that machinery is built around chat_ids (a Telegram concept) and
+        iterating collected `messages` rows; teaching it a second,
+        unrelated id-space (mail thread ids) to cover one Markdown file
+        would be more plumbing than this checklist item asks for. None
+        if the thread doesn't exist or has nothing to export."""
+        messages = self.db.list_thread_messages(thread_id)
+        if not messages:
+            return None
+        subject = messages[-1]["subject"] or "(без темы)"
+        lines = [f"# {subject}", ""]
+        for m in messages:
+            who = m["sender_name"] or m["sender_address"] or "—"
+            lines.append(f"**{who}** — {m['date'] or ''}")
+            lines.append("")
+            lines.append((m["body_text"] or "").strip() or "*(текст не загружен)*")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        self.paths.exports_dir.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe_subject = re.sub(r"[^\w\-. ]", "_", subject)[:60].strip() or "переписка"
+        path = self.paths.exports_dir / f"{safe_subject}-{stamp}.md"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
 
     # ---- "Проверить подключение" ---------------------------------------
     def test_connection(self, imap_host: str, imap_port: int, address: str, password: str) -> str:

@@ -429,6 +429,46 @@ def _up_mail_leads(conn: sqlite3.Connection, _ctx: dict) -> None:
         )
 
 
+def _up_mail_filters_contacts(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П10: mail_filter/mail_filter_log (rules + their journal) and
+    mail_contact (address book) — three standalone new tables, same
+    clean-rollback shape as 010/014/017/018.
+
+    Bundled into the same migration: a one-time backfill of
+    mail_message.is_outgoing, a column that's existed since 016 but that
+    nothing has ever actually set (parse_headers() never populated it —
+    a pre-existing gap noted in mail.py's thread_has_own_message() back
+    in П7, out of scope there). П10's response-speed report needs it for
+    real, so it gets fixed here: MailService now sets it at sync time
+    from the folder's own SPECIAL-USE (\\Sent), the same signal
+    _sync_one_folder() already reads to skip Sent mail from triage — and
+    this UPDATE applies that same rule retroactively to whatever's
+    already stored, so the report is correct on an existing database
+    too, not just for mail synced after this migration."""
+    conn.execute(schema._DDL_MAIL_FILTER)
+    conn.execute(schema._DDL_MAIL_FILTER_LOG)
+    conn.execute(schema._DDL_MAIL_CONTACT)
+    for ddl in schema._DDL_MAIL_FILTER_INDEXES:
+        conn.execute(ddl)
+    conn.execute(
+        "UPDATE mail_message SET is_outgoing = 1 WHERE EXISTS ("
+        "  SELECT 1 FROM mail_folder mf WHERE mf.mailbox_id = mail_message.mailbox_id "
+        "  AND mf.name = mail_message.folder AND mf.special_use = 'Sent'"
+        ") AND is_outgoing = 0;"
+    )
+
+
+def _down_mail_filters_contacts(conn: sqlite3.Connection) -> None:
+    """Drops the three new tables. The is_outgoing backfill isn't
+    reversed — same as every other data-only UPDATE bundled into a
+    migration alongside a clean table drop (e.g. 013's bot_leads.
+    funnel_id backfill): stale-but-harmless correct data left behind on
+    rollback, not a schema issue down() needs to undo."""
+    conn.execute("DROP TABLE IF EXISTS mail_contact;")
+    conn.execute("DROP TABLE IF EXISTS mail_filter_log;")
+    conn.execute("DROP TABLE IF EXISTS mail_filter;")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -465,6 +505,8 @@ MIGRATIONS: list[Migration] = [
     # (see П6's journal entry) — same non-issue as every prior instance.
     Migration("020", "mail: thread/message lead_id + seed the mail funnel",
               _up_mail_leads),
+    Migration("021", "mail: filters, filter log, address book; backfill is_outgoing",
+              _up_mail_filters_contacts, _down_mail_filters_contacts),
 ]
 
 

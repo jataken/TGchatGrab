@@ -311,6 +311,7 @@ from chatgrab.services.ignore_service import IgnoreService
 from chatgrab.services.backup_service import BackupService
 from chatgrab.bots.manager import BotManager
 from chatgrab.services.watch_service import WatchService
+from chatgrab.services.mail_retention_service import MailRetentionService
 from chatgrab.services.retention_service import RetentionService
 from chatgrab.services.export_schedule_service import ExportScheduleService
 from chatgrab.services.lead_reminder_service import LeadReminderService
@@ -338,7 +339,7 @@ ctx2 = AppContext(
     export_service=ExportService(db2, paths2), ignore_service=IgnoreService(db2),
     backup_service=BackupService(db2, paths2), security=sec2,
     bot_manager=BotManager(db2, tg2, sec2),
-    watch_service=WatchService(db2), retention_service=RetentionService(db2, paths2),
+    watch_service=WatchService(db2), retention_service=RetentionService(db2, paths2), mail_retention_service=MailRetentionService(db2, paths2),
     export_schedule_service=ExportScheduleService(db2, ExportService(db2, paths2)),
     lead_reminder_service=LeadReminderService(db2),
     bitrix_sync_service=BitrixSyncService(db2, sec2),

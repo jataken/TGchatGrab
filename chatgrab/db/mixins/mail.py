@@ -451,6 +451,97 @@ class MailMixin:
     def get_mail_attachment(self, attachment_id: int) -> sqlite3.Row | None:
         return self.query_one("SELECT * FROM mail_attachment WHERE id = ?", (attachment_id,))
 
+    # ---- ретеншн (П10) --------------------------------------------------
+    def count_mail_messages_older_than(self, cutoff_iso: str) -> int:
+        return self.query_one("SELECT count(*) AS c FROM mail_message WHERE date < ?", (cutoff_iso,))["c"]
+
+    def select_mail_messages_older_than(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM mail_message WHERE date < ? ORDER BY date", (cutoff_iso,))
+
+    def delete_mail_messages_older_than(self, cutoff_iso: str) -> tuple[int, list[str]]:
+        """Deletes mail_message rows (and their attachment rows, filter-
+        log entries, and any mail_thread left with zero messages after)
+        older than cutoff. Returns (messages deleted, attachment file
+        paths that no longer have any row pointing at them) — this
+        mixin never touches the filesystem itself, same split
+        RetentionMixin.delete_older_than()/orphaned_media() already use
+        for Telegram media; MailRetentionService deletes those files."""
+        with self._lock:
+            message_ids = [r[0] for r in self._conn.execute(
+                "SELECT id FROM mail_message WHERE date < ?", (cutoff_iso,)).fetchall()]
+            if not message_ids:
+                return 0, []
+            placeholders = ",".join("?" for _ in message_ids)
+            paths = [r[0] for r in self._conn.execute(
+                f"SELECT path FROM mail_attachment WHERE message_id IN ({placeholders}) AND path IS NOT NULL",
+                message_ids).fetchall()]
+            self._conn.execute(f"DELETE FROM mail_attachment WHERE message_id IN ({placeholders})", message_ids)
+            self._conn.execute(f"DELETE FROM mail_filter_log WHERE message_id IN ({placeholders})", message_ids)
+            self._conn.execute(f"DELETE FROM mail_message WHERE id IN ({placeholders})", message_ids)
+            self._conn.execute(
+                "DELETE FROM mail_thread_label WHERE thread_id NOT IN ("
+                "  SELECT DISTINCT thread_id FROM mail_message WHERE thread_id IS NOT NULL)")
+            self._conn.execute(
+                "DELETE FROM mail_thread WHERE id NOT IN ("
+                "  SELECT DISTINCT thread_id FROM mail_message WHERE thread_id IS NOT NULL)")
+            self._conn.commit()
+            return len(message_ids), paths
+
+    def mail_attachments_older_than(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        """The separate «срок для вложений» knob — attachment rows (and
+        their file paths/sizes) whose *message* is older than cutoff,
+        without touching the message or its body text; only the
+        attachment goes."""
+        return self.query(
+            "SELECT a.* FROM mail_attachment a JOIN mail_message m ON m.id = a.message_id "
+            "WHERE m.date < ? AND a.path IS NOT NULL", (cutoff_iso,))
+
+    def delete_mail_attachment_rows(self, attachment_ids: list[int]) -> None:
+        if not attachment_ids:
+            return
+        with self._lock:
+            placeholders = ",".join("?" for _ in attachment_ids)
+            self._conn.execute(f"DELETE FROM mail_attachment WHERE id IN ({placeholders})", attachment_ids)
+            self._conn.commit()
+
+    def list_all_mail_attachments(self, mailbox_id: int | None = None, query: str | None = None,
+                                   sender: str | None = None, since: str | None = None,
+                                   until: str | None = None, limit: int = 300) -> list[sqlite3.Row]:
+        """П10's «Менеджер вложений» — every attachment across every
+        message, newest message first, joined back to its message for
+        sender/date/subject/mailbox_id (mail_attachment itself carries
+        none of those, see its own schema comment). "type" isn't a
+        separate filter parameter here — the screen filters by extension
+        client-side off filename, since content_type is server-reported
+        and not always populated, while the filename's suffix always is."""
+        sql = (
+            "SELECT a.*, m.mailbox_id AS mailbox_id, m.subject AS message_subject, "
+            "m.sender_name AS sender_name, m.sender_address AS sender_address, m.date AS message_date "
+            "FROM mail_attachment a JOIN mail_message m ON m.id = a.message_id"
+        )
+        clauses, params = [], []
+        if mailbox_id is not None:
+            clauses.append("m.mailbox_id = ?")
+            params.append(mailbox_id)
+        if query:
+            clauses.append("LOWER(a.filename) LIKE ?")
+            params.append(f"%{query.strip().lower()}%")
+        if sender:
+            clauses.append("(LOWER(m.sender_address) LIKE ? OR LOWER(m.sender_name) LIKE ?)")
+            like = f"%{sender.strip().lower()}%"
+            params.extend([like, like])
+        if since is not None:
+            clauses.append("m.date >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("m.date <= ?")
+            params.append(until)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY m.date DESC, a.id DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
     def set_attachment_extracted_text(self, attachment_id: int, text: str) -> None:
         """The UPDATE alone is enough to make the attachment's content
         searchable — mail_attachment_text_au (migration 015) recomputes

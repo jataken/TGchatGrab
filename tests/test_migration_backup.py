@@ -83,16 +83,28 @@ conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables_before and "outbox_sends" in tables_before and "mailbox" in tables_before
 
-# 018 (ярлыки) — теперь самая свежая миграция вообще, и у неё есть
-# down(): mail_label/mail_thread_label — новые, самостоятельные таблицы,
-# ничего существующего не ALTER'ит, откатывать нечего терять, тот же
-# случай, что 007/010/014/017.
+# 021 (фильтры, журнал фильтров, адресная книга) — теперь самая свежая
+# миграция вообще, и у неё есть down(): mail_filter/mail_filter_log/
+# mail_contact — новые, самостоятельные таблицы, ничего существующего не
+# ALTER'ит (кроме тут же в 021 сделанного backfill'а is_outgoing, который
+# down() сознательно не отменяет — см. её докстринг), откатывать нечего
+# терять, тот же случай, что 007/010/014/017/018.
+undone_top = migrations.rollback_last(conn)
+print("  откачена миграция:", undone_top)
+assert undone_top == "021", "021 — самая свежая обратимая миграция, должна откатиться первой"
+tables_after_top = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert not {"mail_filter", "mail_filter_log", "mail_contact"} & tables_after_top, \
+    "все три таблицы 021 должны исчезнуть"
+assert tables_before - tables_after_top == {"mail_filter", "mail_filter_log", "mail_contact"}, \
+    "откат 021 не должен трогать ничего, кроме своих таблиц"
+
+# 018 (ярлыки) — следующая по свежести с down().
 undone_latest = migrations.rollback_last(conn)
 print("  откачена миграция:", undone_latest)
-assert undone_latest == "018", "018 — самая свежая обратимая миграция, должна откатиться первой"
+assert undone_latest == "018", "018 — следующая по свежести обратимая миграция после 021"
 tables_after_latest = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert not {"mail_label", "mail_thread_label"} & tables_after_latest, "обе таблицы 018 должны исчезнуть"
-assert tables_before - tables_after_latest == {"mail_label", "mail_thread_label"}, \
+assert tables_after_top - tables_after_latest == {"mail_label", "mail_thread_label"}, \
     "откат 018 не должен трогать ничего, кроме своих таблиц"
 
 # 017 (личности и черновики) — следующая по свежести с down().

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QListWidget,
+    QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -46,6 +46,16 @@ class ComposeDialog(QDialog):
         outer.addWidget(self.to_field)
         self.cc_field = FieldRow("Копия", placeholder="необязательно")
         outer.addWidget(self.cc_field)
+        # П10: address-book autocomplete — matches a whole field's text
+        # against "Имя <адрес>"/адрес, not each comma-separated recipient
+        # individually (QCompleter has no built-in notion of "the word
+        # under the cursor within a delimited list"; a real per-recipient
+        # completer would need its own text-editing logic, more than this
+        # session's own address-book checklist item asks for). Still
+        # useful for the common case — a single recipient, or completing
+        # the *last* one typed.
+        self._wire_contact_completer(self.to_field.input)
+        self._wire_contact_completer(self.cc_field.input)
         self.subject_field = FieldRow("Тема")
         outer.addWidget(self.subject_field)
 
@@ -93,6 +103,15 @@ class ComposeDialog(QDialog):
         self.body_edit.textChanged.connect(self._schedule_autosave)
 
     # ---- загрузка ------------------------------------------------------
+    def _wire_contact_completer(self, line_edit) -> None:
+        contacts = self.ctx.db.list_mail_contacts()
+        options = [f"{c['display_name']} <{c['address']}>" if c["display_name"] else c["address"]
+                   for c in contacts]
+        completer = QCompleter(options, line_edit)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        line_edit.setCompleter(completer)
+
     def _load_identities(self) -> None:
         self.identity_combo.blockSignals(True)
         self.identity_combo.clear()
