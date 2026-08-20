@@ -626,3 +626,83 @@ class MailMixin:
 
     def remove_mail_draft_attachment(self, attachment_id: int) -> None:
         self.execute("DELETE FROM mail_draft_attachment WHERE id = ?", (attachment_id,))
+
+    # ---- labels (П6) -------------------------------------------------
+    def create_mail_label(self, mailbox_id: int, name: str, color: str,
+                           hotkey: int | None = None, sort_order: int = 0) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_label(mailbox_id, name, color, hotkey, sort_order, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (mailbox_id, name.strip(), color, hotkey, sort_order, now_iso()),
+        )
+        return cur.lastrowid
+
+    def seed_default_mail_labels(self, mailbox_id: int) -> None:
+        """The «Заказ»/«Запрос КП»/… default set, seeded once when a
+        mailbox is added. INSERT OR IGNORE against mail_label's own
+        UNIQUE(mailbox_id, name) — calling this twice for the same
+        mailbox (a defensive re-call, not just the one at add-time) never
+        duplicates the set or clobbers labels the user has since renamed
+        or recoloured."""
+        from ...core import mail_labels
+        for i, (name, color) in enumerate(mail_labels.DEFAULT_LABELS, start=1):
+            self.execute(
+                "INSERT OR IGNORE INTO mail_label"
+                "(mailbox_id, name, color, hotkey, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (mailbox_id, name, color, i, i, now_iso()),
+            )
+
+    def list_mail_labels(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_label WHERE mailbox_id = ? ORDER BY sort_order, name",
+            (mailbox_id,))
+
+    def get_mail_label(self, label_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_label WHERE id = ?", (label_id,))
+
+    def get_mail_label_by_hotkey(self, mailbox_id: int, hotkey: int) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM mail_label WHERE mailbox_id = ? AND hotkey = ?", (mailbox_id, hotkey))
+
+    def update_mail_label(self, label_id: int, **fields: Any) -> None:
+        cols = {k: v for k, v in fields.items() if k in ("name", "color", "hotkey", "sort_order")}
+        if not cols:
+            return
+        if "name" in cols:
+            cols["name"] = cols["name"].strip()
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(f"UPDATE mail_label SET {set_clause} WHERE id = ?", (*cols.values(), label_id))
+
+    def delete_mail_label(self, label_id: int) -> None:
+        """Removes the label itself and every thread's assignment to it
+        — the "удаление ярлыка снимает его со всех цепочек и не остав-
+        ляет сирот" half of the checklist. MailService.delete_label()
+        does the server-side keyword cleanup (best-effort, see
+        list_thread_ids_with_label) *before* calling this, since once
+        this runs there's no local record left of which threads to push
+        the removal for."""
+        with self._lock:
+            self._conn.execute("DELETE FROM mail_thread_label WHERE label_id = ?", (label_id,))
+            self._conn.execute("DELETE FROM mail_label WHERE id = ?", (label_id,))
+            self._conn.commit()
+
+    def add_thread_label(self, thread_id: int, label_id: int) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO mail_thread_label(thread_id, label_id) VALUES (?, ?)",
+            (thread_id, label_id))
+
+    def remove_thread_label(self, thread_id: int, label_id: int) -> None:
+        self.execute(
+            "DELETE FROM mail_thread_label WHERE thread_id = ? AND label_id = ?",
+            (thread_id, label_id))
+
+    def list_labels_for_thread(self, thread_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT l.* FROM mail_label l JOIN mail_thread_label tl ON tl.label_id = l.id "
+            "WHERE tl.thread_id = ? ORDER BY l.sort_order, l.name",
+            (thread_id,))
+
+    def list_thread_ids_with_label(self, label_id: int) -> list[int]:
+        return [row["thread_id"] for row in self.query(
+            "SELECT thread_id FROM mail_thread_label WHERE label_id = ?", (label_id,))]

@@ -848,6 +848,44 @@ _DDL_MAIL_SEND_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_mail_draft_attachment_draft ON mail_draft_attachment(draft_id);",
 ]
 
+# П6 (migration 018) — labels and fast keyboard triage. A label lives on
+# the mailbox that created it; hotkey is the digit 1-9 that applies it in
+# triage mode, NULL for a label with none assigned (any number of those
+# are allowed, only an actually-assigned digit has to be unique — hence a
+# *partial* unique index below, not a table-level UNIQUE, which SQLite
+# would apply to NULLs too and let every digit-less label collide with
+# every other one). mail_thread_label's composite primary key is the
+# "либо есть, либо нет — дублей быть не может" from the checklist: adding
+# an already-present pair is a no-op by construction (INSERT OR IGNORE),
+# not something the app has to de-duplicate itself.
+_DDL_MAIL_LABEL = """
+CREATE TABLE IF NOT EXISTS mail_label (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL,
+    hotkey INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(mailbox_id, name)
+);
+"""
+
+_DDL_MAIL_THREAD_LABEL = """
+CREATE TABLE IF NOT EXISTS mail_thread_label (
+    thread_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    PRIMARY KEY(thread_id, label_id)
+);
+"""
+
+_DDL_MAIL_LABEL_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_mail_label_mailbox ON mail_label(mailbox_id);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_label_hotkey "
+    "ON mail_label(mailbox_id, hotkey) WHERE hotkey IS NOT NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_mail_thread_label_label ON mail_thread_label(label_id);",
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

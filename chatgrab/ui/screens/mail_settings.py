@@ -3,9 +3,11 @@
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
@@ -263,6 +265,182 @@ class IdentityManagerDialog(QDialog):
         self._refresh()
 
 
+_LABEL_COLOR_SWATCHES = [
+    "#4f7cff", "#f0a63a", "#28a99e", "#e5484d",
+    "#8a8f98", "#a875e8", "#2f9e44", "#d6336c",
+]
+
+
+class LabelManagerDialog(QDialog):
+    """Ярлыки на цепочках, П6 — создание/переименование/перекраска/смена
+    горячей цифры и удаление. Создание/переименование/перекраска — прямые
+    вызовы в `ctx.db` (чисто локально, серверу нечего сообщать: keyword
+    построен по id ярлыка, не по имени, см. core/mail_labels.py), но
+    удаление снимает ярлык со всех цепочек И пробует снять
+    соответствующий IMAP-флаг на сервере — идёт через
+    `ctx.mail_service.delete_label()` и `run_blocking`, как и другие
+    сетевые операции П4/П5, а не обращается к БД напрямую."""
+
+    def __init__(self, ctx: AppContext, mailbox_id: int, mailbox_address: str, parent=None):
+        super().__init__(parent)
+        self.ctx = ctx
+        self.mailbox_id = mailbox_id
+        self.setWindowTitle(f"Ярлыки — {mailbox_address}")
+        self.resize(560, 560)
+        self._selected_color = _LABEL_COLOR_SWATCHES[0]
+
+        outer = QVBoxLayout(self)
+
+        form = card()
+        form_lay = QVBoxLayout(form)
+        self.name_field = FieldRow("Название", placeholder="Например, «Заказ»")
+        form_lay.addWidget(self.name_field)
+
+        form_lay.addWidget(muted("Цвет"))
+        swatch_row = QHBoxLayout()
+        self.swatch_group = QButtonGroup(self)
+        self.swatch_group.setExclusive(True)
+        for color in _LABEL_COLOR_SWATCHES:
+            swatch_btn = QPushButton()
+            swatch_btn.setCheckable(True)
+            swatch_btn.setFixedSize(26, 26)
+            swatch_btn.setCursor(Qt.PointingHandCursor)
+            swatch_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {color}; border-radius: 13px; "
+                f"border: 2px solid transparent; }}"
+                f"QPushButton:checked {{ border: 2px solid white; }}")
+            swatch_btn.setChecked(color == self._selected_color)
+            swatch_btn.clicked.connect(lambda _c, col=color: self._on_pick_color(col))
+            self.swatch_group.addButton(swatch_btn)
+            swatch_row.addWidget(swatch_btn)
+        swatch_row.addStretch(1)
+        form_lay.addLayout(swatch_row)
+
+        form_lay.addWidget(muted("Горячая цифра — вешает ярлык в режиме триажа"))
+        self.hotkey_combo = QComboBox()
+        form_lay.addWidget(self.hotkey_combo)
+
+        add_btn = button("Добавить ярлык", "secondary")
+        add_btn.clicked.connect(self._on_add)
+        form_lay.addWidget(add_btn)
+        outer.addWidget(form)
+
+        self.status = muted("")
+        self.status.setWordWrap(True)
+        outer.addWidget(self.status)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        self.list_box = QVBoxLayout(inner)
+        self.list_box.setSpacing(6)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        close_btn = button("Закрыть", "secondary")
+        close_btn.clicked.connect(self.accept)
+        outer.addWidget(close_btn)
+
+        self._refresh()
+
+    def _on_pick_color(self, color: str) -> None:
+        self._selected_color = color
+
+    def _refresh_hotkey_options(self, exclude_label_id: int | None = None) -> None:
+        taken = {l["hotkey"] for l in self.ctx.db.list_mail_labels(self.mailbox_id)
+                 if l["hotkey"] is not None and l["id"] != exclude_label_id}
+        self.hotkey_combo.clear()
+        self.hotkey_combo.addItem("Без цифры", None)
+        for n in range(1, 10):
+            if n not in taken:
+                self.hotkey_combo.addItem(str(n), n)
+
+    def _refresh(self) -> None:
+        self._refresh_hotkey_options()
+        while self.list_box.count():
+            item = self.list_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        labels = self.ctx.db.list_mail_labels(self.mailbox_id)
+        if not labels:
+            self.list_box.addWidget(muted("Пока ни одного ярлыка."))
+        for lb in labels:
+            self.list_box.addWidget(self._build_row(lb))
+        self.list_box.addStretch(1)
+
+    def _build_row(self, lb) -> QWidget:
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
+
+        swatch = QLabel()
+        swatch.setFixedSize(16, 16)
+        swatch.setStyleSheet(f"QLabel {{ background-color: {lb['color']}; border-radius: 8px; }}")
+        rl.addWidget(swatch)
+
+        title = lb["name"]
+        if lb["hotkey"]:
+            title += f"  ·  {lb['hotkey']}"
+        rl.addWidget(QLabel(title), 1)
+
+        rename_btn = button("✎", "ghost")
+        rename_btn.setToolTip("Переименовать")
+        rename_btn.clicked.connect(lambda _c, i=lb["id"], n=lb["name"]: self._on_rename(i, n))
+        rl.addWidget(rename_btn)
+
+        del_btn = button("✕", "ghost")
+        del_btn.setToolTip("Удалить")
+        del_btn.clicked.connect(lambda _c, i=lb["id"], n=lb["name"]: self._on_delete(i, n))
+        rl.addWidget(del_btn)
+        return row
+
+    def _on_add(self) -> None:
+        name = self.name_field.text().strip()
+        if not name:
+            return
+        hotkey = self.hotkey_combo.currentData()
+        label_id = self.ctx.mail_service.create_label(self.mailbox_id, name, self._selected_color, hotkey)
+        if label_id is None:
+            QMessageBox.warning(self, "Цифра занята", "Эта горячая цифра уже занята другим ярлыком.")
+            return
+        self.name_field.set_text("")
+        self._refresh()
+
+    def _on_rename(self, label_id: int, old_name: str) -> None:
+        new_name, ok = _ask_text(self, "Переименовать ярлык", "Новое название:", old_name)
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+        self.ctx.mail_service.update_label(label_id, name=new_name.strip())
+        self._refresh()
+
+    def _on_delete(self, label_id: int, name: str) -> None:
+        if QMessageBox.question(
+            self, "Удалить ярлык",
+            f"Удалить ярлык «{name}» со всех цепочек? Отменить нельзя."
+        ) != QMessageBox.Yes:
+            return
+        self.status.setText("Удаляю…")
+
+        async def _go():
+            return await run_blocking(self.ctx.mail_service.delete_label, label_id)
+
+        def on_error(e):
+            self.status.setText(f"Не получилось: {e}")
+
+        task = fire(_go(), parent=self, on_error=on_error)
+
+        def _apply(t):
+            if t.cancelled() or t.exception() is not None:
+                return
+            self.status.setText("")
+            self._refresh()
+
+        task.add_done_callback(_apply)
+
+
 def _ask_text(parent, title: str, label: str, initial: str) -> tuple[str, bool]:
     from PySide6.QtWidgets import QInputDialog
     return QInputDialog.getText(parent, title, label, text=initial)
@@ -438,7 +616,8 @@ class MailSettingsScreen(QWidget):
             self.add_status.setText("Такой ящик уже добавлен.")
             return
         password_enc = mail_credentials.encrypt_password(self.ctx.security, password)
-        self.ctx.db.add_mailbox(address, imap_host, imap_port, smtp_host, smtp_port, password_enc)
+        mailbox_id = self.ctx.db.add_mailbox(address, imap_host, imap_port, smtp_host, smtp_port, password_enc)
+        self.ctx.db.seed_default_mail_labels(mailbox_id)
         self.password_field.set_text("")
         self.add_status.setText(f"Ящик {address} добавлен, синхронизация начнётся в фоне.")
         self._refresh_list()
@@ -499,6 +678,9 @@ class MailSettingsScreen(QWidget):
         identities_btn = button("Личности", "ghost")
         identities_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_manage_identities(m, a))
         rl.addWidget(identities_btn)
+        labels_btn = button("Ярлыки", "ghost")
+        labels_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_manage_labels(m, a))
+        rl.addWidget(labels_btn)
         toggle_btn = button("Выключить" if mb["enabled"] else "Включить", "ghost")
         toggle_btn.clicked.connect(lambda _c, m=mb["id"], en=mb["enabled"]: self._on_toggle(m, en))
         rl.addWidget(toggle_btn)
@@ -512,6 +694,9 @@ class MailSettingsScreen(QWidget):
 
     def _on_manage_identities(self, mailbox_id: int, address: str) -> None:
         IdentityManagerDialog(self.ctx, mailbox_id, address, parent=self).exec()
+
+    def _on_manage_labels(self, mailbox_id: int, address: str) -> None:
+        LabelManagerDialog(self.ctx, mailbox_id, address, parent=self).exec()
 
     def _on_toggle(self, mailbox_id: int, currently_enabled: int) -> None:
         self.ctx.db.set_mailbox_field(mailbox_id, enabled=0 if currently_enabled else 1)

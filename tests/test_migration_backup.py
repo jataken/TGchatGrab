@@ -83,17 +83,26 @@ conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables_before and "outbox_sends" in tables_before and "mailbox" in tables_before
 
-# 017 (личности и черновики) — теперь самая свежая миграция вообще, и у
-# неё есть down(): mail_identity/mail_draft/mail_draft_attachment —
-# новые, самостоятельные таблицы, ничего существующего не ALTER'ит,
-# откатывать нечего терять, тот же случай, что 007/010/014.
+# 018 (ярлыки) — теперь самая свежая миграция вообще, и у неё есть
+# down(): mail_label/mail_thread_label — новые, самостоятельные таблицы,
+# ничего существующего не ALTER'ит, откатывать нечего терять, тот же
+# случай, что 007/010/014/017.
+undone_latest = migrations.rollback_last(conn)
+print("  откачена миграция:", undone_latest)
+assert undone_latest == "018", "018 — самая свежая обратимая миграция, должна откатиться первой"
+tables_after_latest = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert not {"mail_label", "mail_thread_label"} & tables_after_latest, "обе таблицы 018 должны исчезнуть"
+assert tables_before - tables_after_latest == {"mail_label", "mail_thread_label"}, \
+    "откат 018 не должен трогать ничего, кроме своих таблиц"
+
+# 017 (личности и черновики) — следующая по свежести с down().
 undone_newest = migrations.rollback_last(conn)
 print("  откачена миграция:", undone_newest)
-assert undone_newest == "017", "017 — самая свежая обратимая миграция, должна откатиться первой"
+assert undone_newest == "017", "017 — следующая по свежести обратимая миграция после 018"
 tables_after_newest = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert not {"mail_identity", "mail_draft", "mail_draft_attachment"} & tables_after_newest, \
     "все три таблицы 017 должны исчезнуть"
-assert tables_before - tables_after_newest == {"mail_identity", "mail_draft", "mail_draft_attachment"}, \
+assert tables_after_latest - tables_after_newest == {"mail_identity", "mail_draft", "mail_draft_attachment"}, \
     "откат 017 не должен трогать ничего, кроме своих таблиц"
 
 # 014 (почта) — следующая по свежести с down(): 015/016 новее, но у них

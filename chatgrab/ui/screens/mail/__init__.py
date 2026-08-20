@@ -13,8 +13,9 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMenu, QMessageBox, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea,
+    QSplitter, QVBoxLayout, QWidget,
 )
 
 from ...context import AppContext
@@ -23,6 +24,7 @@ from ...util import fire, run_blocking
 from ...widgets import button, card, chip, h1, muted
 from .attachment_view import AttachmentViewerDialog
 from .compose import ComposeDialog, DraftsListDialog
+from .triage import TriageDialog
 
 # П-4: "Заявка.pdf.exe" must still read as executable — checked against
 # every dot-separated suffix, not just the last one, so a double
@@ -352,6 +354,9 @@ class MailScreen(QWidget):
         self.drafts_btn = button("Черновики", "ghost")
         self.drafts_btn.clicked.connect(self._on_show_drafts)
         header.addWidget(self.drafts_btn)
+        self.triage_btn = button("Режим разбора", "ghost")
+        self.triage_btn.clicked.connect(self._on_open_triage)
+        header.addWidget(self.triage_btn)
         compose_btn = button("Написать", "primary")
         compose_btn.clicked.connect(self._on_compose_new)
         header.addWidget(compose_btn)
@@ -393,6 +398,19 @@ class MailScreen(QWidget):
             return
         DraftsListDialog(self.ctx, self.selected_mailbox_id, parent=self).exec()
         self._load_threads()
+
+    # ---- режим триажа (П6) ------------------------------------------------
+    def _on_open_triage(self) -> None:
+        if self.selected_mailbox_id is None:
+            QMessageBox.information(self, "Выберите ящик", "Сначала выберите ящик слева.")
+            return
+        TriageDialog(self.ctx, self.selected_mailbox_id, folder=self.selected_folder,
+                     parent=self, on_search=self._focus_search).exec()
+        self._load_threads()
+        self._load_mailboxes_badges_only()
+
+    def _focus_search(self) -> None:
+        self.search_input.setFocus()
 
     # ---- левая колонка: ящики и папки ----------------------------------
     def _build_mailbox_column(self) -> QWidget:
@@ -484,15 +502,59 @@ class MailScreen(QWidget):
             chip_row.addWidget(btn)
             self._filter_chips[key] = btn
         chip_row.addStretch(1)
+        self.bulk_label_btn = button("Ярлык на выделенное", "ghost")
+        self.bulk_label_btn.clicked.connect(self._on_bulk_label_clicked)
+        chip_row.addWidget(self.bulk_label_btn)
         lay.addLayout(chip_row)
 
         self.search_status = muted("")
         lay.addWidget(self.search_status)
 
         self.thread_list = QListWidget()
+        # П6: «выделение с Shift, ярлык на всё выделенное одним нажатием» —
+        # обычный ExtendedSelection читает и Shift-диапазон, и Ctrl-клик
+        # вразнобой, ничего своего изобретать не пришлось.
+        self.thread_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.thread_list.currentItemChanged.connect(self._on_thread_selected)
         lay.addWidget(self.thread_list, 1)
         return w
+
+    # ---- ярлыки (П6) ------------------------------------------------------
+    def _on_bulk_label_clicked(self) -> None:
+        if self.selected_mailbox_id is None:
+            return
+        thread_ids = [item.data(Qt.UserRole) for item in self.thread_list.selectedItems()]
+        if not thread_ids:
+            QMessageBox.information(self, "Ничего не выделено", "Выделите одну или несколько цепочек слева.")
+            return
+        labels = self.ctx.db.list_mail_labels(self.selected_mailbox_id)
+        if not labels:
+            QMessageBox.information(self, "Нет ярлыков", "На этом ящике ещё нет ни одного ярлыка.")
+            return
+        menu = QMenu(self)
+        for lb in labels:
+            action = menu.addAction(lb["name"])
+            action.triggered.connect(lambda _c=False, i=lb["id"]: self._apply_bulk_label(thread_ids, i))
+        menu.exec(self.bulk_label_btn.mapToGlobal(self.bulk_label_btn.rect().bottomLeft()))
+
+    def _apply_bulk_label(self, thread_ids: list[int], label_id: int) -> None:
+        async def _run():
+            return await run_blocking(self.ctx.mail_service.apply_label_to_threads, thread_ids, label_id)
+
+        def on_done():
+            self._load_threads()
+
+        fire(_run(), parent=self, on_error=lambda e: None, on_done=on_done)
+
+    def _on_label_chip_clicked(self, thread_id: int, label_id: int) -> None:
+        # «клик по плашке снимает ярлык — без диалога подтверждения»
+        async def _run():
+            return await run_blocking(self.ctx.mail_service.set_thread_label, thread_id, label_id, False)
+
+        def on_done():
+            self._load_threads()
+
+        fire(_run(), parent=self, on_error=lambda e: None, on_done=on_done)
 
     def _debounced_search(self) -> None:
         self._debounce.start(280)
@@ -540,12 +602,49 @@ class MailScreen(QWidget):
         who = t["sender_name"] or t["sender_address"] or "—"
         count = f" ({t['message_count']})" if t["message_count"] > 1 else ""
         text = f"{dot}{star}{subject}{count}{clip}\n{who} · {short_dt(t['last_date'])}"
-        item = QListWidgetItem(text)
-        item.setData(Qt.UserRole, t["thread_id"])
-        font = item.font()
-        font.setBold(unread)
-        item.setFont(font)
+        thread_id = t["thread_id"]
+
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, thread_id)
         self.thread_list.addItem(item)
+
+        # П6: строка — не просто текст QListWidgetItem, а собственный
+        # виджет (setItemWidget), потому что цветные плашки ярлыков
+        # внутри строки должны сами быть кликабельны ("клик по плашке
+        # снимает ярлык"), а не просто нарисованы. _load_mailboxes_
+        # badges_only() читает/пишет row_widget.title_label вместо
+        # item.text()/item.font() ровно из-за этой смены.
+        row_widget = QWidget()
+        row_lay = QVBoxLayout(row_widget)
+        row_lay.setContentsMargins(4, 4, 4, 4)
+        row_lay.setSpacing(3)
+        title_label = QLabel(text)
+        title_label.setTextFormat(Qt.PlainText)
+        font = title_label.font()
+        font.setBold(unread)
+        title_label.setFont(font)
+        row_widget.title_label = title_label
+        row_lay.addWidget(title_label)
+
+        labels = self.ctx.db.list_labels_for_thread(thread_id)
+        if labels:
+            chip_row = QHBoxLayout()
+            chip_row.setSpacing(4)
+            for lb in labels:
+                chip_btn = QPushButton(lb["name"])
+                chip_btn.setCursor(Qt.PointingHandCursor)
+                chip_btn.setToolTip("Снять ярлык")
+                chip_btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {lb['color']}; color: white; border: none; "
+                    f"border-radius: 8px; padding: 1px 8px; font-size: 11px; }}")
+                chip_btn.clicked.connect(
+                    lambda _c, tid=thread_id, lid=lb["id"]: self._on_label_chip_clicked(tid, lid))
+                chip_row.addWidget(chip_btn)
+            chip_row.addStretch(1)
+            row_lay.addLayout(chip_row)
+
+        item.setSizeHint(row_widget.sizeHint())
+        self.thread_list.setItemWidget(item, row_widget)
 
     def _on_search_server(self) -> None:
         query = self.search_input.text().strip()
@@ -720,12 +819,17 @@ class MailScreen(QWidget):
         for i in range(self.thread_list.count()):
             item = self.thread_list.item(i)
             if item.data(Qt.UserRole) == self.selected_thread_id:
-                font = item.font()
+                # П6: строка теперь setItemWidget(), не item.text()/
+                # item.font() — см. ту же смену в _add_thread_item().
+                row_widget = self.thread_list.itemWidget(item)
+                if row_widget is None:
+                    continue
+                font = row_widget.title_label.font()
                 font.setBold(False)
-                item.setFont(font)
-                text = item.text()
+                row_widget.title_label.setFont(font)
+                text = row_widget.title_label.text()
                 if text.startswith("●"):
-                    item.setText("○" + text[1:])
+                    row_widget.title_label.setText("○" + text[1:])
         for i in range(self.mailbox_list.count()):
             item = self.mailbox_list.item(i)
             mailbox_id, folder = item.data(Qt.UserRole)

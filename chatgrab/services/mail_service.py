@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 
 from ..bots.templating import render as render_template
-from ..core import mail_attachment_text, mail_compose, mail_thread
+from ..core import mail_attachment_text, mail_compose, mail_labels, mail_thread
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient, ImapError
@@ -466,6 +466,106 @@ class MailService:
         self.db.delete_mail_message_local(message_id)
         self.drain_queue(mailbox_id)
 
+    def archive_thread(self, thread_id: int) -> int:
+        """«E» in triage (П6): moves every message of the thread that
+        isn't already in the mailbox's Archive folder there, via the same
+        move_message() every other move in the app goes through — so it
+        gets the exact same "applies locally right away, confirmed and
+        given its real server UID by drain_queue()" behaviour, not a
+        parallel path. Returns how many messages actually moved (0 if
+        there's no detected Archive folder yet, or the thread was already
+        fully archived — both "nothing to do", not an error)."""
+        messages = self.db.list_thread_messages(thread_id)
+        if not messages:
+            return 0
+        mailbox_id = messages[0]["mailbox_id"]
+        archive = self.db.get_mail_folder_by_special_use(mailbox_id, "Archive")
+        if archive is None:
+            return 0
+        moved = 0
+        for message in messages:
+            if message["folder"] == archive["name"]:
+                continue
+            self.move_message(message["id"], archive["name"])
+            moved += 1
+        return moved
+
+    # ---- labels (П6) -------------------------------------------------
+    def create_label(self, mailbox_id: int, name: str, color: str,
+                      hotkey: int | None = None) -> int | None:
+        """None means the hotkey's taken — checked here rather than left
+        to mail_label's own partial-unique index, so the caller (the
+        label manager dialog) gets a clean "no" instead of an
+        IntegrityError to unpack."""
+        if hotkey is not None and self.db.get_mail_label_by_hotkey(mailbox_id, hotkey) is not None:
+            return None
+        return self.db.create_mail_label(mailbox_id, name, color, hotkey)
+
+    def update_label(self, label_id: int, **fields) -> bool:
+        if "hotkey" in fields and fields["hotkey"] is not None:
+            label = self.db.get_mail_label(label_id)
+            if label is None:
+                return False
+            existing = self.db.get_mail_label_by_hotkey(label["mailbox_id"], fields["hotkey"])
+            if existing is not None and existing["id"] != label_id:
+                return False
+        self.db.update_mail_label(label_id, **fields)
+        return True
+
+    def delete_label(self, label_id: int) -> None:
+        """Deleting a label has to reach every message it was ever
+        pushed to as a keyword, not just the mail_thread_label rows — so
+        the server-side cleanup is enqueued *before*
+        db.delete_mail_label() runs, since that call is what erases the
+        local record of which threads even had it (see that method's own
+        docstring)."""
+        label = self.db.get_mail_label(label_id)
+        if label is None:
+            return
+        keyword = mail_labels.label_keyword(label_id)
+        for thread_id in self.db.list_thread_ids_with_label(label_id):
+            for message in self.db.list_thread_messages(thread_id):
+                self.db.enqueue_mail_action(
+                    message["mailbox_id"], message["id"], "label_remove", {"keyword": keyword})
+        self.db.delete_mail_label(label_id)
+        self.drain_queue(label["mailbox_id"])
+
+    def set_thread_label(self, thread_id: int, label_id: int, on: bool, _drain: bool = True) -> int | None:
+        """Ярлык на цепочке, не на письме (checklist) — mail_thread_label
+        is keyed by thread_id, and every message currently in that
+        thread gets the same IMAP keyword pushed, same best-effort/
+        offline-queue path as flags and moves (П4): applies to
+        mail_thread_label instantly (a click removes/adds the plaque
+        with no round trip needed to show it), server push is
+        fire-and-forget via drain_queue(). Returns the mailbox_id acted
+        on (or None if the thread had no messages), so
+        apply_label_to_threads() can share one drain_queue() call across
+        a whole bulk selection instead of one per thread (_drain=False)."""
+        if on:
+            self.db.add_thread_label(thread_id, label_id)
+        else:
+            self.db.remove_thread_label(thread_id, label_id)
+        keyword = mail_labels.label_keyword(label_id)
+        kind = "label_add" if on else "label_remove"
+        messages = self.db.list_thread_messages(thread_id)
+        mailbox_id = messages[0]["mailbox_id"] if messages else None
+        for message in messages:
+            self.db.enqueue_mail_action(message["mailbox_id"], message["id"], kind, {"keyword": keyword})
+        if _drain and mailbox_id is not None:
+            self.drain_queue(mailbox_id)
+        return mailbox_id
+
+    def apply_label_to_threads(self, thread_ids: list[int], label_id: int, on: bool = True) -> None:
+        """Массовое действие (checklist): one label onto every
+        Shift-selected thread, one shared drain_queue() call at the end
+        instead of one per thread."""
+        mailbox_id = None
+        for thread_id in thread_ids:
+            mb = self.set_thread_label(thread_id, label_id, on, _drain=False)
+            mailbox_id = mb if mb is not None else mailbox_id
+        if mailbox_id is not None:
+            self.drain_queue(mailbox_id)
+
     # ---- offline action queue: drain (П4) --------------------------------
     def drain_queue(self, mailbox_id: int) -> int:
         """Applies every still-pending action for one mailbox, in the
@@ -514,8 +614,18 @@ class MailService:
             self._apply_move_action(client, mailbox_id, action, payload)
         elif kind == "delete":
             client.permanently_delete(payload["folder"], payload["uid"])
+        elif kind == "label_add":
+            self._apply_label_action(client, action, payload, add=True)
+        elif kind == "label_remove":
+            self._apply_label_action(client, action, payload, add=False)
         else:
             raise ImapError(f"неизвестное действие в очереди: {kind!r}")
+
+    def _apply_label_action(self, client, action, payload: dict, add: bool) -> None:
+        message = self.db.get_mail_message(action["message_id"])
+        if message is None:
+            return  # сообщение с тех пор удалено локально — применять нечего
+        client.store_flag(message["folder"], [message["uid"]], payload["keyword"], add=add)
 
     def _apply_flags_action(self, client, action) -> None:
         message = self.db.get_mail_message(action["message_id"])

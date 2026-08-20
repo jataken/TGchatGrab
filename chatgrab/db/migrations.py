@@ -301,6 +301,20 @@ def _down_mail_send(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS mail_identity;")
 
 
+def _up_mail_labels(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П6: labels on threads, for one-key triage. Two new, standalone
+    tables — same clean-rollback shape as 010/014/017."""
+    conn.execute(schema._DDL_MAIL_LABEL)
+    conn.execute(schema._DDL_MAIL_THREAD_LABEL)
+    for ddl in schema._DDL_MAIL_LABEL_INDEXES:
+        conn.execute(ddl)
+
+
+def _down_mail_labels(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS mail_thread_label;")
+    conn.execute("DROP TABLE IF EXISTS mail_label;")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -322,6 +336,12 @@ MIGRATIONS: list[Migration] = [
     Migration("016", "mail: folder special-use, message flags, offline action queue",
               _up_mail_ops),
     Migration("017", "mail: identities and drafts (sending)", _up_mail_send, _down_mail_send),
+    # PLAN.md's П6 checklist guessed "017" for this before П5 actually
+    # claimed it (see П5's journal entry) — "018" is what's actually free,
+    # same non-issue as 016/017 before it: ids don't need to match the
+    # plan's pre-guess, only stay unique and applied in order.
+    Migration("018", "mail: labels and thread-label assignments (triage)",
+              _up_mail_labels, _down_mail_labels),
 ]
 
 
