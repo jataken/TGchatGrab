@@ -108,6 +108,41 @@ class MailMixin:
             (*fields.values(), mailbox_id, name),
         )
 
+    def rename_mail_folder_record(self, mailbox_id: int, old_name: str, new_name: str) -> None:
+        """Local half of a server-confirmed rename (see MailService) —
+        the folder row and every message already synced under its old
+        name both follow, so open threads/lists don't quietly point at
+        a name that no longer exists on the server."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE mail_folder SET name = ? WHERE mailbox_id = ? AND name = ?",
+                (new_name, mailbox_id, old_name))
+            self._conn.execute(
+                "UPDATE mail_message SET folder = ? WHERE mailbox_id = ? AND folder = ?",
+                (new_name, mailbox_id, old_name))
+            self._conn.commit()
+
+    def delete_mail_folder_record(self, mailbox_id: int, name: str) -> None:
+        """Local half of a server-confirmed folder deletion — same
+        cleanup order as delete_mailbox()/reset_mail_folder(): attachments
+        before messages, since nothing here has ON DELETE CASCADE."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM mail_attachment WHERE message_id IN "
+                "(SELECT id FROM mail_message WHERE mailbox_id = ? AND folder = ?)",
+                (mailbox_id, name))
+            self._conn.execute(
+                "DELETE FROM mail_message WHERE mailbox_id = ? AND folder = ?",
+                (mailbox_id, name))
+            self._conn.execute(
+                "DELETE FROM mail_folder WHERE mailbox_id = ? AND name = ?", (mailbox_id, name))
+            self._conn.commit()
+
+    def get_mail_folder_by_special_use(self, mailbox_id: int, special_use: str) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM mail_folder WHERE mailbox_id = ? AND special_use = ?",
+            (mailbox_id, special_use))
+
     def reset_mail_folder(self, mailbox_id: int, name: str, uidvalidity: int | None) -> None:
         """A changed UIDVALIDITY makes every previously stored UID in this
         folder meaningless (see imap_client.py's module docstring) — the
@@ -215,7 +250,8 @@ class MailMixin:
                 MAX(m.date) AS last_date,
                 COUNT(m.id) AS message_count,
                 SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
-                MAX(m.has_attachments) AS has_attachments
+                MAX(m.has_attachments) AS has_attachments,
+                MAX(m.is_flagged) AS has_flagged
             FROM mail_thread t
             JOIN mail_message m ON m.thread_id = t.id
             WHERE {' AND '.join(clauses)}
@@ -358,3 +394,127 @@ class MailMixin:
         thread_participants()'s caller relies on for updated_at."""
         self.execute(
             "UPDATE mail_attachment SET extracted_text = ? WHERE id = ?", (text, attachment_id))
+
+    # ---- flags (П4) ----------------------------------------------------
+    _FLAG_COLUMNS = {"is_read", "is_flagged", "is_answered", "is_forwarded"}
+
+    def set_message_flags(self, message_id: int, **flags: bool) -> None:
+        cols = {k: v for k, v in flags.items() if k in self._FLAG_COLUMNS}
+        if not cols:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(
+            f"UPDATE mail_message SET {set_clause} WHERE id = ?",
+            (*(1 if v else 0 for v in cols.values()), message_id))
+
+    def sync_message_flags(self, mailbox_id: int, folder: str, uid: int, flags: dict) -> None:
+        """Reconciles server-reported flags into an already-upserted
+        message — a normal header sync's other half, alongside
+        upsert_mail_message() for subject/sender/date. Deliberately
+        separate from that call (not folded into _MESSAGE_HEADER_COLUMNS):
+        a message with a still-pending local action (say, "mark read"
+        that hasn't reached the server yet — see mail_action_queue) is
+        left alone here, so a resync mid-flight can't silently revert an
+        optimistic local change back to what the server said *before*
+        that action landed. Once the queued action is confirmed applied,
+        the next sync's server-reported flags become authoritative again,
+        same as for a message with no pending action at all."""
+        message = self.get_mail_message_by_uid(mailbox_id, folder, uid)
+        if message is None or self.has_pending_mail_action(message["id"]):
+            return
+        self.set_message_flags(message["id"], **flags)
+
+    # ---- move / delete / restore (П4) -----------------------------------
+    def move_message_local(self, message_id: int, new_folder: str) -> None:
+        """Same-mailbox move only — thread_id stays valid, since threads
+        are scoped to a mailbox, not a folder (see П2). A cross-mailbox
+        move is a different message row entirely under the destination
+        mailbox, handled by MailService as fetch + upsert-there +
+        delete-here, not by this method."""
+        self.execute(
+            "UPDATE mail_message SET folder = ?, restore_folder = NULL WHERE id = ?",
+            (new_folder, message_id))
+
+    def move_message_to_trash_local(self, message_id: int, trash_folder: str) -> None:
+        """Like move_message_local(), but remembers where the message
+        came from so restore_message_from_trash() has something to
+        restore to — the "reversible while it's in Trash" half of the
+        П4 checklist's undo requirement."""
+        message = self.get_mail_message(message_id)
+        if message is None:
+            return
+        self.execute(
+            "UPDATE mail_message SET folder = ?, restore_folder = ? WHERE id = ?",
+            (trash_folder, message["folder"], message_id))
+
+    def set_message_restore_folder(self, message_id: int, restore_folder: str | None) -> None:
+        """Used by MailService after a confirmed trash-move's placeholder
+        delete-and-resync (see _apply_move_action) — the fresh row that
+        resync creates starts with restore_folder NULL like any newly
+        upserted message, so this is what re-attaches "where it came
+        from" onto the row that's actually going to stick around,
+        looked up by Message-ID once the real UID is known."""
+        self.execute(
+            "UPDATE mail_message SET restore_folder = ? WHERE id = ?", (restore_folder, message_id))
+
+    def restore_message_from_trash(self, message_id: int) -> str | None:
+        """Moves a message back to restore_folder and clears it. Returns
+        the folder it was restored to (for the caller to push the same
+        move server-side), or None if there was nothing to restore —
+        either the message isn't in Trash, or it never went through
+        move_message_to_trash_local() (arrived in Trash some other way,
+        so there's no "back" recorded for it)."""
+        message = self.get_mail_message(message_id)
+        if message is None or not message["restore_folder"]:
+            return None
+        target = message["restore_folder"]
+        self.execute(
+            "UPDATE mail_message SET folder = ?, restore_folder = NULL WHERE id = ?",
+            (target, message_id))
+        return target
+
+    def list_trash_messages(self, mailbox_id: int) -> list[sqlite3.Row]:
+        folder = self.get_mail_folder_by_special_use(mailbox_id, "Trash")
+        if folder is None:
+            return []
+        return self.list_mail_messages(mailbox_id, folder=folder["name"])
+
+    def delete_mail_message_local(self, message_id: int) -> None:
+        """Permanent delete's local half — no undo past this point,
+        matching permanently_delete()'s server-side counterpart."""
+        with self._lock:
+            self._conn.execute("DELETE FROM mail_attachment WHERE message_id = ?", (message_id,))
+            self._conn.execute("DELETE FROM mail_message WHERE id = ?", (message_id,))
+            self._conn.commit()
+
+    # ---- offline action queue (П4) --------------------------------------
+    # Scoped to exactly what PLAN.md's checklist names — "действия
+    # (пометки, перемещения)" — per-message tag/move/delete actions.
+    # Folder administration (create/rename/delete/subscribe) always
+    # needs a live connection to mean anything, so it isn't queued.
+    def enqueue_mail_action(self, mailbox_id: int, message_id: int | None,
+                             kind: str, payload: dict) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_action_queue(mailbox_id, message_id, kind, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mailbox_id, message_id, kind, json.dumps(payload, ensure_ascii=False), now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_pending_mail_actions(self, mailbox_id: int | None = None) -> list[sqlite3.Row]:
+        if mailbox_id is None:
+            return self.query(
+                "SELECT * FROM mail_action_queue WHERE applied_at IS NULL ORDER BY id")
+        return self.query(
+            "SELECT * FROM mail_action_queue WHERE applied_at IS NULL AND mailbox_id = ? ORDER BY id",
+            (mailbox_id,))
+
+    def mark_mail_action_applied(self, action_id: int) -> None:
+        self.execute(
+            "UPDATE mail_action_queue SET applied_at = ? WHERE id = ?", (now_iso(), action_id))
+
+    def has_pending_mail_action(self, message_id: int) -> bool:
+        row = self.query_one(
+            "SELECT 1 FROM mail_action_queue WHERE message_id = ? AND applied_at IS NULL LIMIT 1",
+            (message_id,))
+        return row is not None

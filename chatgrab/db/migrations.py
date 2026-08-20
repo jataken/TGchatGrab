@@ -265,6 +265,25 @@ def _up_mail_attachments(conn: sqlite3.Connection, _ctx: dict) -> None:
     )
 
 
+def _up_mail_ops(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П4: folder admin (create/rename/delete/subscribe, SPECIAL-USE),
+    move/copy/permanent-delete, \\Flagged/\\Answered/forwarded alongside
+    \\Seen, and an offline action queue for tag/move/delete actions.
+    Three ALTERs plus one new standalone table — no down(), same
+    reasoning as 008/011/015: this touches existing tables' shape, not
+    only adds ones a rollback could cleanly drop.
+    """
+    for name, coltype in schema._MAIL_FOLDER_OPS_COLUMNS:
+        if not schema._column_exists(conn, "mail_folder", name):
+            conn.execute(f"ALTER TABLE mail_folder ADD COLUMN {name} {coltype};")
+    for name, coltype in schema._MAIL_MESSAGE_OPS_COLUMNS:
+        if not schema._column_exists(conn, "mail_message", name):
+            conn.execute(f"ALTER TABLE mail_message ADD COLUMN {name} {coltype};")
+    conn.execute(schema._DDL_MAIL_ACTION_QUEUE)
+    for ddl in schema._DDL_MAIL_ACTION_QUEUE_INDEXES:
+        conn.execute(ddl)
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -283,6 +302,8 @@ MIGRATIONS: list[Migration] = [
               _up_mail, _down_mail),
     Migration("015", "mail: attachment text feeds search (attachments_text + mail_fts rebuild)",
               _up_mail_attachments),
+    Migration("016", "mail: folder special-use, message flags, offline action queue",
+              _up_mail_ops),
 ]
 
 

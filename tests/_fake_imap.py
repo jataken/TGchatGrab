@@ -3,6 +3,13 @@ mail test that needs one — the same seam ImapClient's connection_factory
 exists for. Not part of _bootstrap.py: that module's contract is the ~6
 lines nearly every test repeats (Paths/Database/AppConfig/SecurityService),
 and an IMAP fake is a different, mail-specific kind of shared fixture.
+
+П4 widened this considerably: folder admin (create/rename/delete/
+subscribe), move/copy/append/expunge, and per-UID flags beyond \\Seen —
+each folder dict now optionally carries "special_use" and every message
+its own entry in "flags" (a dict of uid -> set of flag strings), which
+_fetch()/_store() both read and write so a round trip through ImapClient
+sees exactly what a real server would report back.
 """
 from __future__ import annotations
 
@@ -14,7 +21,9 @@ from chatgrab.integrations.mail.imap_client import ImapClient
 class FakeImapConnection:
     """Holds the «server» state: a folders dict passed in from outside
     that survives across multiple connections, the way a real mailbox
-    survives across multiple syncs."""
+    survives across multiple syncs. Each folder: {"uidvalidity": int,
+    "messages": {uid: raw_bytes}, "special_use": str | None (optional),
+    "flags": {uid: {"\\Seen", ...}} (created lazily)}."""
 
     def __init__(self, folders: dict, valid_password: str = "correct-password"):
         self.folders = folders
@@ -30,7 +39,15 @@ class FakeImapConnection:
         return "BYE", [b"bye"]
 
     def list(self):
-        data = [f'(\\HasNoChildren) "/" "{name}"'.encode() for name in self.folders]
+        data = []
+        for name, info in self.folders.items():
+            attrs = ["\\HasNoChildren"]
+            special = info.get("special_use")
+            if special:
+                attrs.append(f"\\{special}")
+            if info.get("noselect"):
+                attrs.append("\\Noselect")
+            data.append(f'({" ".join(attrs)}) "/" "{name}"'.encode())
         return "OK", data
 
     def status(self, folder, _what):
@@ -45,17 +62,79 @@ class FakeImapConnection:
         self._selected = folder
         return "OK", [str(len(self.folders[folder]["messages"])).encode()]
 
+    def capability(self):
+        return "OK", [b"IMAP4rev1 IDLE MOVE UIDPLUS"]
+
+    # ---- folder admin (П4) ---------------------------------------------
+    def create(self, name):
+        if name in self.folders:
+            return "NO", [b"already exists"]
+        self.folders[name] = {"uidvalidity": 1, "messages": {}}
+        return "OK", [b"created"]
+
+    def rename(self, old, new):
+        if old not in self.folders:
+            return "NO", [b"no such folder"]
+        self.folders[new] = self.folders.pop(old)
+        return "OK", [b"renamed"]
+
+    def delete(self, name):
+        if name not in self.folders:
+            return "NO", [b"no such folder"]
+        del self.folders[name]
+        return "OK", [b"deleted"]
+
+    def subscribe(self, name):
+        if name not in self.folders:
+            return "NO", [b"no such folder"]
+        self.folders[name]["subscribed"] = True
+        return "OK", [b"subscribed"]
+
+    def unsubscribe(self, name):
+        if name not in self.folders:
+            return "NO", [b"no such folder"]
+        self.folders[name]["subscribed"] = False
+        return "OK", [b"unsubscribed"]
+
+    def append(self, folder, flags, date_time, message):
+        if folder not in self.folders:
+            return "NO", [b"no such folder"]
+        info = self.folders[folder]
+        next_uid = (max(info["messages"]) + 1) if info["messages"] else 1
+        info["messages"][next_uid] = message
+        if flags:
+            names = flags.strip("()").split()
+            info.setdefault("flags", {})[next_uid] = set(names)
+        return "OK", [f"[APPENDUID {info['uidvalidity']} {next_uid}]".encode()]
+
+    def expunge(self):
+        info = self.folders[self._selected]
+        deleted = [u for u, f in info.get("flags", {}).items() if "\\Deleted" in f]
+        for u in deleted:
+            info["messages"].pop(u, None)
+            info.get("flags", {}).pop(u, None)
+            info.get("seen", set()).discard(u)
+        return "OK", [str(len(deleted)).encode()]
+
     def uid(self, command, *args):
         if command == "search":
             return self._search(args)
         if command == "store":
             return self._store(args)
-        assert command == "fetch"
-        return self._fetch(args)
+        if command == "fetch":
+            return self._fetch(args)
+        if command == "move":
+            return self._move(args)
+        if command == "copy":
+            return self._copy(args)
+        if command == "expunge":
+            return self._uid_expunge(args)
+        raise AssertionError(f"unexpected UID command: {command}")
 
     def _fetch(self, args):
         seq, _items = args
-        msgs = self.folders[self._selected]["messages"]
+        info = self.folders[self._selected]
+        msgs = info["messages"]
         if ":" in seq:
             start = int(seq.split(":")[0])
             uids = sorted(u for u in msgs if u >= start)
@@ -67,7 +146,9 @@ class FakeImapConnection:
         data = []
         for u in uids:
             raw = msgs[u]
-            data.append((f"{u} (UID {u} BODY[HEADER] {{{len(raw)}}}".encode(), raw))
+            flags = " ".join(sorted(info.get("flags", {}).get(u, ())))
+            meta = f"{u} (UID {u} FLAGS ({flags}) BODY[HEADER] {{{len(raw)}}}".encode()
+            data.append((meta, raw))
             data.append(b")")
         return "OK", (data or [None])
 
@@ -80,10 +161,84 @@ class FakeImapConnection:
         return "OK", [" ".join(hits).encode()]
 
     def _store(self, args):
-        seq, _flags_op, _flags = args
+        seq, flags_op, flags = args
         uids = {int(x) for x in seq.split(",")}
-        self.folders[self._selected].setdefault("seen", set()).update(uids)
+        names = flags.strip("()").split()
+        info = self.folders[self._selected]
+        flag_map = info.setdefault("flags", {})
+        for u in uids:
+            current = flag_map.setdefault(u, set())
+            if flags_op == "+FLAGS":
+                current.update(names)
+            else:
+                current.difference_update(names)
+        if "\\Seen" in names:
+            seen = info.setdefault("seen", set())
+            if flags_op == "+FLAGS":
+                seen.update(uids)
+            else:
+                seen.difference_update(uids)
         return "OK", [b"done"]
+
+    def _move(self, args):
+        uid_s, dest = args
+        info = self.folders[self._selected]
+        dest_info = self.folders.get(dest)
+        if dest_info is None:
+            return "NO", [b"no such destination folder"]
+        u = int(uid_s)
+        if u not in info["messages"]:
+            return "NO", [b"no such message"]
+        raw = info["messages"].pop(u)
+        flags = info.get("flags", {}).pop(u, set())
+        next_uid = (max(dest_info["messages"]) + 1) if dest_info["messages"] else 1
+        dest_info["messages"][next_uid] = raw
+        if flags:
+            dest_info.setdefault("flags", {})[next_uid] = set(flags)
+        info.get("seen", set()).discard(u)
+        return "OK", [b"moved"]
+
+    def _copy(self, args):
+        uid_s, dest = args
+        info = self.folders[self._selected]
+        dest_info = self.folders.get(dest)
+        if dest_info is None:
+            return "NO", [b"no such destination folder"]
+        u = int(uid_s)
+        if u not in info["messages"]:
+            return "NO", [b"no such message"]
+        raw = info["messages"][u]
+        next_uid = (max(dest_info["messages"]) + 1) if dest_info["messages"] else 1
+        dest_info["messages"][next_uid] = raw
+        return "OK", [b"copied"]
+
+    def _uid_expunge(self, args):
+        """UID EXPUNGE — only the named UID(s), unlike plain expunge()."""
+        (seq,) = args
+        target = {int(x) for x in seq.split(",")}
+        info = self.folders[self._selected]
+        for u in target & set(info["messages"]):
+            if "\\Deleted" in info.get("flags", {}).get(u, ()):
+                info["messages"].pop(u, None)
+                info.get("flags", {}).pop(u, None)
+                info.get("seen", set()).discard(u)
+        return "OK", [b"expunged"]
+
+
+class NoUidExpungeConnection(FakeImapConnection):
+    """A server without the UIDPLUS extension — UID EXPUNGE must be
+    rejected so ImapClient's fallback to plain EXPUNGE gets exercised."""
+
+    def _uid_expunge(self, args):
+        return "NO", [b"UID EXPUNGE not supported"]
+
+
+class NoMoveConnection(FakeImapConnection):
+    """A server without RFC 6851 MOVE — forces ImapClient's COPY +
+    \\Deleted + EXPUNGE fallback path."""
+
+    def _move(self, args):
+        return "NO", [b"MOVE not supported"]
 
 
 class SlowFakeImapConnection(FakeImapConnection):

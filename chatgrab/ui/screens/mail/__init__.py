@@ -14,7 +14,7 @@ from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QListWidgetItem, QMenu, QMessageBox, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 from ...context import AppContext
@@ -29,6 +29,11 @@ from .attachment_view import AttachmentViewerDialog
 _EXECUTABLE_EXTENSIONS = {
     ".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".vbe", ".js",
     ".jse", ".jar", ".msi", ".msp", ".sh", ".app", ".apk", ".hta", ".wsf",
+}
+
+_SPECIAL_USE_LABELS = {
+    "Sent": "Отправленные", "Drafts": "Черновики", "Trash": "Корзина",
+    "Junk": "Спам", "Archive": "Архив", "All": "Все письма",
 }
 
 
@@ -64,11 +69,15 @@ class MessagePane(QWidget):
     умолчанию), кнопка «показать оригинал» для HTML — во внешнем
     браузере, не внутри приложения (инвариант П-3)."""
 
-    def __init__(self, ctx: AppContext, message, on_need_body):
+    def __init__(self, ctx: AppContext, message, on_need_body, on_changed=None):
         super().__init__()
         self.ctx = ctx
         self.message = message
         self._on_need_body = on_need_body
+        # on_changed(kind, message_id_header, mailbox_id, previous_folder,
+        # dest_folder) — MailScreen's hook for refreshing the thread list
+        # and offering "Отменить" after a move/trash/permanent-delete.
+        self._on_changed = on_changed or (lambda **kw: None)
 
         frame = card()
         outer = QVBoxLayout(self)
@@ -90,6 +99,22 @@ class MessagePane(QWidget):
             addr.setProperty("class", "faint")
             top.addWidget(addr)
         top.addStretch(1)
+
+        self.flag_btn = button("★" if message["is_flagged"] else "☆", "ghost")
+        self.flag_btn.setToolTip("Отметить важным")
+        self.flag_btn.clicked.connect(self._on_toggle_flag)
+        top.addWidget(self.flag_btn)
+
+        self.move_btn = button("→", "ghost")
+        self.move_btn.setToolTip("Переместить в папку…")
+        self.move_btn.clicked.connect(self._on_move_clicked)
+        top.addWidget(self.move_btn)
+
+        self.trash_btn = button("🗑", "ghost")
+        self._update_trash_button()
+        self.trash_btn.clicked.connect(self._on_trash_clicked)
+        top.addWidget(self.trash_btn)
+
         top.addWidget(muted(short_dt(message["date"])))
         lay.addLayout(top)
 
@@ -190,6 +215,93 @@ class MessagePane(QWidget):
         # П-4: opens a viewer inside the app — never runs the file, no
         # matter what its extension claims to be.
         AttachmentViewerDialog(self.ctx, attachment, parent=self).exec()
+
+    # ---- flags / move / trash (П4) ---------------------------------------
+    def _update_trash_button(self) -> None:
+        self.trash_btn.setToolTip(
+            "Удалить окончательно" if self._is_in_trash() else "Переместить в корзину")
+
+    def _is_in_trash(self) -> bool:
+        trash = self.ctx.db.get_mail_folder_by_special_use(self.message["mailbox_id"], "Trash")
+        return trash is not None and self.message["folder"] == trash["name"]
+
+    def _on_toggle_flag(self) -> None:
+        message_id = self.message["id"]
+        new_value = not bool(self.message["is_flagged"])
+        self.flag_btn.setText("★" if new_value else "☆")  # мгновенный отклик, не дожидаясь сети
+
+        async def _run():
+            return await run_blocking(self.ctx.mail_service.set_flagged, message_id, new_value)
+
+        def on_done():
+            refreshed = self.ctx.db.get_mail_message(message_id)
+            if refreshed is not None:
+                self.message = refreshed
+            self._on_changed()
+
+        fire(_run(), parent=self, on_error=lambda e: None, on_done=on_done)
+
+    def _on_move_clicked(self) -> None:
+        menu = QMenu(self)
+        folders = self.ctx.db.list_mail_folders(self.message["mailbox_id"])
+        added = 0
+        for f in folders:
+            if f["name"] == self.message["folder"]:
+                continue
+            label = f["name"]
+            if f["special_use"]:
+                label += f" ({_SPECIAL_USE_LABELS.get(f['special_use'], f['special_use'])})"
+            action = menu.addAction(label)
+            action.triggered.connect(lambda _c=False, n=f["name"]: self._do_move(n))
+            added += 1
+        if added == 0:
+            return
+        menu.exec(self.move_btn.mapToGlobal(self.move_btn.rect().bottomLeft()))
+
+    def _do_move(self, dest_folder: str) -> None:
+        message_id = self.message["id"]
+        message_id_header = self.message["message_id"]
+        mailbox_id = self.message["mailbox_id"]
+        previous_folder = self.message["folder"]
+
+        async def _run():
+            return await run_blocking(self.ctx.mail_service.move_message, message_id, dest_folder)
+
+        def on_done():
+            self._on_changed(kind="move", message_id_header=message_id_header, mailbox_id=mailbox_id,
+                              previous_folder=previous_folder, dest_folder=dest_folder)
+
+        fire(_run(), parent=self, on_error=lambda e: None, on_done=on_done)
+
+    def _on_trash_clicked(self) -> None:
+        message_id = self.message["id"]
+        message_id_header = self.message["message_id"]
+        mailbox_id = self.message["mailbox_id"]
+        previous_folder = self.message["folder"]
+
+        if self._is_in_trash():
+            if QMessageBox.question(
+                self, "Удалить окончательно", "Удалить письмо навсегда? Отменить нельзя."
+            ) != QMessageBox.Yes:
+                return
+
+            async def _run_delete():
+                return await run_blocking(self.ctx.mail_service.permanently_delete, message_id)
+
+            def on_deleted():
+                self._on_changed(kind="delete")
+
+            fire(_run_delete(), parent=self, on_error=lambda e: None, on_done=on_deleted)
+            return
+
+        async def _run_trash():
+            return await run_blocking(self.ctx.mail_service.move_to_trash, message_id)
+
+        def on_trashed():
+            self._on_changed(kind="trash", message_id_header=message_id_header, mailbox_id=mailbox_id,
+                              previous_folder=previous_folder, dest_folder="Корзина")
+
+        fire(_run_trash(), parent=self, on_error=lambda e: None, on_done=on_trashed)
 
 
 class MailScreen(QWidget):
@@ -373,11 +485,12 @@ class MailScreen(QWidget):
     def _add_thread_item(self, t) -> None:
         unread = t["unread_count"] > 0
         dot = "●  " if unread else "○  "
+        star = "★  " if t["has_flagged"] else ""
         clip = "  📎" if t["has_attachments"] else ""
         subject = t["subject"] or "(без темы)"
         who = t["sender_name"] or t["sender_address"] or "—"
         count = f" ({t['message_count']})" if t["message_count"] > 1 else ""
-        text = f"{dot}{subject}{count}{clip}\n{who} · {short_dt(t['last_date'])}"
+        text = f"{dot}{star}{subject}{count}{clip}\n{who} · {short_dt(t['last_date'])}"
         item = QListWidgetItem(text)
         item.setData(Qt.UserRole, t["thread_id"])
         font = item.font()
@@ -418,6 +531,19 @@ class MailScreen(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(12, 0, 24, 16)
+
+        self.undo_bar = QWidget()
+        undo_lay = QHBoxLayout(self.undo_bar)
+        undo_lay.setContentsMargins(0, 0, 0, 8)
+        self.undo_label = muted("")
+        undo_lay.addWidget(self.undo_label, 1)
+        undo_btn = button("Отменить", "ghost")
+        undo_btn.clicked.connect(self._on_undo_clicked)
+        undo_lay.addWidget(undo_btn)
+        self.undo_bar.setVisible(False)
+        lay.addWidget(self.undo_bar)
+        self._last_action: dict | None = None
+
         self.reading_subject = QLabel("")
         self.reading_subject.setTextFormat(Qt.PlainText)
         self.reading_subject.setWordWrap(True)
@@ -461,8 +587,52 @@ class MailScreen(QWidget):
         self.reading_scroll.setVisible(True)
         self.reading_subject.setText(messages[-1]["subject"] or "(без темы)")
         for message in messages:
-            pane = MessagePane(self.ctx, message, self._fetch_body)
+            pane = MessagePane(self.ctx, message, self._fetch_body, on_changed=self._on_message_changed)
             self.reading_lay.insertWidget(self.reading_lay.count() - 1, pane)
+
+    def _on_message_changed(self, kind: str | None = None, message_id_header: str | None = None,
+                             mailbox_id: int | None = None, previous_folder: str | None = None,
+                             dest_folder: str | None = None) -> None:
+        # П4: перемещение/удаление отражаются в списке цепочек и в
+        # счётчиках слева сразу, без ожидания следующего тика синхрони-
+        # зации — то, что и так уже применилось локально в MailService.
+        if kind in ("move", "trash") and message_id_header and mailbox_id is not None and previous_folder:
+            self._last_action = {
+                "message_id_header": message_id_header, "mailbox_id": mailbox_id,
+                "previous_folder": previous_folder,
+            }
+            label = "Перемещено в «Корзина»" if kind == "trash" else f"Перемещено в «{dest_folder}»"
+            self.undo_label.setText(label)
+            self.undo_bar.setVisible(True)
+        elif kind == "delete":
+            self._last_action = None
+            self.undo_bar.setVisible(False)
+        self._load_threads()
+        self._load_mailboxes_badges_only()
+
+    def _on_undo_clicked(self) -> None:
+        action = self._last_action
+        if action is None:
+            return
+        self._last_action = None
+        self.undo_bar.setVisible(False)
+        mailbox_id = action["mailbox_id"]
+        message = self.ctx.db.get_mail_message_by_message_id(mailbox_id, action["message_id_header"])
+        if message is None:
+            return  # уже успело измениться дальше — отменять нечего
+        message_id = message["id"]
+        previous_folder = action["previous_folder"]
+
+        async def _run():
+            return await run_blocking(self.ctx.mail_service.move_message, message_id, previous_folder)
+
+        def on_done():
+            self._load_threads()
+            self._load_mailboxes_badges_only()
+            if self.selected_thread_id is not None:
+                self._render_thread(self.selected_thread_id)
+
+        fire(_run(), parent=self, on_error=lambda e: None, on_done=on_done)
 
     def _fetch_body(self, message_id: int, on_done) -> None:
         async def _run():

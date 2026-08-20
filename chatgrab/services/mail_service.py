@@ -18,11 +18,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 
 from ..core import mail_attachment_text, mail_thread
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
-from ..integrations.mail.imap_client import ImapClient
+from ..integrations.mail.imap_client import ImapClient, ImapError
 from ..paths import Paths
 from ..security import SecurityService
 
@@ -43,15 +44,31 @@ class MailService:
         # client_factory uses for aiohttp.
         self._client_factory = client_factory or ImapClient
         self._task: asyncio.Task | None = None
+        # П4: IDLE workers, one per enabled mailbox, live only between
+        # start() and stop() — see _ensure_idle_workers(). Kept inert
+        # (self._idle_active stays False) unless start() was actually
+        # called, so calling tick() directly — every existing test does,
+        # none of them call start() — never touches IDLE or its executor
+        # threads at all.
+        self._idle_active = False
+        self._idle_stop_events: dict[int, threading.Event] = {}
+        self._idle_tasks: dict[int, asyncio.Task] = {}
 
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.ensure_future(self._loop())
+        self._idle_active = True
+        self._ensure_idle_workers()
 
     def stop(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
+        self._idle_active = False
+        for stop_event in self._idle_stop_events.values():
+            stop_event.set()
+        self._idle_stop_events.clear()
+        self._idle_tasks.clear()
 
     async def _loop(self) -> None:
         while True:
@@ -67,7 +84,12 @@ class MailService:
         """One pass over every enabled mailbox. A mailbox whose sync fails
         (bad password, unreachable server) is skipped, not fatal — its
         last_error is recorded and the rest still run. Returns how many
-        new messages were stored, across all mailboxes."""
+        new messages were stored, across all mailboxes.
+
+        Also drains each mailbox's offline action queue and (once
+        start() has run) reconciles IDLE workers — both self-healing on
+        every tick rather than needing an explicit "a mailbox was
+        added/enabled" notification from the UI."""
         total = 0
         loop = asyncio.get_event_loop()
         for mailbox in self.db.list_mailboxes(enabled_only=True):
@@ -76,6 +98,12 @@ class MailService:
             except Exception as e:
                 self.db.set_mailbox_field(mailbox["id"], last_error=str(e))
                 self.on_log(f"{mailbox['address']}: {e}", "warn")
+            try:
+                await loop.run_in_executor(None, self.drain_queue, mailbox["id"])
+            except Exception:
+                _logger.info("Почта: не удалось разобрать очередь действий ящика %s", mailbox["id"])
+        if self._idle_active:
+            self._ensure_idle_workers()
         return total
 
     # ---- one mailbox, off the event loop ------------------------------
@@ -96,8 +124,10 @@ class MailService:
         return self.security.decrypt_secret(mailbox["password_enc"]) if mailbox["password_enc"] else ""
 
     def _sync_folders(self, client, mailbox_id: int) -> int:
-        for name in client.list_folders():
-            self.db.upsert_mail_folder(mailbox_id, name, enabled=(name.upper() == "INBOX"))
+        for info in client.list_folders_detailed():
+            self.db.upsert_mail_folder(mailbox_id, info["name"], enabled=(info["name"].upper() == "INBOX"))
+            if info["special_use"]:
+                self.db.set_mail_folder_state(mailbox_id, info["name"], special_use=info["special_use"])
         stored = 0
         for folder in self.db.list_mail_folders(mailbox_id):
             if folder["enabled"]:
@@ -114,17 +144,18 @@ class MailService:
             self.db.reset_mail_folder(mailbox_id, name, uidvalidity)
             folder = self.db.get_mail_folder(mailbox_id, name)
 
-        pairs = client.fetch_new_headers(name, folder["last_uid"])
-        if not pairs:
+        triples = client.fetch_new_headers(name, folder["last_uid"])
+        if not triples:
             return 0
         highest = folder["last_uid"]
-        for uid, raw in pairs:
+        for uid, raw, flags in triples:
             fields = imap_client.parse_headers(raw)
             message_id = self.db.upsert_mail_message(mailbox_id, name, uid, **fields)
             self._assign_thread(mailbox_id, message_id, fields)
+            self.db.sync_message_flags(mailbox_id, name, uid, flags)
             highest = max(highest, uid)
         self.db.set_mail_folder_state(mailbox_id, name, last_uid=highest, last_synced_at=now_iso())
-        return len(pairs)
+        return len(triples)
 
     # ---- threads (П2) — core/mail_thread.py decides, this just does the
     # database lookups that decision needs ------------------------------
@@ -249,14 +280,15 @@ class MailService:
             uids = client.search_uids(folder, query)
             missing = [u for u in uids
                        if self.db.get_mail_message_by_uid(mailbox_id, folder, u) is None]
-            pairs = client.fetch_headers_for_uids(folder, missing) if missing else []
+            triples = client.fetch_headers_for_uids(folder, missing) if missing else []
         finally:
             client.close()
-        for uid, raw in pairs:
+        for uid, raw, flags in triples:
             fields = imap_client.parse_headers(raw)
             message_id = self.db.upsert_mail_message(mailbox_id, folder, uid, **fields)
             self._assign_thread(mailbox_id, message_id, fields)
-        return len(pairs)
+            self.db.sync_message_flags(mailbox_id, folder, uid, flags)
+        return len(triples)
 
     # ---- «прочитано» — локально и на сервере (П2) -----------------------
     def push_read_flags(self, mailbox_id: int, items: list[tuple[str, int]]) -> None:
@@ -281,6 +313,354 @@ class MailService:
                 client.store_seen(folder, uids)
         finally:
             client.close()
+
+    # ---- папки: создание/переименование/удаление/подписка (П4) ----------
+    # Always synchronous and connection-required, unlike the per-message
+    # actions below — "действия (пометки, перемещения) складываются в
+    # очередь" in PLAN.md's checklist names exactly those two, not folder
+    # administration, and there's no meaningful "offline create a folder"
+    # to defer in the first place.
+    def create_folder(self, mailbox_id: int, name: str) -> None:
+        self._with_client(mailbox_id, lambda c: c.create_folder(name))
+        self.db.upsert_mail_folder(mailbox_id, name, enabled=False)
+
+    def rename_folder(self, mailbox_id: int, old_name: str, new_name: str) -> None:
+        self._with_client(mailbox_id, lambda c: c.rename_folder(old_name, new_name))
+        self.db.rename_mail_folder_record(mailbox_id, old_name, new_name)
+
+    def delete_folder(self, mailbox_id: int, name: str) -> None:
+        self._with_client(mailbox_id, lambda c: c.delete_folder(name))
+        self.db.delete_mail_folder_record(mailbox_id, name)
+
+    def set_folder_subscribed(self, mailbox_id: int, name: str, subscribed: bool) -> None:
+        if subscribed:
+            self._with_client(mailbox_id, lambda c: c.subscribe_folder(name))
+        else:
+            self._with_client(mailbox_id, lambda c: c.unsubscribe_folder(name))
+        self.db.set_mail_folder_state(mailbox_id, name, enabled=1 if subscribed else 0)
+
+    def _with_client(self, mailbox_id: int, fn) -> None:
+        mailbox = self.db.get_mailbox(mailbox_id)
+        if mailbox is None:
+            raise ImapError("ящик не найден")
+        client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+        client.connect(mailbox["address"], self._password_for(mailbox))
+        try:
+            fn(client)
+        finally:
+            client.close()
+
+    # ---- действия с письмом: местно сразу, на сервер — через очередь
+    # (П4) --------------------------------------------------------------
+    # Every action here applies to the local database immediately (so
+    # the UI never waits on the network) and enqueues a mail_action_queue
+    # row before making one best-effort attempt to push it — offline or
+    # not, the row survives either way, and drain_queue() (called from
+    # every tick(), and again right after enqueuing here) is what
+    # actually gets it to the server, retried for as long as it takes.
+    def mark_read(self, message_id: int, read: bool = True) -> None:
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return
+        self.db.set_message_flags(message_id, is_read=read)
+        self._enqueue_flags(message)
+
+    def set_flagged(self, message_id: int, flagged: bool) -> None:
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return
+        self.db.set_message_flags(message_id, is_flagged=flagged)
+        self._enqueue_flags(message)
+
+    def _enqueue_flags(self, message) -> None:
+        """One "flags" action always pushes the message's *current*
+        local is_read/is_flagged state, not a delta — idempotent by
+        construction, so replaying it (a retried push, a queue drained
+        twice by accident) never needs special-casing."""
+        self.db.enqueue_mail_action(message["mailbox_id"], message["id"], "flags", {})
+        self.drain_queue(message["mailbox_id"])
+
+    def move_message(self, message_id: int, dest_folder: str, dest_mailbox_id: int | None = None) -> None:
+        """Same-mailbox move applies locally right away (folder changes
+        immediately, so the UI reflects it before the network round trip
+        even starts) and gets a durable "moved elsewhere" placeholder
+        until drain_queue() confirms it server-side and re-syncs the
+        destination folder for the message's real, server-assigned UID
+        (a move gets a brand new UID in its new folder — the same reason
+        а fresh row, not an edited one, is what ends up there; see
+        _apply_move()). Cross-mailbox move has no useful "local-only"
+        half — the destination row doesn't exist in this app's database
+        at all until the server confirms the copy — so it's applied only
+        by drain_queue(), same as if the mailbox were offline the whole
+        time; the message simply doesn't move in the UI until that
+        succeeds."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return
+        source_mailbox_id = message["mailbox_id"]
+        cross = dest_mailbox_id is not None and dest_mailbox_id != source_mailbox_id
+        if not cross:
+            trash = self.db.get_mail_folder_by_special_use(source_mailbox_id, "Trash")
+            if trash is not None and dest_folder == trash["name"]:
+                self.db.move_message_to_trash_local(message_id, dest_folder)
+            else:
+                self.db.move_message_local(message_id, dest_folder)
+        self.db.enqueue_mail_action(source_mailbox_id, message_id, "move", {
+            "source_folder": message["folder"],
+            "dest_folder": dest_folder,
+            "dest_mailbox_id": dest_mailbox_id if cross else None,
+        })
+        self.drain_queue(source_mailbox_id)
+
+    def move_to_trash(self, message_id: int) -> bool:
+        """True if the mailbox actually has a \\Trash-special-use folder
+        to move into — false means "nothing to do", not an error; a
+        caller (the UI) decides what to show for a mailbox where Trash
+        hasn't been detected yet."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return False
+        trash = self.db.get_mail_folder_by_special_use(message["mailbox_id"], "Trash")
+        if trash is None:
+            return False
+        self.move_message(message_id, trash["name"])
+        return True
+
+    def restore_from_trash(self, message_id: int) -> bool:
+        """The delete half of "перемещение и удаление обратимы, пока
+        письмо в корзине" — reverses move_to_trash() by moving back to
+        restore_folder, at any point while the message is still sitting
+        in Trash, not just immediately after. False if there was nothing
+        to restore (see db.restore_message_from_trash)."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return False
+        target = self.db.restore_message_from_trash(message_id)
+        if target is None:
+            return False
+        self.db.enqueue_mail_action(message["mailbox_id"], message_id, "move", {
+            "source_folder": message["folder"], "dest_folder": target, "dest_mailbox_id": None,
+        })
+        self.drain_queue(message["mailbox_id"])
+        return True
+
+    def permanently_delete(self, message_id: int) -> None:
+        """No undo past this call — see permanently_delete() on
+        ImapClient. Folder+uid are captured into the queued action's
+        payload *before* the local row disappears, since drain_queue()
+        won't have a message row left to read them from afterward."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return
+        mailbox_id = message["mailbox_id"]
+        self.db.enqueue_mail_action(mailbox_id, message_id, "delete", {
+            "folder": message["folder"], "uid": message["uid"],
+        })
+        self.db.delete_mail_message_local(message_id)
+        self.drain_queue(mailbox_id)
+
+    # ---- offline action queue: drain (П4) --------------------------------
+    def drain_queue(self, mailbox_id: int) -> int:
+        """Applies every still-pending action for one mailbox, in the
+        order they were enqueued, over a single connection. Best-effort
+        per mailbox, same shape as _sync_mailbox(): a connection failure
+        here leaves every remaining action queued for the next tick (or
+        the next explicit call right after some other action), it never
+        raises out to the caller. Returns how many actions were applied.
+        Safe to call as often as needed — "не применяется дважды" holds
+        because a row is only ever read here while applied_at IS NULL,
+        and is marked applied in the same call that pushed it."""
+        pending = self.db.list_pending_mail_actions(mailbox_id)
+        if not pending:
+            return 0
+        mailbox = self.db.get_mailbox(mailbox_id)
+        if mailbox is None or not mailbox["enabled"]:
+            return 0
+        client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+        try:
+            client.connect(mailbox["address"], self._password_for(mailbox))
+        except Exception as e:
+            _logger.info("Почта: очередь ящика %s не разобрана — нет соединения: %s", mailbox_id, e)
+            return 0
+        applied = 0
+        try:
+            for action in pending:
+                try:
+                    self._apply_queued_action(client, mailbox_id, action)
+                except Exception as e:
+                    _logger.info(
+                        "Почта: действие %s (%s) для ящика %s отложено: %s",
+                        action["id"], action["kind"], mailbox_id, e)
+                    continue
+                self.db.mark_mail_action_applied(action["id"])
+                applied += 1
+        finally:
+            client.close()
+        return applied
+
+    def _apply_queued_action(self, client, mailbox_id: int, action) -> None:
+        payload = json.loads(action["payload"] or "{}")
+        kind = action["kind"]
+        if kind == "flags":
+            self._apply_flags_action(client, action)
+        elif kind == "move":
+            self._apply_move_action(client, mailbox_id, action, payload)
+        elif kind == "delete":
+            client.permanently_delete(payload["folder"], payload["uid"])
+        else:
+            raise ImapError(f"неизвестное действие в очереди: {kind!r}")
+
+    def _apply_flags_action(self, client, action) -> None:
+        message = self.db.get_mail_message(action["message_id"])
+        if message is None:
+            return  # сообщение с тех пор удалено — применять нечего
+        client.store_flag(message["folder"], [message["uid"]], "\\Seen", add=bool(message["is_read"]))
+        client.store_flag(message["folder"], [message["uid"]], "\\Flagged", add=bool(message["is_flagged"]))
+
+    def _apply_move_action(self, client, mailbox_id: int, action, payload: dict) -> None:
+        message = self.db.get_mail_message(action["message_id"])
+        if message is None:
+            return  # уже перемещено и подчищено более ранней попыткой
+        source_folder = payload["source_folder"]
+        dest_folder = payload["dest_folder"]
+        dest_mailbox_id = payload.get("dest_mailbox_id")
+        if dest_mailbox_id:
+            self._apply_cross_mailbox_move(client, mailbox_id, message, source_folder,
+                                            dest_folder, dest_mailbox_id)
+            return
+        message_id_header = message["message_id"]
+        client.move_message(source_folder, message["uid"], dest_folder)
+        # A move gets a brand-new UID in its destination folder on any
+        # real IMAP server — this row's uid is now stale for dest_folder,
+        # so it's dropped rather than "fixed up", and a targeted resync
+        # of just the destination folder re-discovers the message under
+        # its real UID the normal way (headers, flags, thread assignment
+        # all run exactly as they would for any newly-seen message).
+        self.db.delete_mail_message_local(message["id"])
+        dest_row = self.db.get_mail_folder(mailbox_id, dest_folder)
+        if dest_row is None:
+            self.db.upsert_mail_folder(mailbox_id, dest_folder)
+            dest_row = self.db.get_mail_folder(mailbox_id, dest_folder)
+        self._sync_one_folder(client, mailbox_id, dest_row)
+        # The resync above just created a brand-new row for this message
+        # with restore_folder NULL, same as any newly-upserted message —
+        # if this move landed it in Trash, that would silently throw away
+        # move_message_to_trash_local()'s optimistic "restore to
+        # source_folder" the instant the server confirmed the move, which
+        # is exactly backwards: confirmation is when it needs to become
+        # durable, not when it should disappear. Re-attached here, by
+        # Message-ID, onto whichever row now carries the real UID.
+        trash = self.db.get_mail_folder_by_special_use(mailbox_id, "Trash")
+        if trash is not None and dest_folder == trash["name"] and message_id_header:
+            fresh = self.db.get_mail_message_by_message_id(mailbox_id, message_id_header)
+            if fresh is not None:
+                self.db.set_message_restore_folder(fresh["id"], source_folder)
+
+    def _apply_cross_mailbox_move(self, client, mailbox_id: int, message, source_folder: str,
+                                   dest_folder: str, dest_mailbox_id: int) -> None:
+        dest_mailbox = self.db.get_mailbox(dest_mailbox_id)
+        if dest_mailbox is None:
+            raise ImapError("ящик назначения не найден")
+        raw = client.fetch_full_message(source_folder, message["uid"])
+        flags = [f for f, present in (
+            ("\\Seen", message["is_read"]), ("\\Flagged", message["is_flagged"]),
+            ("\\Answered", message["is_answered"]),
+        ) if present]
+        dest_client = self._client_factory(dest_mailbox["imap_host"], dest_mailbox["imap_port"])
+        dest_client.connect(dest_mailbox["address"], self._password_for(dest_mailbox))
+        try:
+            dest_client.append_message(dest_folder, raw, flags=flags or None)
+            # The appended copy's own UID isn't read back from APPEND's
+            # response (APPENDUID needs UIDPLUS, not guaranteed) — a
+            # targeted resync of just the destination folder, over this
+            # same still-open connection, discovers it the ordinary way
+            # instead: headers, flags, and thread assignment all run
+            # exactly as they would for any newly-seen message, so the
+            # message shows up in mailbox B immediately rather than
+            # waiting for B's own next periodic tick.
+            dest_folder_row = self.db.get_mail_folder(dest_mailbox_id, dest_folder)
+            if dest_folder_row is None:
+                self.db.upsert_mail_folder(dest_mailbox_id, dest_folder)
+                dest_folder_row = self.db.get_mail_folder(dest_mailbox_id, dest_folder)
+            self._sync_one_folder(dest_client, dest_mailbox_id, dest_folder_row)
+        finally:
+            dest_client.close()
+        client.permanently_delete(source_folder, message["uid"])
+        self.db.delete_mail_message_local(message["id"])
+
+    # ---- IDLE (П4) ---------------------------------------------------
+    def _ensure_idle_workers(self) -> None:
+        """Starts an IDLE worker for every currently-enabled mailbox that
+        doesn't already have one, and stops any worker whose mailbox was
+        disabled or deleted since — called from tick(), so this needs no
+        separate notification path when a mailbox is added/enabled after
+        start() already ran."""
+        enabled_ids = {m["id"] for m in self.db.list_mailboxes(enabled_only=True)}
+        for mailbox_id in list(self._idle_stop_events):
+            if mailbox_id not in enabled_ids:
+                self._idle_stop_events.pop(mailbox_id).set()
+                self._idle_tasks.pop(mailbox_id, None)
+        loop = asyncio.get_event_loop()
+        for mailbox_id in enabled_ids:
+            task = self._idle_tasks.get(mailbox_id)
+            if task is not None and not task.done():
+                continue
+            stop_event = threading.Event()
+            self._idle_stop_events[mailbox_id] = stop_event
+            self._idle_tasks[mailbox_id] = asyncio.ensure_future(
+                loop.run_in_executor(None, self._idle_worker, mailbox_id, stop_event, loop))
+
+    def _idle_worker(self, mailbox_id: int, stop_event: threading.Event, loop) -> None:
+        """Runs on its own executor thread for as long as the mailbox
+        stays enabled — reconnects with backoff on any drop. The
+        ordinary TICK_SECONDS loop keeps running independently the
+        entire time and remains correct with or without this thread:
+        IDLE is a pure latency optimisation layered on top of it, never
+        the only path a message can arrive through — "откат на опрос"
+        (PLAN.md) is therefore not special-cased code here, it's simply
+        what already happens whenever IDLE isn't running."""
+        backoff = 5
+        while not stop_event.is_set():
+            mailbox = self.db.get_mailbox(mailbox_id)
+            if mailbox is None or not mailbox["enabled"]:
+                return
+            folder = self._idle_folder(mailbox_id)
+            if folder is None:
+                return
+            client = self._client_factory(mailbox["imap_host"], mailbox["imap_port"])
+            try:
+                client.connect(mailbox["address"], self._password_for(mailbox))
+                if not client.supports_idle():
+                    return
+                client.idle(folder, lambda: self._on_idle_event(mailbox_id, loop), stop_event)
+                backoff = 5  # a clean return (stop_event was set) resets it
+            except Exception as e:
+                _logger.info("Почта: IDLE ящика %s прервался, переподключаюсь через %sс: %s",
+                              mailbox_id, backoff, e)
+                stop_event.wait(backoff)
+                backoff = min(backoff * 2, 300)
+            finally:
+                client.close()
+
+    def _idle_folder(self, mailbox_id: int) -> str | None:
+        inbox = next((f for f in self.db.list_mail_folders(mailbox_id)
+                      if f["enabled"] and f["name"].upper() == "INBOX"), None)
+        return inbox["name"] if inbox else None
+
+    def _on_idle_event(self, mailbox_id: int, loop) -> None:
+        """Called from the IDLE worker thread itself — hands off to the
+        event loop rather than syncing right here: _sync_mailbox() does
+        its own blocking IMAP I/O on a *different* connection, which has
+        no business running on the IDLE thread while that thread's own
+        connection is still mid-command."""
+        asyncio.run_coroutine_threadsafe(self._resync_after_idle(mailbox_id), loop)
+
+    async def _resync_after_idle(self, mailbox_id: int) -> None:
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, self._sync_mailbox, mailbox_id)
+        except Exception:
+            _logger.warning("Почта: ресинк по IDLE-событию ящика %s не удался", mailbox_id, exc_info=True)
 
     # ---- "Проверить подключение" ---------------------------------------
     def test_connection(self, imap_host: str, imap_port: int, address: str, password: str) -> str:

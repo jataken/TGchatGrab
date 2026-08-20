@@ -30,6 +30,8 @@ import json
 import ntpath
 import posixpath
 import re
+import socket
+import time
 from email.header import decode_header
 from html.parser import HTMLParser
 from pathlib import Path
@@ -251,25 +253,91 @@ def _parse_fetch_pairs(data) -> list[tuple[int, bytes]]:
     return out
 
 
+def _parse_fetch_pairs_with_flags(data) -> list[tuple[int, bytes, dict]]:
+    """Same shape as _parse_fetch_pairs(), plus parse_flags() read off
+    the same meta line — used wherever the FETCH request asked for
+    FLAGS alongside the header/body (П4: a sync has to pick up
+    \\Flagged/\\Answered/\\Seen changes made by another mail client, not
+    only push this app's own changes outward)."""
+    out = []
+    for item in data or ():
+        if isinstance(item, tuple) and len(item) == 2:
+            meta, payload = item
+            m = _UID_RE.search(meta)
+            if m:
+                out.append((int(m.group(1)), payload, parse_flags(meta)))
+    return out
+
+
 def _parse_status_response(line: bytes) -> int | None:
     m = _STATUS_RE.search(line or b"")
     return int(m.group(1)) if m else None
 
 
-def _parse_list_response(data) -> list[str]:
-    """"(\\HasNoChildren) "/" "INBOX"" -> "INBOX". Modified-UTF-7 mailbox
-    names (non-ASCII folders on some servers) aren't decoded here — real
-    folder management is П4's job; this session only needs INBOX, which
-    is always plain ASCII."""
-    names = []
+_LIST_ATTRS_RE = re.compile(r"^\(([^)]*)\)")
+# RFC 6154 — the subset of LIST attributes that name a folder's role,
+# not its structural shape (\HasChildren, \Marked, …).
+_SPECIAL_USE_ATTRS = {"\\Sent", "\\Drafts", "\\Trash", "\\Junk", "\\Archive", "\\All"}
+
+
+def _parse_list_response_detailed(data) -> list[dict]:
+    """Name plus whatever RFC 6154 SPECIAL-USE attribute the server
+    volunteered on a *plain* LIST — deliberately not the LIST-EXTENDED
+    "RETURN (SPECIAL-USE)" form, which needs a raw, hand-built command
+    imaplib has no public method for and not every server implements
+    anyway. The providers PLAN.md names (Yandex, Mail.ru, Gmail) already
+    include \\Sent/\\Drafts/\\Trash/\\Junk on an ordinary LIST without
+    being asked, which covers the common case; a server that only
+    reports it under RETURN just leaves special_use NULL — detected by
+    what the server actually said, never guessed from the folder's name,
+    which is the invariant the checklist actually cares about."""
+    out = []
     for line in data or ():
         if line is None:
             continue
         text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else str(line)
-        m = _FOLDER_NAME_RE.search(text)
-        if m:
-            names.append(m.group(1))
-    return names
+        name_m = _FOLDER_NAME_RE.search(text)
+        if not name_m:
+            continue
+        attrs_m = _LIST_ATTRS_RE.match(text.strip())
+        attrs = attrs_m.group(1).split() if attrs_m else []
+        special_use = next((a[1:] for a in attrs if a in _SPECIAL_USE_ATTRS), None)
+        out.append({
+            "name": name_m.group(1),
+            "special_use": special_use,
+            "selectable": "\\Noselect" not in attrs,
+        })
+    return out
+
+
+def _parse_list_response(data) -> list[str]:
+    """"(\\HasNoChildren) "/" "INBOX"" -> "INBOX". Modified-UTF-7 mailbox
+    names (non-ASCII folders on some servers) aren't decoded here."""
+    return [f["name"] for f in _parse_list_response_detailed(data)]
+
+
+_FLAGS_RE = re.compile(rb"FLAGS \(([^)]*)\)")
+
+
+def parse_flags(meta: bytes) -> dict:
+    """The same FETCH meta line _parse_fetch_pairs_with_flags() splits a
+    UID out of, read again for its FLAGS() list — \\Answered and a
+    message's own \\Seen/\\Flagged state can change from *another* mail
+    client (Outlook, webmail), not just from actions taken here, so a
+    normal sync has to reconcile them, not only push local state
+    outward. $Forwarded isn't an RFC-standard flag (no client is
+    required to set or honour it), but it's the de facto keyword every
+    major client uses, and IMAP servers accept arbitrary keyword flags
+    by design (RFC 3501 §2.3.2) — reading it costs nothing even on a
+    server that never sets it."""
+    m = _FLAGS_RE.search(meta or b"")
+    flags = {f.decode("ascii", "replace") for f in (m.group(1).split() if m else [])}
+    return {
+        "is_read": "\\Seen" in flags,
+        "is_flagged": "\\Flagged" in flags,
+        "is_answered": "\\Answered" in flags,
+        "is_forwarded": "$Forwarded" in flags,
+    }
 
 
 class ImapClient:
@@ -301,6 +369,53 @@ class ImapClient:
             raise ImapError("не удалось получить список папок")
         return _parse_list_response(data)
 
+    def list_folders_detailed(self) -> list[dict]:
+        """Name, SPECIAL-USE role, and whether the folder can even be
+        selected (a \\Noselect node is a pure hierarchy separator, e.g.
+        Gmail's "[Gmail]") — everything П4's folder tree and
+        auto-detected Sent/Drafts/Trash/Junk needs, from one LIST."""
+        typ, data = self._conn.list()
+        if typ != "OK":
+            raise ImapError("не удалось получить список папок")
+        return _parse_list_response_detailed(data)
+
+    def create_folder(self, name: str) -> None:
+        typ, data = self._conn.create(name)
+        if typ != "OK":
+            raise ImapError(f"не удалось создать папку {name!r}: {_first(data).decode('utf-8', 'replace')}")
+
+    def rename_folder(self, old_name: str, new_name: str) -> None:
+        typ, data = self._conn.rename(old_name, new_name)
+        if typ != "OK":
+            raise ImapError(
+                f"не удалось переименовать папку {old_name!r} в {new_name!r}: "
+                f"{_first(data).decode('utf-8', 'replace')}")
+
+    def delete_folder(self, name: str) -> None:
+        typ, data = self._conn.delete(name)
+        if typ != "OK":
+            raise ImapError(f"не удалось удалить папку {name!r}: {_first(data).decode('utf-8', 'replace')}")
+
+    def subscribe_folder(self, name: str) -> None:
+        typ, data = self._conn.subscribe(name)
+        if typ != "OK":
+            raise ImapError(f"не удалось подписаться на папку {name!r}: {_first(data).decode('utf-8', 'replace')}")
+
+    def unsubscribe_folder(self, name: str) -> None:
+        typ, data = self._conn.unsubscribe(name)
+        if typ != "OK":
+            raise ImapError(f"не удалось отписаться от папки {name!r}: {_first(data).decode('utf-8', 'replace')}")
+
+    def capabilities(self) -> set[str]:
+        typ, data = self._conn.capability()
+        if typ != "OK":
+            return set()
+        raw = b" ".join(d for d in data if d)
+        return {c.decode("ascii", "replace").upper() for c in raw.split()}
+
+    def supports_idle(self) -> bool:
+        return "IDLE" in self.capabilities()
+
     def folder_uidvalidity(self, folder: str) -> int | None:
         """STATUS, not SELECT — doesn't require the folder to be opened
         and never marks anything read."""
@@ -309,17 +424,22 @@ class ImapClient:
             raise ImapError(f"не удалось получить статус папки {folder!r}")
         return _parse_status_response(_first(data))
 
-    def fetch_new_headers(self, folder: str, since_uid: int) -> list[tuple[int, bytes]]:
+    def fetch_new_headers(self, folder: str, since_uid: int) -> list[tuple[int, bytes, dict]]:
         """UID FETCH <since_uid + 1>:* — BODY.PEEK[HEADER], so nothing
-        here ever sets \\Seen. Returns [] when there's nothing newer."""
+        here ever sets \\Seen. FLAGS rides along on the same FETCH (П4):
+        a message can already carry \\Flagged/\\Answered/\\Seen the first
+        time this app ever sees it — arrived that way, or set by another
+        client before this app connected — so the initial sync has to
+        read them, not assume every new message starts blank. Returns
+        [] when there's nothing newer."""
         typ, _ = self._conn.select(folder, readonly=True)
         if typ != "OK":
             raise ImapError(f"не удалось открыть папку {folder!r}")
         typ, data = self._conn.uid(
-            "fetch", f"{since_uid + 1}:*", "(UID BODY.PEEK[HEADER])")
+            "fetch", f"{since_uid + 1}:*", "(UID FLAGS BODY.PEEK[HEADER])")
         if typ != "OK":
             raise ImapError(f"не удалось получить письма из {folder!r}")
-        return _parse_fetch_pairs(data)
+        return _parse_fetch_pairs_with_flags(data)
 
     def fetch_full_message(self, folder: str, uid: int) -> bytes:
         """The complete RFC822 body for one UID — «тело по требованию»."""
@@ -334,21 +454,22 @@ class ImapClient:
             raise ImapError(f"письмо {uid} не найдено в {folder!r}")
         return pairs[0][1]
 
-    def fetch_headers_for_uids(self, folder: str, uids: list[int]) -> list[tuple[int, bytes]]:
-        """Headers for a specific, already-known set of UIDs — used to
-        pull in the headers of search_uids() hits that aren't in the
-        database yet. Same BODY.PEEK[HEADER] as fetch_new_headers, so it
-        never marks anything \\Seen either."""
+    def fetch_headers_for_uids(self, folder: str, uids: list[int]) -> list[tuple[int, bytes, dict]]:
+        """Headers (+ FLAGS, see fetch_new_headers) for a specific,
+        already-known set of UIDs — used to pull in the headers of
+        search_uids() hits that aren't in the database yet. Same
+        BODY.PEEK[HEADER] as fetch_new_headers, so it never marks
+        anything \\Seen either."""
         if not uids:
             return []
         typ, _ = self._conn.select(folder, readonly=True)
         if typ != "OK":
             raise ImapError(f"не удалось открыть папку {folder!r}")
         seq = ",".join(str(u) for u in uids)
-        typ, data = self._conn.uid("fetch", seq, "(UID BODY.PEEK[HEADER])")
+        typ, data = self._conn.uid("fetch", seq, "(UID FLAGS BODY.PEEK[HEADER])")
         if typ != "OK":
             raise ImapError(f"не удалось получить письма из {folder!r}")
-        return _parse_fetch_pairs(data)
+        return _parse_fetch_pairs_with_flags(data)
 
     def search_uids(self, folder: str, query: str) -> list[int]:
         """Server-side UID SEARCH over subject and body — reaches mail
@@ -372,17 +493,152 @@ class ImapClient:
         return [int(x) for x in raw.split()] if raw else []
 
     def store_seen(self, folder: str, uids: list[int]) -> None:
-        """Pushes \\Seen for exactly these UIDs — the *only* place in this
-        client that sets \\Seen server-side; every fetch elsewhere uses
-        BODY.PEEK specifically to avoid this as a side effect. Needs the
-        folder opened read-write (readonly=False), unlike every other
-        method here."""
+        """\\Seen specifically — kept as its own method since every other
+        fetch in this client uses BODY.PEEK specifically to avoid this
+        as a side effect, so this remains the one deliberate exception,
+        callable on its own without pulling in store_flag()'s more
+        general (and slightly more expensive to read) signature."""
+        self.store_flag(folder, uids, "\\Seen", add=True)
+
+    def store_flag(self, folder: str, uids: list[int], flag: str, add: bool) -> None:
+        """General \\Seen/\\Flagged/\\Answered/$Forwarded push (П4) —
+        add=False sends -FLAGS instead of +FLAGS, so this also covers
+        "unflag"/"mark unread". Needs the folder opened read-write
+        (readonly=False), unlike most other methods here."""
         if not uids:
             return
         typ, _ = self._conn.select(folder, readonly=False)
         if typ != "OK":
             raise ImapError(f"не удалось открыть папку {folder!r} для записи")
         seq = ",".join(str(u) for u in uids)
-        typ, _ = self._conn.uid("store", seq, "+FLAGS", "(\\Seen)")
+        op = "+FLAGS" if add else "-FLAGS"
+        typ, _ = self._conn.uid("store", seq, op, f"({flag})")
         if typ != "OK":
-            raise ImapError(f"не удалось отметить письма прочитанными в {folder!r}")
+            raise ImapError(f"не удалось изменить флаг {flag!r} в {folder!r}")
+
+    # ---- move/copy/delete (П4) -------------------------------------------
+    def move_message(self, folder: str, uid: int, dest_folder: str) -> None:
+        """UID MOVE (RFC 6851) if the server accepts it; COPY + \\Deleted
+        + EXPUNGE otherwise — the same "same physical message" outcome
+        either way, just not atomic on a server that lacks MOVE."""
+        typ, _ = self._conn.select(folder, readonly=False)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r}")
+        typ, _ = self._conn.uid("move", str(uid), dest_folder)
+        if typ == "OK":
+            return
+        typ, data = self._conn.uid("copy", str(uid), dest_folder)
+        if typ != "OK":
+            raise ImapError(
+                f"не удалось переместить письмо {uid} из {folder!r} в {dest_folder!r}: "
+                f"{_first(data).decode('utf-8', 'replace')}")
+        self._delete_and_expunge(str(uid))
+
+    def copy_message(self, folder: str, uid: int, dest_folder: str) -> None:
+        typ, _ = self._conn.select(folder, readonly=True)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r}")
+        typ, data = self._conn.uid("copy", str(uid), dest_folder)
+        if typ != "OK":
+            raise ImapError(
+                f"не удалось скопировать письмо {uid} из {folder!r} в {dest_folder!r}: "
+                f"{_first(data).decode('utf-8', 'replace')}")
+
+    def append_message(self, folder: str, raw: bytes, flags: list[str] | None = None) -> None:
+        """Writes a full RFC822 message straight into a folder — the
+        server-side half of a cross-mailbox move (fetch from the source
+        connection, append through the destination mailbox's own
+        connection; a single IMAP session has no command that moves a
+        message between two different accounts)."""
+        flag_str = "(" + " ".join(flags) + ")" if flags else None
+        typ, data = self._conn.append(folder, flag_str, None, raw)
+        if typ != "OK":
+            raise ImapError(
+                f"не удалось дописать письмо в {folder!r}: {_first(data).decode('utf-8', 'replace')}")
+
+    def permanently_delete(self, folder: str, uid: int) -> None:
+        """\\Deleted + expunge — the *only* place a message actually
+        disappears rather than moving to Trash; MailService only calls
+        this for a message already sitting in a \\Trash-special-use
+        folder (see the П-4-adjacent invariant in mail_service.py's
+        docstring: nothing here ever deletes on its own initiative)."""
+        typ, _ = self._conn.select(folder, readonly=False)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r}")
+        self._delete_and_expunge(str(uid))
+
+    def _delete_and_expunge(self, uid_seq: str) -> None:
+        typ, _ = self._conn.uid("store", uid_seq, "+FLAGS", "(\\Deleted)")
+        if typ != "OK":
+            raise ImapError(f"не удалось пометить {uid_seq} на удаление")
+        # UID EXPUNGE (RFC 4315/UIDPLUS) touches only this UID; a server
+        # without UIDPLUS rejects it, and plain EXPUNGE — which removes
+        # every \Deleted message in the folder, not just this one — is
+        # the correct, always-available fallback.
+        typ, _ = self._conn.uid("expunge", uid_seq)
+        if typ == "OK":
+            return
+        typ, _ = self._conn.expunge()
+        if typ != "OK":
+            raise ImapError(f"не удалось зачистить папку после удаления {uid_seq}")
+
+    # ---- IDLE (П4) ---------------------------------------------------
+    # imaplib has no public IDLE support at all (RFC 2177 postdates it
+    # and was never added) — this is the same private-surface workaround
+    # every IDLE-capable Python IMAP tool in the wild uses: send the raw
+    # command via _new_tag()/send(), then read untagged lines directly
+    # off the socket with a timeout so shutdown and periodic re-issuing
+    # both stay possible. A future CPython imaplib rewrite could change
+    # these internals; this is accepted, documented risk, same category
+    # as attachment_view.py's introspected QtPdf calls (П3).
+    _IDLE_READ_TIMEOUT = 20  # seconds between "is anyone waiting to stop me" checks
+    _IDLE_REFRESH_SECONDS = 25 * 60  # RFC 2177: re-issue before ~29 min
+
+    def idle(self, folder: str, on_event: Callable[[], None], stop_event) -> None:
+        """Blocks the calling thread until stop_event.is_set() or the
+        connection breaks. Calls on_event() with no arguments whenever
+        the server reports untagged activity (new/removed message,
+        flag change by another client) — the caller decides what that
+        activity means and does the real resync; this method only ever
+        says "something happened, go look," never what."""
+        typ, _ = self._conn.select(folder, readonly=True)
+        if typ != "OK":
+            raise ImapError(f"не удалось открыть папку {folder!r} для IDLE")
+        self._conn.sock.settimeout(self._IDLE_READ_TIMEOUT)
+        while not stop_event.is_set():
+            tag = self._conn._new_tag()
+            self._conn.send(tag + b" IDLE\r\n")
+            line = self._conn.readline()
+            if not line.startswith(b"+"):
+                raise ImapError(f"сервер отклонил IDLE: {line!r}")
+            started = time.monotonic()
+            try:
+                while (not stop_event.is_set()
+                       and time.monotonic() - started < self._IDLE_REFRESH_SECONDS):
+                    try:
+                        line = self._conn.readline()
+                    except (socket.timeout, TimeoutError):
+                        continue
+                    if not line:
+                        raise ImapError("соединение закрыто сервером во время IDLE")
+                    if line.startswith(b"*"):
+                        on_event()
+            finally:
+                self._conn.send(b"DONE\r\n")
+                self._drain_idle_done(tag)
+
+    def _drain_idle_done(self, tag: bytes) -> None:
+        """Reads up to the tagged completion for the IDLE command just
+        ended, so a stray line doesn't linger in the buffer ahead of the
+        next command. Best-effort: a server slow to answer DONE doesn't
+        get to hang shutdown — a short timeout just gives up and moves
+        on, since the next select()/uid() call will simply see whatever
+        arrives first anyway."""
+        self._conn.sock.settimeout(10)
+        while True:
+            try:
+                line = self._conn.readline()
+            except (socket.timeout, TimeoutError):
+                return
+            if not line or line.startswith(tag):
+                return

@@ -733,6 +733,67 @@ _MAIL_ATTACHMENT_TEXT_TRIGGERS = [
     """,
 ]
 
+# П4 (migration 016) — columns migration 016 ADDs to mail_folder/
+# mail_message via ALTER TABLE, per the 008/011/015 precedent: never
+# retroactively edited into 014's _DDL_MAIL_FOLDER/_DDL_MAIL_MESSAGE
+# above, since those strings are 014's history, not the schema's
+# current shape. See migrations.py's _up_mail_ops for the ALTERs
+# themselves.
+_MAIL_FOLDER_OPS_COLUMNS = [
+    # RFC 6154 SPECIAL-USE attribute (\Sent, \Drafts, \Trash, \Junk,
+    # \Archive, \All) — detected from LIST's own response, not guessed
+    # from the folder's name, per the П4 checklist. NULL for an
+    # ordinary folder with no special role.
+    ("special_use", "TEXT"),
+]
+_MAIL_MESSAGE_OPS_COLUMNS = [
+    ("is_flagged", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_answered", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_forwarded", "INTEGER NOT NULL DEFAULT 0"),
+    # Set only when a message is moved into a \Trash-special-use folder
+    # by this app's own delete action — the folder it came from, so
+    # "restore" (see mixins/mail.py) knows where "back" is. Cleared on
+    # any further move/restore. NULL everywhere else, including for a
+    # message that was always in Trash for other reasons (arrived there
+    # directly, or trashed by another mail client) — there's nothing to
+    # "restore" to in that case, so no undo is offered for it either.
+    ("restore_folder", "TEXT"),
+]
+
+# One row per not-yet-confirmed server-side effect of a local action —
+# "действия (пометки, перемещения) складываются в очередь" from the
+# П4 checklist, scoped to exactly what that sentence names: per-message
+# tag/move/delete actions, not folder administration (create/rename/
+# delete a folder needs a live connection by its very nature — there's
+# no useful "offline create" to queue). applied_at NULL is "still
+# pending"; a row is never deleted after being applied, so a restart
+# mid-drain can always tell "already done" from "still to do" by that
+# column alone, per the checklist's "не применяется дважды".
+_DDL_MAIL_ACTION_QUEUE = """
+CREATE TABLE IF NOT EXISTS mail_action_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    message_id INTEGER,          -- which mail_message row this targets;
+                                  -- lets a header-resync tell "there's a
+                                  -- local action for this message still
+                                  -- in flight" and skip overwriting its
+                                  -- flags from what the server reports
+                                  -- until that action is confirmed applied
+    kind TEXT NOT NULL,          -- mark_read | mark_unread | flag | unflag |
+                                  -- move | copy | delete | purge
+    payload TEXT NOT NULL,       -- JSON, shape depends on kind
+    created_at TEXT NOT NULL,
+    applied_at TEXT
+);
+"""
+
+_DDL_MAIL_ACTION_QUEUE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_mail_action_queue_pending "
+    "ON mail_action_queue(mailbox_id) WHERE applied_at IS NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_mail_action_queue_message "
+    "ON mail_action_queue(message_id) WHERE applied_at IS NULL;",
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,11 +1,11 @@
 """Почта → ящики: добавить, проверить подключение, включить/выключить,
-удалить. The reading screen itself is П2 — this session only needs
-enough UI to get a mailbox syncing and to see that it's working.
+удалить, управлять папками (П4).
 """
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
@@ -14,6 +14,157 @@ from ..util import fire, run_blocking
 from ..widgets import FieldRow, button, card, h1, muted
 from ...integrations.mail import credentials as mail_credentials
 from ...integrations.mail.imap_client import autodetect
+
+_SPECIAL_USE_LABELS = {
+    "Sent": "Отправленные", "Drafts": "Черновики", "Trash": "Корзина",
+    "Junk": "Спам", "Archive": "Архив", "All": "Все письма",
+}
+
+
+class FolderManagerDialog(QDialog):
+    """Create/rename/delete/subscribe — one mailbox's folder tree, П4.
+    A dialog rather than inline in the mailbox row: folder admin is a
+    rare, deliberate action, not something that needs to stay visible
+    on every screen load the way the mailbox list itself does."""
+
+    def __init__(self, ctx: AppContext, mailbox_id: int, mailbox_address: str, parent=None):
+        super().__init__(parent)
+        self.ctx = ctx
+        self.mailbox_id = mailbox_id
+        self.setWindowTitle(f"Папки — {mailbox_address}")
+        self.resize(520, 560)
+
+        outer = QVBoxLayout(self)
+
+        create_row = QHBoxLayout()
+        self.new_name_field = QLineEdit()
+        self.new_name_field.setPlaceholderText("Имя новой папки…")
+        create_row.addWidget(self.new_name_field, 1)
+        create_btn = button("Создать", "secondary")
+        create_btn.clicked.connect(self._on_create)
+        create_row.addWidget(create_btn)
+        outer.addLayout(create_row)
+
+        self.status = muted("")
+        self.status.setWordWrap(True)
+        outer.addWidget(self.status)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        self.list_box = QVBoxLayout(inner)
+        self.list_box.setSpacing(6)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        close_btn = button("Закрыть", "secondary")
+        close_btn.clicked.connect(self.accept)
+        outer.addWidget(close_btn)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        while self.list_box.count():
+            item = self.list_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        for folder in self.ctx.db.list_mail_folders(self.mailbox_id):
+            self.list_box.addWidget(self._build_folder_row(folder))
+        self.list_box.addStretch(1)
+
+    def _build_folder_row(self, folder) -> QWidget:
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
+
+        label = folder["name"]
+        if folder["special_use"]:
+            label += f"  · {_SPECIAL_USE_LABELS.get(folder['special_use'], folder['special_use'])}"
+        rl.addWidget(QLabel(label), 1)
+
+        subscribed = QCheckBox("синхронизировать")
+        subscribed.setChecked(bool(folder["enabled"]))
+        subscribed.toggled.connect(lambda checked, n=folder["name"]: self._on_toggle_subscribed(n, checked))
+        rl.addWidget(subscribed)
+
+        rename_btn = button("✎", "ghost")
+        rename_btn.setToolTip("Переименовать")
+        rename_btn.clicked.connect(lambda _c, n=folder["name"]: self._on_rename(n))
+        rl.addWidget(rename_btn)
+
+        delete_btn = button("✕", "ghost")
+        delete_btn.setToolTip("Удалить")
+        delete_btn.clicked.connect(lambda _c, n=folder["name"]: self._on_delete(n))
+        rl.addWidget(delete_btn)
+        return row
+
+    def _run(self, coro_fn, on_success=None) -> None:
+        self.status.setText("Выполняю…")
+        task = fire(coro_fn(), parent=self,
+                     on_error=lambda e: self.status.setText(f"Не получилось: {e}"))
+
+        def _apply(t):
+            if t.cancelled() or t.exception() is not None:
+                return
+            self.status.setText("")
+            if on_success:
+                on_success()
+            self._refresh()
+
+        task.add_done_callback(_apply)
+
+    def _on_create(self) -> None:
+        name = self.new_name_field.text().strip()
+        if not name:
+            return
+        mailbox_id = self.mailbox_id
+
+        async def _go():
+            return await run_blocking(self.ctx.mail_service.create_folder, mailbox_id, name)
+
+        self._run(_go, on_success=self.new_name_field.clear)
+
+    def _on_rename(self, old_name: str) -> None:
+        new_name, ok = _ask_text(self, "Переименовать папку", f"Новое имя для «{old_name}»:", old_name)
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+        mailbox_id = self.mailbox_id
+
+        async def _go():
+            return await run_blocking(
+                self.ctx.mail_service.rename_folder, mailbox_id, old_name, new_name.strip())
+
+        self._run(_go)
+
+    def _on_delete(self, name: str) -> None:
+        if QMessageBox.question(
+            self, "Удалить папку",
+            f"Удалить папку «{name}» и всю собранную из неё почту? Отменить нельзя."
+        ) != QMessageBox.Yes:
+            return
+        mailbox_id = self.mailbox_id
+
+        async def _go():
+            return await run_blocking(self.ctx.mail_service.delete_folder, mailbox_id, name)
+
+        self._run(_go)
+
+    def _on_toggle_subscribed(self, name: str, checked: bool) -> None:
+        mailbox_id = self.mailbox_id
+
+        async def _go():
+            return await run_blocking(
+                self.ctx.mail_service.set_folder_subscribed, mailbox_id, name, checked)
+
+        self._run(_go)
+
+
+def _ask_text(parent, title: str, label: str, initial: str) -> tuple[str, bool]:
+    from PySide6.QtWidgets import QInputDialog
+    return QInputDialog.getText(parent, title, label, text=initial)
 
 
 class MailSettingsScreen(QWidget):
@@ -221,6 +372,9 @@ class MailSettingsScreen(QWidget):
         info.addWidget(muted(detail))
         rl.addLayout(info, 1)
 
+        folders_btn = button("Папки", "ghost")
+        folders_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_manage_folders(m, a))
+        rl.addWidget(folders_btn)
         toggle_btn = button("Выключить" if mb["enabled"] else "Включить", "ghost")
         toggle_btn.clicked.connect(lambda _c, m=mb["id"], en=mb["enabled"]: self._on_toggle(m, en))
         rl.addWidget(toggle_btn)
@@ -228,6 +382,9 @@ class MailSettingsScreen(QWidget):
         del_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_delete(m, a))
         rl.addWidget(del_btn)
         return row
+
+    def _on_manage_folders(self, mailbox_id: int, address: str) -> None:
+        FolderManagerDialog(self.ctx, mailbox_id, address, parent=self).exec()
 
     def _on_toggle(self, mailbox_id: int, currently_enabled: int) -> None:
         self.ctx.db.set_mailbox_field(mailbox_id, enabled=0 if currently_enabled else 1)
