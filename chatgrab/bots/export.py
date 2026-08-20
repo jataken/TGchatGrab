@@ -27,6 +27,15 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         cell.font = Font(bold=True)
 
     wrap = Alignment(vertical="top", wrap_text=True)
+    # С10: a status label now depends on the lead's own funnel — cached
+    # by funnel_id since every lead in one export very likely shares one.
+    stages_cache: dict[int | None, list] = {}
+
+    def _stages_for(funnel_id):
+        if funnel_id not in stages_cache:
+            stages_cache[funnel_id] = db.list_funnel_stages(funnel_id) if funnel_id else []
+        return stages_cache[funnel_id]
+
     for lead in sorted(leads, key=lambda r: r["created_at"]):
         # Not every lead has a bot or a contact behind it any more (С3:
         # manual and message-based creation) — the lead's own identity
@@ -52,7 +61,8 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         ws.append([
             lead["created_at"], excel_safe(source_text),
             excel_safe(handle), telegram_id,
-            lead_domain.label_for_status(lead["status"]), excel_safe(lead["manager"] or ""), summary,
+            lead_domain.label_for_stage(_stages_for(lead["funnel_id"]), lead["status"]),
+            excel_safe(lead["manager"] or ""), summary,
         ])
         row_idx = ws.max_row
         for col in range(1, len(headers) + 1):

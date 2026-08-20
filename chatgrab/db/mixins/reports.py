@@ -22,15 +22,20 @@ class ReportsMixin:
         """One row per source chat, plus a NULL bucket (source_chat_id
         IS NULL — bot-triggered or manually created leads never had one)
         — see core/lead_report.conversion() for what a caller does with
-        total/won/lost."""
+        total/won/lost. С10: won/lost come from each lead's own
+        funnel_stage.kind, not a hardcoded status string, so a lead from
+        any funnel (a future mail funnel included, П9) counts correctly
+        here — this is the "отчёт сравнивает воронки с разными этапами"
+        half of С10's acceptance criterion."""
         sql = (
             "SELECT bl.source_chat_id AS chat_id, c.title AS chat_title, "
             "count(*) AS total, "
-            "sum(CASE WHEN bl.status = ? THEN 1 ELSE 0 END) AS won, "
-            "sum(CASE WHEN bl.status = ? THEN 1 ELSE 0 END) AS lost "
-            "FROM bot_leads bl LEFT JOIN chats c ON c.chat_id = bl.source_chat_id"
+            "sum(CASE WHEN fs.kind = 'won' THEN 1 ELSE 0 END) AS won, "
+            "sum(CASE WHEN fs.kind = 'lost' THEN 1 ELSE 0 END) AS lost "
+            "FROM bot_leads bl LEFT JOIN chats c ON c.chat_id = bl.source_chat_id "
+            "LEFT JOIN funnel_stage fs ON fs.funnel_id = bl.funnel_id AND fs.code = bl.status"
         )
-        params: list[Any] = [lead_domain.WON, lead_domain.LOST]
+        params: list[Any] = []
         clauses = []
         if date_from is not None:
             clauses.append("bl.created_at >= ?")
@@ -51,11 +56,12 @@ class ReportsMixin:
         sql = (
             "SELECT bl.direction_id AS direction_id, d.name AS direction_name, "
             "count(*) AS total, "
-            "sum(CASE WHEN bl.status = ? THEN 1 ELSE 0 END) AS won, "
-            "sum(CASE WHEN bl.status = ? THEN 1 ELSE 0 END) AS lost "
-            "FROM bot_leads bl LEFT JOIN direction d ON d.id = bl.direction_id"
+            "sum(CASE WHEN fs.kind = 'won' THEN 1 ELSE 0 END) AS won, "
+            "sum(CASE WHEN fs.kind = 'lost' THEN 1 ELSE 0 END) AS lost "
+            "FROM bot_leads bl LEFT JOIN direction d ON d.id = bl.direction_id "
+            "LEFT JOIN funnel_stage fs ON fs.funnel_id = bl.funnel_id AND fs.code = bl.status"
         )
-        params: list[Any] = [lead_domain.WON, lead_domain.LOST]
+        params: list[Any] = []
         clauses = []
         if date_from is not None:
             clauses.append("bl.created_at >= ?")
@@ -74,7 +80,17 @@ class ReportsMixin:
         quote_sent — the earliest matching lead_events row, in case a
         lead bounced back to an earlier stage and through quote_sent
         again later. None (not 0) when nothing in range ever reached that
-        stage: there's no average of an empty set."""
+        stage: there's no average of an empty set.
+
+        С10 note: deliberately still hardcoded to the default funnel's
+        own QUOTE_SENT code, unlike the two reports above — "days to
+        quote" is a business metric specific to that funnel's own stage
+        naming (there's no `kind` equivalent to "a quote was sent" the
+        way there's one for won/lost), so generalizing it would mean
+        making "which stage counts as the quote milestone" itself
+        configurable per funnel, which isn't part of this session's
+        checklist. Leads on a different funnel (a future mail funnel,
+        П9) simply never match here, same as before С10 existed."""
         sql = (
             "SELECT bl.created_at AS created_at, MIN(le.created_at) AS quoted_at "
             "FROM bot_leads bl JOIN lead_events le ON le.lead_id = bl.id "
@@ -101,13 +117,17 @@ class ReportsMixin:
 
     def reject_reasons_report(self, date_from: str | None = None,
                                date_to: str | None = None) -> list[sqlite3.Row]:
-        sql = "SELECT reject_reason, count(*) AS c FROM bot_leads WHERE status = ?"
-        params: list[Any] = [lead_domain.LOST]
+        sql = (
+            "SELECT bl.reject_reason AS reject_reason, count(*) AS c FROM bot_leads bl "
+            "JOIN funnel_stage fs ON fs.funnel_id = bl.funnel_id AND fs.code = bl.status "
+            "WHERE fs.kind = 'lost'"
+        )
+        params: list[Any] = []
         if date_from is not None:
-            sql += " AND created_at >= ?"
+            sql += " AND bl.created_at >= ?"
             params.append(date_from)
         if date_to is not None:
-            sql += " AND created_at <= ?"
+            sql += " AND bl.created_at <= ?"
             params.append(date_to)
-        sql += " GROUP BY reject_reason ORDER BY c DESC"
+        sql += " GROUP BY bl.reject_reason ORDER BY c DESC"
         return self.query(sql, params)

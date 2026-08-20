@@ -193,6 +193,55 @@ def _up_bitrix_mapping(conn: sqlite3.Connection, _ctx: dict) -> None:
             conn.execute(f"ALTER TABLE direction ADD COLUMN {name} {coltype};")
 
 
+def _up_configurable_funnels(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """С10: two new tables (funnel, funnel_stage) plus funnel_id/
+    origin_channel on bot_leads. Seeds exactly one funnel — "Телеграм ·
+    биржа" — with the six stages core/lead.py's old flat STATUS_* dicts
+    used to hold (same codes, same labels, same colors), and backfills
+    every existing lead onto it: this migration changes zero pixels for
+    an existing install, per С10's own acceptance criterion.
+
+    No down() — like 008 (bot_leads' first real remap), this rewrites
+    existing bot_leads rows (funnel_id/origin_channel), not just adds
+    something a rollback could cleanly drop. The mandatory backup is the
+    safety net, same as every other non-trivial step.
+    """
+    conn.execute(schema._DDL_FUNNEL)
+    conn.execute(schema._DDL_FUNNEL_STAGE)
+    for ddl in schema._DDL_FUNNEL_INDEXES:
+        conn.execute(ddl)
+    for name, coltype in schema._LEAD_FUNNEL_COLUMNS:
+        if not schema._column_exists(conn, "bot_leads", name):
+            conn.execute(f"ALTER TABLE bot_leads ADD COLUMN {name} {coltype};")
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    cur = conn.execute(
+        "INSERT INTO funnel(name, channel, order_index, created_at) VALUES (?, ?, 0, ?)",
+        (lead_domain.DEFAULT_FUNNEL_NAME, lead_domain.DEFAULT_FUNNEL_CHANNEL, now),
+    )
+    funnel_id = cur.lastrowid
+    for stage in lead_domain.DEFAULT_FUNNEL_STAGES:
+        conn.execute(
+            "INSERT INTO funnel_stage"
+            "(funnel_id, code, label, kind, order_index, requires_reason, color_bg, color_fg, color_dot) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (funnel_id, stage["code"], stage["label"], stage["kind"], stage["order_index"],
+             1 if stage["requires_reason"] else 0,
+             stage["color_bg"], stage["color_fg"], stage["color_dot"]),
+        )
+
+    # Every existing lead's `status` already holds one of these exact
+    # codes (007's remap_legacy_status() guaranteed that), so every row
+    # can point straight at the seeded funnel with no remapping needed —
+    # only origin_channel is genuinely new information, and every
+    # pre-П9 lead is Telegram-side by construction.
+    conn.execute(
+        "UPDATE bot_leads SET funnel_id = ?, origin_channel = ? "
+        "WHERE funnel_id IS NULL",
+        (funnel_id, lead_domain.ORIGIN_CHANNEL_TELEGRAM),
+    )
+
+
 def _up_mail(conn: sqlite3.Connection, _ctx: dict) -> None:
     """П1: mailboxes, folders, messages, threads (empty until П2 populates
     them), attachments, and full-text search over subject/body — six new,
@@ -335,11 +384,14 @@ MIGRATIONS: list[Migration] = [
     Migration("010", "outbox: send log, drafts, blacklist", _up_outbox, _down_outbox),
     Migration("011", "Bitrix24: crm_id on leads, send queue", _up_bitrix),
     Migration("012", "Bitrix24: direction -> CRM source mapping", _up_bitrix_mapping),
-    # "013" is reserved for С10 (configurable funnels, PLAN.md) — not yet
-    # implemented. Migration ids don't need to be contiguous: the runner
-    # tracks applied ids by presence in schema_migrations, not by counting,
-    # so "014" landing before "013" exists costs nothing and needs no
-    # renumbering once С10 is done.
+    # "013" was reserved for С10 (configurable funnels, PLAN.md) back when
+    # "014" (mail) was written first — landing here now, out of numeric
+    # order relative to when it was actually implemented, exactly as that
+    # reservation always allowed: the runner tracks applied ids by
+    # presence in schema_migrations, not by counting, so id order and
+    # implementation order never had to match.
+    Migration("013", "configurable funnels: funnel/funnel_stage, bot_leads.funnel_id/origin_channel",
+              _up_configurable_funnels),
     Migration("014", "mail: mailboxes, folders, messages, threads, attachments, search",
               _up_mail, _down_mail),
     Migration("015", "mail: attachment text feeds search (attachments_text + mail_fts rebuild)",

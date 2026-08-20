@@ -55,9 +55,10 @@ class LeadCardDialog(QDialog):
 
         status_row = QHBoxLayout()
         status_row.addWidget(muted("Статус"))
+        # П10: populated per-lead in refresh(), not here — which stages
+        # exist depends on the lead's own funnel_id (С10), unknown until
+        # a lead is actually loaded.
         self.status_combo = QComboBox()
-        for status in lead_domain.ALL_STATUSES:
-            self.status_combo.addItem(lead_domain.label_for_status(status), status)
         status_row.addWidget(self.status_combo)
         self.reject_reason_combo = QComboBox()
         self.reject_reason_combo.setEditable(True)
@@ -67,6 +68,9 @@ class LeadCardDialog(QDialog):
         apply_status_btn = button("Применить", "secondary")
         apply_status_btn.clicked.connect(self._on_apply_status)
         status_row.addWidget(apply_status_btn)
+        transfer_btn = button("В другую воронку…", "ghost")
+        transfer_btn.clicked.connect(self._on_transfer_funnel)
+        status_row.addWidget(transfer_btn)
         outer.addLayout(status_row)
         self.status_combo.currentIndexChanged.connect(self._on_status_combo_changed)
 
@@ -221,16 +225,23 @@ class LeadCardDialog(QDialog):
         self.setWindowTitle(f"Заявка — {handle}")
         self.title_label.setText(handle)
 
-        self.status_pill.set_status(lead["status"])
+        self._current_stages = self.ctx.db.list_funnel_stages(lead["funnel_id"]) if lead["funnel_id"] else []
+        current_stage = lead_domain.stage_for_code(self._current_stages, lead["status"])
+        self.status_pill.set_stage(current_stage)
 
         created = short_dt(lead["created_at"])
         meta_bits = [f"создана {created}", lead_domain.label_for_source_type(lead["source_type"])]
+        if lead["origin_channel"]:
+            meta_bits.append(lead_domain.label_for_origin_channel(lead["origin_channel"]))
         if lead["phone"]:
             meta_bits.append(lead["phone"])
         self.meta_label.setText(" · ".join(meta_bits))
 
-        idx = self.status_combo.findData(lead["status"])
         self.status_combo.blockSignals(True)
+        self.status_combo.clear()
+        for stage in self._current_stages:
+            self.status_combo.addItem(stage["label"], stage["code"])
+        idx = self.status_combo.findData(lead["status"])
         self.status_combo.setCurrentIndex(max(0, idx))
         self.status_combo.blockSignals(False)
         self._on_status_combo_changed(self.status_combo.currentIndex())
@@ -277,10 +288,18 @@ class LeadCardDialog(QDialog):
             source = lead_domain.label_for_event_source(event["source"])
             if event["kind"] == "created":
                 text = f"{when} · заявка создана ({source})"
-            elif event["kind"] == "status":
-                frm = lead_domain.label_for_status(event["from_status"] or "")
-                to = lead_domain.label_for_status(event["to_status"] or "")
-                text = f"{when} · статус: {frm} → {to} ({source})"
+            elif event["kind"] in ("status", "funnel"):
+                # С10: labels resolve against the lead's *current* funnel
+                # — a status code from before a funnel transfer may not
+                # match it exactly, but a transfer event already narrates
+                # the full "moved from X to Y" in its own text below, so
+                # this is only an approximation for a status change that
+                # happened before a later transfer, not the transfer
+                # itself.
+                frm = lead_domain.label_for_stage(self._current_stages, event["from_status"] or "")
+                to = lead_domain.label_for_stage(self._current_stages, event["to_status"] or "")
+                verb = "воронка" if event["kind"] == "funnel" else "статус"
+                text = f"{when} · {verb}: {frm} → {to} ({source})"
                 if event["text"]:
                     text += f"\n    {event['text']}"
             elif event["kind"] == "note":
@@ -320,20 +339,29 @@ class LeadCardDialog(QDialog):
 
     # ---- actions -----------------------------------------------------
     def _on_status_combo_changed(self, _index: int) -> None:
-        is_lost = self.status_combo.currentData() == lead_domain.LOST
-        self.reject_reason_combo.setVisible(is_lost)
-        if is_lost and self._lead["reject_reason"]:
+        stage = lead_domain.stage_for_code(self._current_stages, self.status_combo.currentData())
+        requires_reason = bool(stage["requires_reason"]) if stage is not None else False
+        self.reject_reason_combo.setVisible(requires_reason)
+        if requires_reason and self._lead["reject_reason"]:
             self.reject_reason_combo.setCurrentText(self._lead["reject_reason"])
 
     def _on_apply_status(self) -> None:
         new_status = self.status_combo.currentData()
-        reason = self.reject_reason_combo.currentText().strip() if new_status == lead_domain.LOST else None
+        stage = lead_domain.stage_for_code(self._current_stages, new_status)
+        requires_reason = bool(stage["requires_reason"]) if stage is not None else False
+        reason = self.reject_reason_combo.currentText().strip() if requires_reason else None
         try:
             self.ctx.db.set_lead_status(self.lead_id, new_status, reject_reason=reason)
         except ValueError as e:
             QMessageBox.information(self, "Не получилось", str(e))
             return
         self.refresh()
+
+    def _on_transfer_funnel(self) -> None:
+        from .funnel_transfer_dialog import FunnelTransferDialog
+        dlg = FunnelTransferDialog(self.ctx, self._lead, parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh()
 
     def _on_save_fields(self) -> None:
         self.ctx.db.set_lead_field(

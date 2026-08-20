@@ -27,6 +27,7 @@ from .mixins.chats import ChatsMixin
 from .mixins.crm import CrmMixin
 from .mixins.directions import DirectionsMixin
 from .mixins.export import ExportMixin
+from .mixins.funnels import FunnelsMixin
 from .mixins.ignore_rules import IgnoreRulesMixin
 from .mixins.leads import LeadsMixin
 from .mixins.mail import MailMixin
@@ -50,7 +51,7 @@ class Database(
     SettingsMixin, ChatsMixin, IgnoreRulesMixin, ExportMixin, SearchMixin,
     DirectionsMixin, AccountsMixin, WatchMixin, RetentionMixin, ProductivityMixin,
     MaintenanceMixin, BotsMixin, LeadsMixin, ReportsMixin, OutboxMixin, CrmMixin,
-    TemplatesMixin, ScenariosMixin, ScenarioSessionsMixin, MailMixin,
+    TemplatesMixin, ScenariosMixin, ScenarioSessionsMixin, MailMixin, FunnelsMixin,
 ):
     def __init__(self, path: Path):
         self.path = path

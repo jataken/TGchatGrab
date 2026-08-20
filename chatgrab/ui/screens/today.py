@@ -302,7 +302,21 @@ class TodayScreen(QWidget):
         db = self.ctx.db
         bots = db.list_bots()
         leads = db.list_leads()
-        new_leads = [l for l in leads if l["status"] == lead_domain.NEW]
+        # С10: "новая"/"в работе" are derived per-lead against that
+        # lead's *own* funnel (stages cached by funnel_id — leads span
+        # bots, which can in principle span different funnels), not a
+        # hardcoded status set that only ever matched one funnel.
+        stages_cache: dict[int | None, list] = {}
+
+        def _stages_for(funnel_id):
+            if funnel_id not in stages_cache:
+                stages_cache[funnel_id] = db.list_funnel_stages(funnel_id) if funnel_id else []
+            return stages_cache[funnel_id]
+
+        def _bucket(l):
+            return lead_domain.bucket_for_stage(_stages_for(l["funnel_id"]), l["status"])
+
+        new_leads = [l for l in leads if _bucket(l) == "new"]
         bad_bots = [b for b in bots if b["status"] == "error"]
         running = [b for b in bots if b["status"] == "running"]
         col = self.bots_col
@@ -348,8 +362,7 @@ class TodayScreen(QWidget):
             col.add_row(b["name"], b["last_error"] or "бот остановился с ошибкой",
                         "починить", lambda: self.navigate("bots"), "bad")
 
-        active_statuses = {lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION}
-        in_progress = [l for l in leads if l["status"] in active_statuses]
+        in_progress = [l for l in leads if _bucket(l) == "in_progress"]
         if in_progress:
             col.add_row(
                 f"{len(in_progress)} " + _plural(len(in_progress), "заявка", "заявки", "заявок") + " в работе",

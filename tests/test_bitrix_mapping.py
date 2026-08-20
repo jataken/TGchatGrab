@@ -33,14 +33,18 @@ class FakeClient:
         self.calls.append(("update", crm_id, fields))
 
 
-print("== маппинг статусов: сохраняется и читается обратно, лишние значения не хранятся ==")
+print("== маппинг статусов: сохраняется и читается обратно, лишние значения не хранятся (С10: по id этапа) ==")
+default_funnel_id = db.default_funnel_id()
+new_stage = db.get_funnel_stage_by_code(default_funnel_id, lead_domain.NEW)
+qualified_stage = db.get_funnel_stage_by_code(default_funnel_id, lead_domain.QUALIFIED)
+won_stage = db.get_funnel_stage_by_code(default_funnel_id, lead_domain.WON)
 bitrix.set_status_map(db, {
-    lead_domain.NEW: "NEW",
-    lead_domain.QUALIFIED: "",  # пустое значение — не должно сохраниться
-    lead_domain.WON: "CONVERTED",
+    str(new_stage["id"]): "NEW",
+    str(qualified_stage["id"]): "",  # пустое значение — не должно сохраниться
+    str(won_stage["id"]): "CONVERTED",
 })
 saved = bitrix.get_status_map(db)
-assert saved == {lead_domain.NEW: "NEW", lead_domain.WON: "CONVERTED"}, saved
+assert saved == {str(new_stage["id"]): "NEW", str(won_stage["id"]): "CONVERTED"}, saved
 print("  ok")
 
 print("\n== lead_fields(): STATUS_ID подставляется из маппинга, если статус в нём есть ==")
@@ -52,7 +56,8 @@ lead_id = db.add_lead(
 )
 lead = db.get_lead(lead_id)
 direction = db.get_direction(direction_id)
-fields = bitrix.lead_fields(lead, direction, bitrix.get_status_map(db))
+status_id = bitrix.status_id_for_lead(db, lead)
+fields = bitrix.lead_fields(lead, direction, status_id)
 assert fields["STATUS_ID"] == "CONVERTED", fields
 print("  ok")
 
@@ -63,7 +68,8 @@ lead2_id = db.add_lead(
     event_source=lead_domain.EVENT_SOURCE_MANUAL,
 )
 lead2 = db.get_lead(lead2_id)
-fields2 = bitrix.lead_fields(lead2, None, bitrix.get_status_map(db))
+status_id2 = bitrix.status_id_for_lead(db, lead2)
+fields2 = bitrix.lead_fields(lead2, None, status_id2)
 assert "STATUS_ID" not in fields2, fields2
 print("  ok")
 

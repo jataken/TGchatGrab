@@ -386,10 +386,22 @@ class WidgetWindow(QWidget):
         self.collect_status_label.setText(text)
 
     def _refresh_bots(self) -> None:
-        bots = self.ctx.db.list_bots()
-        leads = self.ctx.db.list_leads()
+        db = self.ctx.db
+        bots = db.list_bots()
+        leads = db.list_leads()
         running = [b for b in bots if b["status"] == "running"]
-        new_leads = [lead for lead in leads if lead["status"] == lead_domain.NEW]
+        # С10: "новая" is derived per-lead against that lead's own
+        # funnel, not a hardcoded status — see today.py's identical
+        # comment for why (leads can span more than one funnel).
+        stages_cache: dict[int | None, list] = {}
+
+        def _stages_for(funnel_id):
+            if funnel_id not in stages_cache:
+                stages_cache[funnel_id] = db.list_funnel_stages(funnel_id) if funnel_id else []
+            return stages_cache[funnel_id]
+
+        new_leads = [lead for lead in leads
+                     if lead_domain.bucket_for_stage(_stages_for(lead["funnel_id"]), lead["status"]) == "new"]
         self.bots_chart.set_values(self._weekly_lead_series(leads))
         text = f"{len(running)} из {len(bots)} ботов работает"
         if new_leads:

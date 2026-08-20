@@ -61,7 +61,8 @@ class LeadsMixin:
                  volume: str | None = None, unit: str | None = None,
                  deadline: str | None = None, city: str | None = None,
                  delivery: str | None = None,
-                 event_source: str = lead_domain.EVENT_SOURCE_RULE) -> int:
+                 event_source: str = lead_domain.EVENT_SOURCE_RULE,
+                 funnel_id: int | None = None, origin_channel: str | None = None) -> int:
         """Creates a lead and its opening lead_events row in one go — a
         lead with no history is exactly the "silent database row" the
         card (see ui/screens/bots/lead_card.py) exists to stop being.
@@ -75,7 +76,19 @@ class LeadsMixin:
         contact_id/bot_id are None for a lead that never touched a bot —
         created by hand, or from a plain collected message or watch hit
         (С3). Migration 009 made both columns nullable for exactly this.
+
+        funnel_id defaults to default_funnel_id() (С10) — every caller
+        that predates funnels lands its lead there unchanged.
+        origin_channel defaults from source_type (every existing caller
+        is Telegram-side); П9 is what will ever pass
+        lead_domain.ORIGIN_CHANNEL_EMAIL explicitly. Both are first-touch
+        attribution — see transfer_lead_funnel()'s docstring for why
+        origin_channel never changes after this.
         """
+        if funnel_id is None:
+            funnel_id = self.default_funnel_id()
+        if origin_channel is None:
+            origin_channel = lead_domain.origin_channel_from_source_type(source_type)
         with self._lock:
             now = now_iso()
             cur = self._conn.execute(
@@ -83,12 +96,12 @@ class LeadsMixin:
                        contact_id, bot_id, status, manager, created_at, updated_at, content,
                        tg_user_id, username, display_name, phone, email,
                        source_chat_id, source_type, direction_id, product, volume, unit,
-                       deadline, city, delivery, owner
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       deadline, city, delivery, owner, funnel_id, origin_channel
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (contact_id, bot_id, status, manager, now, now, json.dumps(content, ensure_ascii=False),
                  tg_user_id, username, display_name, phone, email,
                  source_chat_id, source_type, direction_id, product, volume, unit,
-                 deadline, city, delivery, lead_domain.DEFAULT_OWNER),
+                 deadline, city, delivery, lead_domain.DEFAULT_OWNER, funnel_id, origin_channel),
             )
             lead_id = cur.lastrowid
             self._conn.execute(
@@ -152,18 +165,24 @@ class LeadsMixin:
         sql += " ORDER BY created_at DESC, id DESC"
         return self.query(sql, params)
 
-    def leads_status_counts(self, bot_id: int | None = None) -> dict[str, int]:
+    def leads_status_counts(self, bot_id: int | None = None,
+                             funnel_id: int | None = None) -> dict[str, int]:
         """Per-status totals for the funnel row on the leads screen —
-        pre-seeded with 0 for every status so the UI never has to guard
-        against a missing key."""
-        sql = "SELECT status, count(*) AS c FROM bot_leads"
-        params: list[Any] = []
+        pre-seeded with 0 for every stage *of the given funnel* (default
+        default_funnel_id() — every pre-С10 lead already lives there, so
+        omitting funnel_id keeps this returning exactly what it always
+        did) so the UI never has to guard against a missing key."""
+        if funnel_id is None:
+            funnel_id = self.default_funnel_id()
+        sql = "SELECT status, count(*) AS c FROM bot_leads WHERE funnel_id = ?"
+        params: list[Any] = [funnel_id]
         if bot_id is not None:
-            sql += " WHERE bot_id = ?"
+            sql += " AND bot_id = ?"
             params.append(bot_id)
         sql += " GROUP BY status"
         counts = {r["status"]: r["c"] for r in self.query(sql, params)}
-        return {s: counts.get(s, 0) for s in lead_domain.ALL_STATUSES}
+        stages = self.list_funnel_stages(funnel_id) if funnel_id is not None else []
+        return {s["code"]: counts.get(s["code"], 0) for s in stages}
 
     def due_lead_reminders(self, now_iso_str: str) -> list[sqlite3.Row]:
         return self.query(
@@ -208,25 +227,28 @@ class LeadsMixin:
     def set_lead_status(self, lead_id: int, new_status: str, *, reject_reason: str | None = None,
                         source: str = lead_domain.EVENT_SOURCE_MANUAL, text: str | None = None) -> None:
         """The one validated path for changing a lead's stage — enforces
-        core.lead's single hard rule (LOST needs a reason) and always logs
-        the move, which is what makes set_lead_field unsuitable for this
-        one field: a status written through it would change the funnel
-        with no trace in the history the card shows.
+        core.lead's single hard rule (a `requires_reason` stage needs a
+        reason, С10) against the lead's *own* funnel's stages, and always
+        logs the move, which is what makes set_lead_field unsuitable for
+        this one field: a status written through it would change the
+        funnel with no trace in the history the card shows.
 
         Raises ValueError on an invalid move rather than silently
         refusing, so a caller (the card, a future scenario action) finds
         out immediately instead of the change quietly not happening.
         """
-        error = lead_domain.validate_transition(new_status, reject_reason)
-        if error:
-            raise ValueError(error)
         lead = self.get_lead(lead_id)
         if lead is None:
             raise ValueError(f"Заявка {lead_id} не найдена.")
+        stages = self.list_funnel_stages(lead["funnel_id"]) if lead["funnel_id"] else []
+        error = lead_domain.validate_transition(stages, new_status, reject_reason)
+        if error:
+            raise ValueError(error)
+        stage = lead_domain.stage_for_code(stages, new_status)
         old_status = lead["status"]
         with self._lock:
             fields = {"status": new_status, "updated_at": now_iso()}
-            if new_status == lead_domain.LOST:
+            if stage["requires_reason"]:
                 fields["reject_reason"] = reject_reason.strip()
             cols = ", ".join(f"{k} = ?" for k in fields)
             self._conn.execute(f"UPDATE bot_leads SET {cols} WHERE id = ?", (*fields.values(), lead_id))
@@ -234,6 +256,53 @@ class LeadsMixin:
                 "INSERT INTO lead_events(lead_id, kind, from_status, to_status, text, source, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (lead_id, lead_domain.EVENT_KIND_STATUS, old_status, new_status, text, source, now_iso()),
+            )
+            self._conn.commit()
+
+    def transfer_lead_funnel(self, lead_id: int, new_funnel_id: int, new_status: str, *,
+                              source: str = lead_domain.EVENT_SOURCE_MANUAL) -> None:
+        """С10's "перенос заявки между воронками вручную" — changes both
+        funnel_id and status together (a status code only means anything
+        within its own funnel, so moving one without the other would
+        leave the lead pointing at a stage that isn't even in its new
+        funnel) and logs an EVENT_KIND_FUNNEL row naming both funnels and
+        both stages, distinct from an ordinary EVENT_KIND_STATUS move.
+
+        origin_channel is deliberately left untouched — PLAN.md's "не
+        меняется" rule: attribution is by first touch, and a manual
+        transfer between funnels must not silently rewrite which channel
+        actually brought the lead in (see core/lead.py's
+        origin_channel_from_source_type() and its docstring).
+
+        Raises ValueError if either funnel/stage doesn't exist — same
+        "fail loud, not silently" contract as set_lead_status().
+        """
+        lead = self.get_lead(lead_id)
+        if lead is None:
+            raise ValueError(f"Заявка {lead_id} не найдена.")
+        new_funnel = self.get_funnel(new_funnel_id)
+        if new_funnel is None:
+            raise ValueError(f"Воронка {new_funnel_id} не найдена.")
+        new_stages = self.list_funnel_stages(new_funnel_id)
+        new_stage = lead_domain.stage_for_code(new_stages, new_status)
+        if new_stage is None:
+            raise ValueError(f"Этап {new_status!r} не найден в воронке {new_funnel['name']!r}.")
+        old_funnel = self.get_funnel(lead["funnel_id"]) if lead["funnel_id"] else None
+        old_funnel_name = old_funnel["name"] if old_funnel is not None else "—"
+        old_stages = self.list_funnel_stages(lead["funnel_id"]) if lead["funnel_id"] else []
+        old_label = lead_domain.label_for_stage(old_stages, lead["status"])
+        with self._lock:
+            self._conn.execute(
+                "UPDATE bot_leads SET funnel_id = ?, status = ?, updated_at = ? WHERE id = ?",
+                (new_funnel_id, new_status, now_iso(), lead_id),
+            )
+            self._conn.execute(
+                "INSERT INTO lead_events(lead_id, kind, from_status, to_status, text, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (lead_id, lead_domain.EVENT_KIND_FUNNEL, lead["status"], new_status,
+                 f"Перенесена из воронки «{old_funnel_name}» ({old_label}) "
+                 f"в «{new_funnel['name']}» ({new_stage['label']}).",
+                 source, now_iso()),
             )
             self._conn.commit()
 
@@ -350,20 +419,22 @@ class LeadsMixin:
         out.sort(key=lambda r: r["score"], reverse=True)
         return out[:limit]
 
-    def leads_funnel(self, bot_id: int | None = None) -> dict[str, int]:
-        """Three coarse buckets for analytics_tab.py's summary row — the
-        funnel's own five-stage detail (С8) doesn't fit that layout, so
-        qualified/quote_sent/negotiation collapse into "в работе" and
-        won/lost collapse into "закрыты", same grouping analytics_tab and
-        today.py already use elsewhere."""
-        sql = "SELECT status, count(*) AS c FROM bot_leads"
-        params: list[Any] = []
+    def leads_funnel(self, bot_id: int | None = None, funnel_id: int | None = None) -> dict[str, int]:
+        """Three coarse buckets for analytics_tab.py's summary row — С10
+        derives them from each stage's `kind` and position instead of
+        the old hardcoded status names (see core.lead.bucket_counts),
+        which is what lets this keep working for any funnel's own stage
+        set, not just the five-stage one this used to assume. funnel_id
+        defaults to default_funnel_id(), same "omit it, get exactly the
+        old global behaviour" contract as leads_status_counts()."""
+        if funnel_id is None:
+            funnel_id = self.default_funnel_id()
+        sql = "SELECT status, count(*) AS c FROM bot_leads WHERE funnel_id = ?"
+        params: list[Any] = [funnel_id]
         if bot_id is not None:
-            sql += " WHERE bot_id = ?"
+            sql += " AND bot_id = ?"
             params.append(bot_id)
         sql += " GROUP BY status"
         counts = {r["status"]: r["c"] for r in self.query(sql, params)}
-        in_progress = sum(counts.get(s, 0) for s in
-                           (lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION))
-        closed = sum(counts.get(s, 0) for s in (lead_domain.WON, lead_domain.LOST))
-        return {"new": counts.get(lead_domain.NEW, 0), "in_progress": in_progress, "closed": closed}
+        stages = self.list_funnel_stages(funnel_id) if funnel_id is not None else []
+        return lead_domain.bucket_counts(stages, counts)

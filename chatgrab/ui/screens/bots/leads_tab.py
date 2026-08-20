@@ -27,11 +27,11 @@ _DATE_RANGES = [
 ]
 
 
-def _status_pill(status: str) -> QWidget:
+def _status_pill(stage) -> QWidget:
     host = QWidget()
     lay = QHBoxLayout(host)
     lay.setContentsMargins(8, 0, 8, 0)
-    lay.addWidget(LeadStatusPill(status, font_size="11.5px"))
+    lay.addWidget(LeadStatusPill(stage, font_size="11.5px"))
     lay.addStretch(1)
     return host
 
@@ -87,14 +87,23 @@ class LeadsTab(QWidget):
         # count (updated on every refresh), so "how many leads at each
         # stage" and "filter the list to that stage" are the same click
         # instead of a separate bar duplicating what the chips already do.
+        #
+        # С10: scoped to the *default* funnel's stages — every lead lives
+        # there until a second funnel (П9, mail) actually has leads in
+        # it, so this keeps matching every lead on screen today exactly.
+        # A per-row lead's own pill (see _status_pill above) still
+        # resolves against *that lead's own* funnel regardless, so a
+        # future non-default-funnel lead renders correctly even though
+        # it isn't one of these filter chips.
+        self._default_stages = self.ctx.db.list_funnel_stages(self.ctx.db.default_funnel_id())
         chip_row = QHBoxLayout()
         chip_row.setSpacing(6)
         self.chip_group = QButtonGroup(self)
         self.chip_group.setExclusive(True)
         self.status_chips: dict[str, object] = {}
-        self._status_chip_keys = ["all"] + list(lead_domain.ALL_STATUSES)
+        self._status_chip_keys = ["all"] + [s["code"] for s in self._default_stages]
         for key in self._status_chip_keys:
-            btn = chip(key if key == "all" else lead_domain.label_for_status(key))
+            btn = chip(key if key == "all" else lead_domain.label_for_stage(self._default_stages, key))
             btn.setChecked(key == "all")
             btn.clicked.connect(lambda _c, k=key: self._set_filter(k))
             self.chip_group.addButton(btn)
@@ -186,13 +195,25 @@ class LeadsTab(QWidget):
         )
         counts = db.leads_status_counts()
         for key, btn in self.status_chips.items():
-            label = "Все" if key == "all" else lead_domain.label_for_status(key)
+            label = "Все" if key == "all" else lead_domain.label_for_stage(self._default_stages, key)
             n = len(all_leads) if key == "all" else counts.get(key, 0)
             btn.setText(f"{label} ({n})" if n else label)
 
-        n_new = len([l for l in all_leads if l["status"] == lead_domain.NEW])
-        active_statuses = {lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION}
-        n_active = len([l for l in all_leads if l["status"] in active_statuses])
+        # С10: bucketed per-lead against each lead's own funnel — see
+        # today.py's identical comment (list_leads() here has no funnel
+        # filter, so all_leads can in principle span more than one).
+        stages_cache: dict[int | None, list] = {}
+
+        def _stages_for(funnel_id):
+            if funnel_id not in stages_cache:
+                stages_cache[funnel_id] = db.list_funnel_stages(funnel_id) if funnel_id else []
+            return stages_cache[funnel_id]
+
+        def _bucket(l):
+            return lead_domain.bucket_for_stage(_stages_for(l["funnel_id"]), l["status"])
+
+        n_new = len([l for l in all_leads if _bucket(l) == "new"])
+        n_active = len([l for l in all_leads if _bucket(l) == "in_progress"])
         self.summary_label.setText(
             f"{n_new} новых · {n_active} в работе · {len(all_leads)} заявок всего"
             if all_leads else "заявок пока нет — они появятся, когда сработает правило бота"
@@ -227,7 +248,8 @@ class LeadsTab(QWidget):
                 summary = "—"
             self.table.setItem(row, 3, QTableWidgetItem(summary))
 
-            self.table.setCellWidget(row, 4, _status_pill(lead["status"]))
+            stage = lead_domain.stage_for_code(_stages_for(lead["funnel_id"]), lead["status"])
+            self.table.setCellWidget(row, 4, _status_pill(stage))
             self.table.setRowHeight(row, 44)
 
         self.table.resizeColumnsToContents()
@@ -254,11 +276,13 @@ class LeadsTab(QWidget):
         lead = self.ctx.db.get_lead(lead_id)
         if not lead:
             return
-        # next_status() never advances *to* LOST (see core/lead.py), only
-        # cycles WON/LOST back to NEW — so this quick-advance never needs
-        # a reject_reason. Restoring it on undo is a separate story below.
+        # next_stage() never advances *to* a requires_reason stage (see
+        # core/lead.py), only cycles won/lost back to the funnel's first
+        # open stage — so this quick-advance never needs a reject_reason.
+        # Restoring it on undo is a separate story below.
+        stages = self.ctx.db.list_funnel_stages(lead["funnel_id"]) if lead["funnel_id"] else []
         self._undo = (lead_id, lead["status"], lead["reject_reason"])
-        self.ctx.db.set_lead_status(lead_id, lead_domain.next_status(lead["status"]),
+        self.ctx.db.set_lead_status(lead_id, lead_domain.next_stage(stages, lead["status"]),
                                     source=lead_domain.EVENT_SOURCE_MANUAL)
         self.refresh()
 

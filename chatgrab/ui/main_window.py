@@ -13,6 +13,7 @@ from ..paths import resource_path
 from .context import AppContext
 from .util import fire
 from .screens.bots import BotsScreen
+from .screens.bots.funnels_screen import FunnelsScreen
 from .screens.bots.leads_screen import LeadsScreen
 from .screens.bots.log_screen import BotLogScreen
 from .screens.bots.rules_screen import RulesScreen
@@ -66,6 +67,7 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     ],
     "leads": [
         ("leads", "Заявки"),
+        ("funnels", "Воронки"),
         ("reports", "Отчёты"),
     ],
     # П2: самостоятельный блок теперь, когда есть что показывать помимо
@@ -212,6 +214,7 @@ class MainWindow(QMainWindow):
             "export": ExportScreen(ctx, self.navigate),
             "bots": BotsScreen(ctx, self.navigate),
             "leads": LeadsScreen(ctx, self.navigate),
+            "funnels": FunnelsScreen(ctx, self.navigate),
             "reports": ReportsScreen(ctx, self.navigate),
             "rules": RulesScreen(ctx, self.navigate),
             "scenario": ScenarioScreen(ctx, self.navigate),

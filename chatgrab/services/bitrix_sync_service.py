@@ -19,7 +19,6 @@ import asyncio
 import datetime as dt
 import logging
 
-from ..core import lead as lead_domain
 from ..db.database import Database, now_iso
 from ..integrations import bitrix
 
@@ -28,17 +27,6 @@ _logger = logging.getLogger("chatgrab")
 TICK_SECONDS = 30
 BASE_BACKOFF_SECONDS = 60
 MAX_BACKOFF_SECONDS = 30 * 60
-
-# С7's "qualified" auto-send policy: a lead auto-enqueues once it's past
-# the initial NEW stage and hasn't been lost. This lives here rather than
-# in core/lead.py — it's a policy choice this service makes, not a fact
-# about the funnel itself (db/ stays free of it too, same layering rule
-# that kept outbox_counts() from importing bots/settings in С4: the
-# service owns *when* to enqueue, the db method just answers "which rows
-# match this set of statuses").
-QUALIFIED_AUTO_STATUSES = [
-    lead_domain.QUALIFIED, lead_domain.QUOTE_SENT, lead_domain.NEGOTIATION, lead_domain.WON,
-]
 
 
 def _backoff(attempts: int) -> float:
@@ -105,8 +93,8 @@ class BitrixSyncService:
         policy = bitrix.get_auto_send_policy(self.db)
         if policy == bitrix.AUTO_SEND_MANUAL:
             return
-        statuses = QUALIFIED_AUTO_STATUSES if policy == bitrix.AUTO_SEND_QUALIFIED else None
-        for lead in self.db.leads_due_for_auto_crm_sync(statuses):
+        qualified_only = policy == bitrix.AUTO_SEND_QUALIFIED
+        for lead in self.db.leads_due_for_auto_crm_sync(qualified_only=qualified_only):
             self.db.enqueue_crm_sync(lead["id"])
 
     async def _process_one(self, client: bitrix.BitrixClient, row, status_map: dict | None = None) -> None:
@@ -117,7 +105,8 @@ class BitrixSyncService:
             self.db.dequeue_crm_sync(row["id"])
             return
         direction = self.db.get_direction(lead["direction_id"]) if lead["direction_id"] else None
-        fields = bitrix.lead_fields(lead, direction, status_map)
+        status_id = bitrix.status_id_for_lead(self.db, lead, status_map)
+        fields = bitrix.lead_fields(lead, direction, status_id)
         try:
             if lead["crm_id"]:
                 await client.update_lead(lead["crm_id"], fields)

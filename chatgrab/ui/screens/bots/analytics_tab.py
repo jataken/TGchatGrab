@@ -103,4 +103,6 @@ class AnalyticsTab(QWidget):
         if leads:
             self.history_list.addItem(f"— {len(leads)} заявок от этого контакта —")
             for lead in leads:
-                self.history_list.addItem(f"  заявка #{lead['id']}: {lead_domain.label_for_status(lead['status'])}")
+                stages = db.list_funnel_stages(lead["funnel_id"]) if lead["funnel_id"] else []
+                status_label = lead_domain.label_for_stage(stages, lead["status"])
+                self.history_list.addItem(f"  заявка #{lead['id']}: {status_label}")

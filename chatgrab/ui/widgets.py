@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
-from ..core import lead as lead_domain
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
@@ -133,12 +132,12 @@ class StatusPill(QLabel):
 
 
 class LeadStatusPill(QLabel):
-    """Same idea as StatusPill above, but keyed on
-    lead_domain.STATUS_COLORS (the funnel vocabulary — new/qualified/…/
-    lost) rather than theme.STATUS_STYLES (chat/bot lifecycle status —
-    idle/running/error). Two different domains with two different color
-    tables — not merged into one, same as StatusPill itself stays scoped
-    to its own domain.
+    """Same idea as StatusPill above, but keyed on a funnel_stage row's
+    own label/colors (С10 — every funnel defines its own stages now,
+    there's no single global status→color table any more) rather than
+    theme.STATUS_STYLES (chat/bot lifecycle status — idle/running/error).
+    Two different domains with two different color sources — not merged
+    into one, same as StatusPill itself stays scoped to its own domain.
 
     font_size is a constructor argument, not hardcoded like StatusPill's
     — leads_tab.py's table-row pills and lead_card.py's header pill used
@@ -147,16 +146,22 @@ class LeadStatusPill(QLabel):
     pixel-identical.
     """
 
-    def __init__(self, status: str = lead_domain.NEW, font_size: str = "12px"):
+    _FALLBACK = {"label": "—", "color_bg": "rgba(140,140,150,40)", "color_fg": "#cfd0d8"}
+
+    def __init__(self, stage=None, font_size: str = "12px"):
         super().__init__()
         self._font_size = font_size
-        self.set_status(status)
+        self.set_stage(stage)
 
-    def set_status(self, status: str) -> None:
-        bg, fg, _dot = lead_domain.STATUS_COLORS.get(status, lead_domain.STATUS_COLORS[lead_domain.NEW])
-        self.setText(f"●  {lead_domain.label_for_status(status)}")
+    def set_stage(self, stage) -> None:
+        """stage: a funnel_stage row/dict (exposing label/color_bg/
+        color_fg), or None for a lead whose stage couldn't be resolved
+        (a stale/foreign status, or funnel_id not set) — renders a
+        neutral placeholder rather than guessing at a color."""
+        data = stage if stage is not None else self._FALLBACK
+        self.setText(f"●  {data['label']}")
         self.setStyleSheet(
-            f"color: {fg}; background: {bg}; border-radius: 6px; "
+            f"color: {data['color_fg']}; background: {data['color_bg']}; border-radius: 6px; "
             f"padding: 3px 10px; font-size: {self._font_size};"
         )
 

@@ -217,6 +217,58 @@ _DDL_DIRECTION_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_direction_order ON direction(order_index);",
 ]
 
+# С10 (migration 013 — the id PLAN.md's own С1 comment reserved for this
+# session). A funnel is a named, ordered set of stages; a stage carries
+# everything core/lead.py's old flat STATUS_* dicts used to hold, plus
+# `kind` (open/won/lost — see core/lead.py's KIND_* constants), which is
+# what makes stages from two different funnels comparable in a report
+# without knowing either funnel's actual stage codes. `code` only has to
+# be unique *within* one funnel — see integrations/bitrix.py's status
+# mapping, which had to move from keying on that code to keying on this
+# table's own `id` for exactly that reason (two funnels are free to both
+# have a stage coded "won" with different colors/kind).
+_DDL_FUNNEL = """
+CREATE TABLE IF NOT EXISTS funnel (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+"""
+
+_DDL_FUNNEL_STAGE = """
+CREATE TABLE IF NOT EXISTS funnel_stage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    funnel_id INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'open',
+    order_index INTEGER NOT NULL DEFAULT 0,
+    requires_reason INTEGER NOT NULL DEFAULT 0,
+    color_bg TEXT NOT NULL,
+    color_fg TEXT NOT NULL,
+    color_dot TEXT NOT NULL,
+    UNIQUE(funnel_id, code)
+);
+"""
+
+_DDL_FUNNEL_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_funnel_stage_funnel ON funnel_stage(funnel_id, order_index);",
+]
+
+# New bot_leads columns, migration 013. funnel_id: which funnel this
+# lead's `status` column is a code within — every existing row backfills
+# to the seeded default funnel. origin_channel: first-touch attribution,
+# derived once from source_type at creation and never rewritten by a
+# later funnel transfer (see db/mixins/leads.py: transfer_lead_funnel) —
+# a separate column from funnel_id specifically so "moved to a different
+# funnel" and "where the lead actually came from" can't be conflated.
+_LEAD_FUNNEL_COLUMNS = [
+    ("funnel_id", "INTEGER"),
+    ("origin_channel", "TEXT"),
+]
+
 _DDL_STAT_CACHE = """
 CREATE TABLE IF NOT EXISTS chat_stat_cache (
     chat_id INTEGER NOT NULL,

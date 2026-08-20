@@ -54,23 +54,41 @@ leaked = {m for m in set(sys.modules) - before
 print("  ", leaked or "ничего")
 assert not leaked, leaked
 
-print("\n== единственное настоящее правило: «отказ» требует причины ==")
-assert lead_domain.validate_transition(lead_domain.LOST, None) is not None
-assert lead_domain.validate_transition(lead_domain.LOST, "  ") is not None
-assert lead_domain.validate_transition(lead_domain.LOST, "нашёл другого поставщика") is None
-assert lead_domain.validate_transition(lead_domain.WON, None) is None
-assert lead_domain.validate_transition(lead_domain.QUALIFIED, None) is None
-assert lead_domain.validate_transition("выдуманный статус", None) is not None
+# С10: the funnel is DB rows now (funnel/funnel_stage), not module
+# constants — core/lead.py's functions take an explicit stage list
+# instead, so this file plugs in DEFAULT_FUNNEL_STAGES (the exact set
+# migration 013 seeds) to keep testing the same rules without a database.
+stages = lead_domain.DEFAULT_FUNNEL_STAGES
+
+print("\n== единственное настоящее правило: этап с requires_reason требует причины ==")
+assert lead_domain.validate_transition(stages, lead_domain.LOST, None) is not None
+assert lead_domain.validate_transition(stages, lead_domain.LOST, "  ") is not None
+assert lead_domain.validate_transition(stages, lead_domain.LOST, "нашёл другого поставщика") is None
+assert lead_domain.validate_transition(stages, lead_domain.WON, None) is None
+assert lead_domain.validate_transition(stages, lead_domain.QUALIFIED, None) is None
+assert lead_domain.validate_transition(stages, "выдуманный статус", None) is not None
 print("  ok")
 
-print("\n== next_status идёт по воронке и зацикливается с won/lost на новый ==")
+print("\n== next_stage идёт по открытым+won этапам воронки и зацикливается с won/lost на первый ==")
+advanceable_count = len([s for s in stages if s["kind"] in (lead_domain.KIND_OPEN, lead_domain.KIND_WON)])
 seq = [lead_domain.NEW]
-for _ in range(len(lead_domain.STATUS_ORDER)):
-    seq.append(lead_domain.next_status(seq[-1]))
+for _ in range(advanceable_count):
+    seq.append(lead_domain.next_stage(stages, seq[-1]))
 print("  ", seq)
 assert seq == [lead_domain.NEW, lead_domain.QUALIFIED, lead_domain.QUOTE_SENT,
                lead_domain.NEGOTIATION, lead_domain.WON, lead_domain.NEW]
-assert lead_domain.next_status(lead_domain.LOST) == lead_domain.NEW
+assert lead_domain.next_stage(stages, lead_domain.LOST) == lead_domain.NEW
+print("  ok")
+
+print("\n== bucket_for_stage/bucket_counts: первый открытый этап — «new», won+lost — «closed» ==")
+assert lead_domain.bucket_for_stage(stages, lead_domain.NEW) == "new"
+assert lead_domain.bucket_for_stage(stages, lead_domain.QUALIFIED) == "in_progress"
+assert lead_domain.bucket_for_stage(stages, lead_domain.WON) == "closed"
+assert lead_domain.bucket_for_stage(stages, lead_domain.LOST) == "closed"
+assert lead_domain.bucket_for_stage(stages, "выдуманный статус") is None
+counts = {lead_domain.NEW: 3, lead_domain.QUALIFIED: 2, lead_domain.QUOTE_SENT: 1,
+          lead_domain.WON: 4, lead_domain.LOST: 1}
+assert lead_domain.bucket_counts(stages, counts) == {"new": 3, "in_progress": 3, "closed": 5}
 print("  ok")
 
 print("\n== remap_legacy_status ==")
@@ -80,9 +98,9 @@ assert lead_domain.remap_legacy_status("closed") == lead_domain.WON
 assert lead_domain.remap_legacy_status("что-то незнакомое") == lead_domain.NEW
 print("  ok")
 
-print("\n== метки для каждого статуса и типа источника заданы ==")
-for status in lead_domain.ALL_STATUSES:
-    assert lead_domain.label_for_status(status), status
+print("\n== метки для каждого этапа и типа источника заданы ==")
+for stage in stages:
+    assert lead_domain.label_for_stage(stages, stage["code"]), stage["code"]
 for source_type in (lead_domain.SOURCE_TYPE_CHAT, lead_domain.SOURCE_TYPE_DM,
                     lead_domain.SOURCE_TYPE_BOT, lead_domain.SOURCE_TYPE_MANUAL):
     assert lead_domain.label_for_source_type(source_type), source_type

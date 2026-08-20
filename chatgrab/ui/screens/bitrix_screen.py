@@ -15,7 +15,6 @@ from ..context import AppContext
 from ..format import short_dt
 from ..util import fire
 from ..widgets import FieldRow, button, card, h1, muted
-from ...core import lead as lead_domain
 from ...integrations import bitrix
 from ...integrations.bitrix import BitrixClient, BitrixError
 
@@ -47,7 +46,7 @@ class BitrixScreen(QWidget):
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate
-        self._status_combos: dict[str, QComboBox] = {}
+        self._status_combos: dict[int, QComboBox] = {}
         self._direction_combos: dict[int, QComboBox] = {}
 
         scroll = QScrollArea()
@@ -134,16 +133,12 @@ class BitrixScreen(QWidget):
         status_header.addWidget(load_statuses_btn)
         status_lay.addLayout(status_header)
 
-        for status_code in lead_domain.ALL_STATUSES:
-            row = QHBoxLayout()
-            label = muted(lead_domain.label_for_status(status_code))
-            label.setFixedWidth(160)
-            row.addWidget(label)
-            combo = QComboBox()
-            _populate_entity_combo(combo, [], None)
-            row.addWidget(combo, 1)
-            status_lay.addLayout(row)
-            self._status_combos[status_code] = combo
+        # П10: rows built per funnel/stage in _rebuild_status_rows(), not
+        # here — С10 made the stage list a database thing, unknown at
+        # __init__ time (mirrors _rebuild_source_rows()'s own pattern
+        # below, for the exact same reason: directions are dynamic too).
+        self.status_rows_box = QVBoxLayout()
+        status_lay.addLayout(self.status_rows_box)
 
         save_status_btn = button("Сохранить соответствие статусов", "primary")
         save_status_btn.clicked.connect(self._on_save_status_map)
@@ -203,7 +198,7 @@ class BitrixScreen(QWidget):
     # ---- lifecycle ---------------------------------------------------------
     def on_show(self) -> None:
         self._refresh_webhook_status()
-        self._load_saved_status_map()
+        self._rebuild_status_rows()
         self._rebuild_source_rows()
         policy = bitrix.get_auto_send_policy(self.ctx.db)
         idx = self.policy_combo.findData(policy)
@@ -261,16 +256,39 @@ class BitrixScreen(QWidget):
             bitrix.set_auto_send_policy(self.ctx.db, policy)
 
     # ---- status mapping ----------------------------------------------------
-    def _load_saved_status_map(self) -> None:
+    def _rebuild_status_rows(self) -> None:
+        """One row per stage of every funnel (С10) — grouped under a
+        muted funnel-name header so it's clear which funnel each stage
+        belongs to, since two funnels are free to have same-named or
+        same-coded stages. Keyed by funnel_stage.id (int), not the
+        stage's own code string — see integrations/bitrix.py's
+        STATUS_MAP_KEY docstring for why a code alone isn't enough once
+        a second funnel exists."""
+        self._clear_layout(self.status_rows_box)
+        self._status_combos.clear()
         mapping = bitrix.get_status_map(self.ctx.db)
-        for status_code, combo in self._status_combos.items():
-            _populate_entity_combo(combo, [], mapping.get(status_code))
+        funnels = self.ctx.db.list_funnels()
+        for funnel in funnels:
+            stages = self.ctx.db.list_funnel_stages(funnel["id"])
+            if not stages:
+                continue
+            self.status_rows_box.addWidget(muted(funnel["name"].upper()))
+            for stage in stages:
+                row = QHBoxLayout()
+                stage_label = muted(stage["label"])
+                stage_label.setFixedWidth(160)
+                row.addWidget(stage_label)
+                combo = QComboBox()
+                _populate_entity_combo(combo, [], mapping.get(str(stage["id"])))
+                row.addWidget(combo, 1)
+                self.status_rows_box.addLayout(row)
+                self._status_combos[stage["id"]] = combo
 
     def _on_load_statuses(self) -> None:
         self._fetch_and_populate("STATUS", self._status_combos, "статусов")
 
     def _on_save_status_map(self) -> None:
-        mapping = {code: combo.currentData() for code, combo in self._status_combos.items()}
+        mapping = {str(stage_id): combo.currentData() for stage_id, combo in self._status_combos.items()}
         bitrix.set_status_map(self.ctx.db, mapping)
         QMessageBox.information(self, "Bitrix24", "Соответствие статусов сохранено.")
 

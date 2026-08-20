@@ -20,11 +20,19 @@ from ..security import SecurityService
 
 SETTING_KEY = "bitrix_webhook_url"
 
-# С7: which Bitrix24 lead-stage STATUS_ID each ChatGrab funnel status maps
-# onto — {chatgrab_status: bitrix_status_id}. One dict for the whole app
-# (not per-direction), so it lives as plain JSON in app_settings rather
-# than a schema column, the same way any other single-value app setting
-# does — see db.get_setting/set_setting.
+# С7/С10: which Bitrix24 lead-stage STATUS_ID each ChatGrab funnel stage
+# maps onto — {str(funnel_stage.id): bitrix_status_id}. One dict for the
+# whole app (not per-direction), so it lives as plain JSON in app_settings
+# rather than a schema column, the same way any other single-value app
+# setting does — see db.get_setting/set_setting.
+#
+# Keyed by the stage's own numeric id, not its code string: a status
+# *code* is only unique within one funnel (funnel_stage.UNIQUE is
+# (funnel_id, code)), so two different funnels are free to both define a
+# stage coded "won" with different meanings — a code-keyed map would
+# conflate them the moment a second funnel (П9) exists. A stage's id is
+# a real AUTOINCREMENT primary key, globally unique by construction, so
+# it's what status_id_for_lead() below resolves through instead.
 STATUS_MAP_KEY = "bitrix_status_map"
 
 # What decides whether a lead's Bitrix24 sync gets queued automatically:
@@ -84,6 +92,23 @@ def set_status_map(db: Database, mapping: dict) -> None:
     # status reads the same whether it was never touched or cleared.
     cleaned = {k: v for k, v in (mapping or {}).items() if v}
     db.set_setting(STATUS_MAP_KEY, cleaned)
+
+
+def status_id_for_lead(db: Database, lead, status_map: dict | None = None) -> str | None:
+    """Resolves one lead's own funnel_stage (via its funnel_id + status
+    code) to the Bitrix STATUS_ID mapped for that stage's id — С10's
+    stage-id-keyed indirection, see STATUS_MAP_KEY's docstring. None if
+    the lead's stage can't be resolved (a stale/foreign status) or
+    simply isn't mapped — lead_fields() already treats that as "omit
+    STATUS_ID", not an error."""
+    if not lead["funnel_id"]:
+        return None
+    stage = db.get_funnel_stage_by_code(lead["funnel_id"], lead["status"])
+    if stage is None:
+        return None
+    if status_map is None:
+        status_map = get_status_map(db)
+    return status_map.get(str(stage["id"]))
 
 
 def get_auto_send_policy(db: Database) -> str:
@@ -170,16 +195,18 @@ class BitrixClient:
 
 
 # ---- field mapping ----------------------------------------------------
-def lead_fields(lead, direction, status_map: dict | None = None) -> dict:
+def lead_fields(lead, direction, status_id: str | None = None) -> dict:
     """core.lead row (+ its direction row, or None) -> crm.lead.add/update
-    FIELDS. STATUS_ID comes from status_map (chatgrab status -> Bitrix
-    STATUS_ID, see get_status_map) when the lead's own status is mapped;
-    otherwise it's simply omitted, which leaves the lead on whatever
-    stage Bitrix put it on when it was created — better than sending a
-    guessed value. SOURCE_ID comes from the lead's direction when that
-    direction has been mapped (direction.crm_source_id); an unmapped or
-    missing direction falls back to "OTHER" rather than failing the
-    send — a lead without a CRM-source mapping still must not be lost."""
+    FIELDS. status_id is the already-resolved Bitrix STATUS_ID for this
+    lead's own funnel stage (see status_id_for_lead() — resolving it
+    needs db access this function deliberately doesn't have, so the
+    caller does that lookup and hands in the result) — None simply omits
+    STATUS_ID, which leaves the lead on whatever stage Bitrix put it on
+    when it was created, better than sending a guessed value. SOURCE_ID
+    comes from the lead's direction when that direction has been mapped
+    (direction.crm_source_id); an unmapped or missing direction falls
+    back to "OTHER" rather than failing the send — a lead without a
+    CRM-source mapping still must not be lost."""
     handle = lead["display_name"] or lead["username"] or \
         (f"тг {lead['tg_user_id']}" if lead["tg_user_id"] else "без имени")
     title_bits = [b for b in (lead["product"], direction["name"] if direction else None) if b]
@@ -204,7 +231,6 @@ def lead_fields(lead, direction, status_map: dict | None = None) -> dict:
         "COMMENTS": comments,
         "SOURCE_ID": source_id or "OTHER",
     }
-    status_id = (status_map or {}).get(lead["status"])
     if status_id:
         fields["STATUS_ID"] = status_id
     if lead["phone"]:
