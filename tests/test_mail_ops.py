@@ -308,16 +308,28 @@ print("  флаг изначально:", pane.flag_btn.text())
 assert pane.flag_btn.text() == "☆"
 
 
+async def _wait_for_calls(n, timeout=5.0):
+    """Poll instead of a fixed sleep: fire()'s run_in_executor callback can
+    land well past 0.3s on a loaded/slow CI runner (observed on Windows),
+    so a flat sleep is an intermittent-failure trap."""
+    elapsed = 0.0
+    step = 0.05
+    while len(changed_calls) < n and elapsed < timeout:
+        await asyncio.sleep(step)
+        elapsed += step
+    assert len(changed_calls) >= n, f"колбэк не пришёл за {timeout}с (пришло {len(changed_calls)} из {n})"
+
+
 async def _exercise_pane_actions():
     pane._on_toggle_flag()
-    await asyncio.sleep(0.3)
+    await _wait_for_calls(1)
     refreshed = db.get_mail_message(ui_message["id"])
     print("  после клика: is_flagged=", refreshed["is_flagged"], "| колбэк вызван:", len(changed_calls) == 1)
     assert refreshed["is_flagged"] == 1
     assert len(changed_calls) == 1
 
     pane._do_move("Archive")
-    await asyncio.sleep(0.3)
+    await _wait_for_calls(2)
     moved = db.get_mail_message_by_message_id(ui_mailbox, ui_message["message_id"])
     print("  после перемещения: папка=", moved["folder"], "| колбэк:", changed_calls[-1]["kind"])
     assert moved["folder"] == "Archive"
@@ -326,7 +338,7 @@ async def _exercise_pane_actions():
     pane2 = MessagePane(stub_ctx, moved, lambda *a: None,
                          on_changed=lambda **kw: changed_calls.append(kw))
     pane2._on_trash_clicked()  # ещё не в корзине — подтверждение не требуется
-    await asyncio.sleep(0.3)
+    await _wait_for_calls(3)
     in_trash_ui = db.get_mail_message_by_message_id(ui_mailbox, ui_message["message_id"])
     print("  после «в корзину»: папка=", in_trash_ui["folder"], "| колбэк:", changed_calls[-1]["kind"])
     assert in_trash_ui["folder"] == "Trash"
@@ -339,7 +351,7 @@ async def _exercise_pane_actions():
                              on_changed=lambda **kw: changed_calls.append(kw))
         assert pane3._is_in_trash()
         pane3._on_trash_clicked()  # уже в корзине — подтверждение окончательного удаления
-        await asyncio.sleep(0.3)
+        await _wait_for_calls(4)
     finally:
         QMessageBox.question = original_question
     gone = db.get_mail_message_by_message_id(ui_mailbox, ui_message["message_id"])

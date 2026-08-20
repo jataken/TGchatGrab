@@ -328,7 +328,16 @@ assert "client@x.ru" in confirm_text
 
 async def _confirm_and_send():
     confirm_dlg._on_confirm()
-    await asyncio.sleep(0.3)
+    # Poll instead of a fixed sleep: fire()'s run_in_executor callback can
+    # land well past 0.3s on a loaded/slow CI runner (observed on Windows
+    # in the equivalent MessagePane test), so a flat sleep is an
+    # intermittent-failure trap.
+    elapsed = 0.0
+    step = 0.05
+    timeout = 5.0
+    while len(sent_log) == sent_before_ui and elapsed < timeout:
+        await asyncio.sleep(step)
+        elapsed += step
 
 
 asyncio.run(_confirm_and_send())
