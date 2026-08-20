@@ -315,7 +315,14 @@ class WidgetWindow(QWidget):
         top.addWidget(dot)
         unread_mark = "●" if not message["is_read"] else "○"
         who = message["sender_name"] or message["sender_address"] or "—"
-        top.addWidget(label(f"{unread_mark} {who}"), 1)
+        who_label = label(f"{unread_mark} {who}")
+        # Wrapped, not left to its natural single-line width — otherwise
+        # a longish sender name/address is exactly what stops «узкая
+        # полоса» from actually narrowing (the row's own minimum width
+        # would follow the longest name shown, regardless of what the
+        # window itself is asked to resize to).
+        who_label.setWordWrap(True)
+        top.addWidget(who_label, 1)
         # П6: «ярлык в один клик прямо из виджета» — этот значок
         # разворачивает ряд плашек с ярлыками того же ящика, клик по
         # плашке применяет ярлык к цепочке и сворачивает обратно.
