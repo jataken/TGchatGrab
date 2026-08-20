@@ -102,6 +102,25 @@ class LeadsMixin:
     def get_lead(self, lead_id: int) -> sqlite3.Row | None:
         return self.query_one("SELECT * FROM bot_leads WHERE id = ?", (lead_id,))
 
+    def has_lead_with_email(self, address: str) -> bool:
+        """П7's "known sender" triage signal: an exact match (this exact
+        person led before) or same domain (someone at their company did)
+        against bot_leads.email — the one field that already exists for
+        this regardless of source (Telegram lead with an email left in
+        conversation, Bitrix import, manual entry); mail's own leads
+        (П9) will land in the same table and column, nothing extra to
+        wire up here later."""
+        address = (address or "").strip().lower()
+        if not address or "@" not in address:
+            return False
+        domain = address.split("@", 1)[1]
+        row = self.query_one(
+            "SELECT 1 FROM bot_leads WHERE email IS NOT NULL "
+            "AND (LOWER(email) = ? OR LOWER(email) LIKE ?) LIMIT 1",
+            (address, f"%@{domain}"),
+        )
+        return row is not None
+
     def list_leads(self, bot_id: int | None = None, status: str | None = None, *,
                     direction_id: int | None = None, source_type: str | None = None,
                     since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:

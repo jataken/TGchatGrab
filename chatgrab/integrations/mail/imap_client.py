@@ -108,11 +108,19 @@ def _parse_date(date_header: str | None) -> str | None:
     return parsed.isoformat()
 
 
+_BULK_PRECEDENCE_RE = re.compile(r"^\s*(bulk|list|junk)\s*$", re.IGNORECASE)
+
+
 def parse_headers(raw: bytes) -> dict:
     """BODY.PEEK[HEADER] bytes -> the fields mixins/mail.py's
     upsert_mail_message() stores. has_attachments is deliberately not
     guessed from headers here — it's set precisely once the full body is
-    fetched (see parse_full_message), not approximated from Content-Type."""
+    fetched (see parse_full_message), not approximated from Content-Type.
+
+    has_list_unsubscribe/is_bulk_precedence (П7) feed
+    core/mail_triage.py's "bulk_signal" — read once here, off the same
+    header bytes every other field already comes from, so scoring a
+    message costs no extra network round trip."""
     msg = email.message_from_bytes(raw, policy=email.policy.compat32)
     from_name, from_addr = email.utils.parseaddr(msg.get("From", ""))
     to_list = [addr for _, addr in email.utils.getaddresses([msg.get("To", "")]) if addr]
@@ -125,6 +133,8 @@ def parse_headers(raw: bytes) -> dict:
         "message_id": (msg.get("Message-ID") or "").strip() or None,
         "in_reply_to": (msg.get("In-Reply-To") or "").strip() or None,
         "refs": (msg.get("References") or "").strip() or None,
+        "has_list_unsubscribe": msg.get("List-Unsubscribe") is not None,
+        "is_bulk_precedence": bool(_BULK_PRECEDENCE_RE.match(msg.get("Precedence", ""))),
     }
 
 

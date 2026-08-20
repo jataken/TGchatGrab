@@ -380,8 +380,29 @@ class MailScreen(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._load_threads)
 
-    def on_show(self, **kwargs) -> None:
+    def on_show(self, mailbox_id: int | None = None, thread_id: int | None = None, **kwargs) -> None:
         self._load_mailboxes()
+        if mailbox_id is not None and thread_id is not None:
+            # П7: «клик по уведомлению открывает цепочку» — the mailbox
+            # and thread a triage hit fired for.
+            self._select_thread(mailbox_id, thread_id)
+
+    def _select_thread(self, mailbox_id: int, thread_id: int) -> None:
+        for i in range(self.mailbox_list.count()):
+            item = self.mailbox_list.item(i)
+            mb_id, folder = item.data(Qt.UserRole)
+            if mb_id != mailbox_id:
+                continue
+            self.mailbox_list.blockSignals(True)
+            self.mailbox_list.setCurrentRow(i)
+            self.mailbox_list.blockSignals(False)
+            self.selected_mailbox_id, self.selected_folder = mb_id, folder
+            self._load_threads()
+            for j in range(self.thread_list.count()):
+                titem = self.thread_list.item(j)
+                if titem.data(Qt.UserRole) == thread_id:
+                    self.thread_list.setCurrentItem(titem)
+                    return
 
     # ---- написать / черновики (П5) ----------------------------------------
     def _on_compose_new(self) -> None:

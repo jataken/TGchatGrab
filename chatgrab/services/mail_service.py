@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 
 from ..bots.templating import render as render_template
-from ..core import mail_attachment_text, mail_compose, mail_labels, mail_thread
+from ..core import mail_attachment_text, mail_compose, mail_labels, mail_thread, mail_triage
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient, ImapError
@@ -35,10 +35,15 @@ _logger = logging.getLogger("chatgrab")
 
 TICK_SECONDS = 180
 
+# П7: one app-wide app_settings key, not per-mailbox — a single set of
+# weights/threshold covers every mailbox the same way, matching the
+# checklist's single "Почта → Разбор" screen (no mailbox picker on it).
+TRIAGE_SETTINGS_KEY = "mail_triage_settings"
+
 
 class MailService:
     def __init__(self, db: Database, paths: Paths, security: SecurityService,
-                 on_log=None, client_factory=None, smtp_factory=None):
+                 on_log=None, client_factory=None, smtp_factory=None, on_triage_hit=None):
         self.db = db
         self.paths = paths
         self.security = security
@@ -50,6 +55,20 @@ class MailService:
         # П5: same seam, for the one place this app sends mail — see
         # send_draft() and integrations/mail/smtp_client.py.
         self._smtp_factory = smtp_factory or SmtpClient
+        # П7: (message_row, score, category, reasons) -> None, called for
+        # a message that cleared the notification threshold. Same shape
+        # as WatchService's on_hit — a plain callback, not a Qt/tray
+        # dependency, so this module stays testable without a display.
+        # Fired from tick() itself (the qasync event-loop thread), never
+        # from inside _score_and_maybe_notify() — that runs deep inside
+        # _sync_mailbox() on tick()'s run_in_executor worker thread, and
+        # a real QSystemTrayIcon.showMessage() call from there would be a
+        # genuine Qt thread-safety violation (undefined behaviour, not
+        # just a style nit) — see _pending_notifications below.
+        self.on_triage_hit = on_triage_hit
+        self._notified_this_tick = 0
+        self._skipped_notifications_this_tick = 0
+        self._pending_notifications: list[int] = []
         self._task: asyncio.Task | None = None
         # П4: IDLE workers, one per enabled mailbox, live only between
         # start() and stop() — see _ensure_idle_workers(). Kept inert
@@ -98,6 +117,13 @@ class MailService:
         every tick rather than needing an explicit "a mailbox was
         added/enabled" notification from the UI."""
         total = 0
+        # П7: avalanche protection resets once per tick, not per mailbox —
+        # a cap of 5 means 5 across *all* mailboxes this pass, same
+        # "the rest waits for next time, not a popup storm" idea as
+        # bots/scheduler.py's max_reminders_per_tick.
+        self._notified_this_tick = 0
+        self._skipped_notifications_this_tick = 0
+        self._pending_notifications = []
         loop = asyncio.get_event_loop()
         for mailbox in self.db.list_mailboxes(enabled_only=True):
             try:
@@ -109,6 +135,26 @@ class MailService:
                 await loop.run_in_executor(None, self.drain_queue, mailbox["id"])
             except Exception:
                 _logger.info("Почта: не удалось разобрать очередь действий ящика %s", mailbox["id"])
+        if self._skipped_notifications_this_tick:
+            _logger.info(
+                "Почта: разбор нашёл ещё %s писем выше порога, показано не больше лимита — "
+                "остальные видны на экране «Почта → Разбор»",
+                self._skipped_notifications_this_tick)
+        # П7: fired here, back on the event-loop thread — see
+        # _pending_notifications' docstring in __init__ for why this
+        # can't happen from inside _sync_mailbox()'s executor thread.
+        if self.on_triage_hit:
+            for message_id in self._pending_notifications:
+                message = self.db.get_mail_message(message_id)
+                if message is None:
+                    continue
+                try:
+                    self.on_triage_hit(
+                        message, message["triage_score"], message["triage_category"],
+                        json.loads(message["triage_reasons"] or "[]"))
+                except Exception:
+                    _logger.warning("Почта: не удалось показать уведомление о разборе", exc_info=True)
+        self._pending_notifications = []
         if self._idle_active:
             self._ensure_idle_workers()
         return total
@@ -161,6 +207,14 @@ class MailService:
             self._assign_thread(mailbox_id, message_id, fields)
             self.db.sync_message_flags(mailbox_id, name, uid, flags)
             highest = max(highest, uid)
+            if folder["special_use"] != "Sent":
+                # П7: scored right away off whatever's on hand (headers —
+                # body isn't fetched yet at this point, see fetch_body())
+                # so a notification can fire the moment mail arrives, not
+                # only once someone opens it. score_message() gets called
+                # again with the fuller picture once the body is fetched
+                # (fetch_body(), or a "Пересчитать" rescan_triage()).
+                self._score_and_maybe_notify(message_id)
         self.db.set_mail_folder_state(mailbox_id, name, last_uid=highest, last_synced_at=now_iso())
         return len(triples)
 
@@ -242,6 +296,135 @@ class MailService:
         for att in parsed["attachments"]:
             self.db.add_mail_attachment(
                 message_id, att["filename"], att["content_type"], att["size_bytes"], att["path"])
+        if message["folder"] != self._sent_folder_name(message["mailbox_id"]):
+            # П7: the body just became available — a rescore now sees
+            # subject+body+attachment-filename signals it couldn't at
+            # sync time, without needing "Пересчитать" for a message the
+            # user is looking at right now anyway. No new notification
+            # fires from here — the user already opened it.
+            self.score_message(message_id)
+
+    def _sent_folder_name(self, mailbox_id: int) -> str | None:
+        sent = self.db.get_mail_folder_by_special_use(mailbox_id, "Sent")
+        return sent["name"] if sent else None
+
+    # ---- скоринг (П7) ---------------------------------------------------
+    def get_triage_settings(self) -> dict:
+        return mail_triage.normalize(self.db.get_setting(TRIAGE_SETTINGS_KEY, {}))
+
+    def set_triage_settings(self, values: dict) -> dict:
+        normalized = mail_triage.normalize(values)
+        self.db.set_setting(TRIAGE_SETTINGS_KEY, normalized)
+        return normalized
+
+    def _triage_fields(self, message) -> tuple[dict, str]:
+        """The (fields, attachments_text) pair core/mail_triage.score()
+        needs, assembled from what's already stored — never touches the
+        network itself; the caller (score_message(), or fetch_body()
+        just above) decides when body/attachments are worth fetching
+        first."""
+        attachments = self.db.list_mail_attachments(message["id"])
+        attachment_filenames = [a["filename"] for a in attachments]
+        attachments_text = " ".join(a["extracted_text"] or "" for a in attachments)
+        mailbox = self.db.get_mailbox(message["mailbox_id"])
+        own_address = (mailbox["address"] if mailbox else "") or ""
+        fields = {
+            "subject": message["subject"] or "",
+            "body_text": message["body_text"] or "",
+            "sender_address": message["sender_address"],
+            "has_list_unsubscribe": bool(message["has_list_unsubscribe"]),
+            "is_bulk_precedence": bool(message["is_bulk_precedence"]),
+            "attachment_filenames": attachment_filenames,
+            "known_sender": self.db.has_lead_with_email(message["sender_address"] or ""),
+            "reply_in_thread": (
+                self.db.thread_has_own_message(message["thread_id"], own_address)
+                if message["thread_id"] else False
+            ),
+        }
+        return fields, attachments_text
+
+    def _triage_directions(self) -> list[dict]:
+        """direction.keywords/stop_words are stored as JSON text — decoded
+        here, once per score(), so core/mail_triage.py never has to know
+        that's how they're persisted."""
+        out = []
+        for d in self.db.list_directions(enabled_only=True):
+            out.append({
+                "name": d["name"],
+                "keywords": json.loads(d["keywords"] or "[]"),
+                "stop_words": json.loads(d["stop_words"] or "[]"),
+            })
+        return out
+
+    def score_message(self, message_id: int) -> tuple[int, str, list[str]] | None:
+        """Scores whatever's currently stored for this message (headers-
+        only right after sync, full text once the body's been fetched)
+        and saves the result — the one path both sync-time scoring and
+        the "Разбор" screen's live preview share, see core/mail_triage.py
+        for the actual rule. None if the message no longer exists."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        fields, attachments_text = self._triage_fields(message)
+        directions = self._triage_directions()
+        settings = self.get_triage_settings()
+        result = mail_triage.score(fields, attachments_text, directions, settings)
+        self.db.set_message_triage(message_id, *result)
+        return result
+
+    def preview_score(self, message_id: int, settings: dict) -> tuple[int, str, list[str]] | None:
+        """Same computation as score_message(), but doesn't write
+        anything — the «Разбор» screen's "проверка на живых письмах"
+        uses this to show what a message would score under weights the
+        user has typed in but not saved yet."""
+        message = self.db.get_mail_message(message_id)
+        if message is None:
+            return None
+        fields, attachments_text = self._triage_fields(message)
+        directions = self._triage_directions()
+        return mail_triage.score(fields, attachments_text, directions, mail_triage.normalize(settings))
+
+    def _score_and_maybe_notify(self, message_id: int) -> None:
+        """Runs on tick()'s executor worker thread (see _sync_one_folder)
+        — only ever touches the database here, never on_triage_hit
+        itself. A qualifying message_id is queued in
+        _pending_notifications for tick() to fire the actual callback
+        from once back on the event-loop thread."""
+        result = self.score_message(message_id)
+        if result is None:
+            return
+        score, _category, _reasons = result
+        settings = self.get_triage_settings()
+        if score < settings["threshold"]:
+            return
+        if self._notified_this_tick >= settings["max_notifications_per_tick"]:
+            self._skipped_notifications_this_tick += 1
+            return
+        self._notified_this_tick += 1
+        self._pending_notifications.append(message_id)
+
+    def rescan_triage(self, mailbox_id: int | None = None, limit: int = 50) -> int:
+        """«Пересчитать» (П7) — the most recent `limit` messages (one
+        mailbox, or across all of them), body fetched first for any that
+        haven't been opened yet so the rescore is the full picture, not
+        just headers. Unlike WatchService.rescan() this does touch the
+        network — mail bodies are lazy (П1) where Telegram messages never
+        were, so "recompute properly" genuinely means "go fetch what's
+        missing", the same trade-off search_server() already makes.
+        Returns how many messages now score at or above the threshold."""
+        settings = self.get_triage_settings()
+        found = 0
+        for message in self.db.list_recent_mail_messages(mailbox_id, limit=limit):
+            if not message["body_fetched"]:
+                try:
+                    self.fetch_body(message["id"])
+                except Exception:
+                    _logger.info(
+                        "Почта: не удалось дозагрузить письмо %s для пересчёта", message["id"])
+            result = self.score_message(message["id"])
+            if result is not None and result[0] >= settings["threshold"]:
+                found += 1
+        return found
 
     # ---- текст вложения -> поиск (П3) -----------------------------------
     def extract_attachment_text(self, attachment_id: int) -> None:

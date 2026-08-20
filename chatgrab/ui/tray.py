@@ -97,6 +97,11 @@ class TrayController:
         self._last_conn_ok: bool | None = None
         self._notified_chat_errors: set[int] = set()
         self._notified_bot_errors: set[int] = set()
+        # П7: "клик [по уведомлению] открывает цепочку" — QSystemTrayIcon
+        # only ever has one balloon showing and one messageClicked signal
+        # with no per-message identity, so "which message" is just
+        # whatever notify() was last called with a click handler for.
+        self._last_message_click = None
 
         if not QSystemTrayIcon.isSystemTrayAvailable():
             _logger.info("системный трей недоступен — работаем без него")
@@ -122,7 +127,13 @@ class TrayController:
         menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_activated)
+        self.tray.messageClicked.connect(self._on_message_clicked)
         self.tray.show()
+
+    def _on_message_clicked(self) -> None:
+        handler, self._last_message_click = self._last_message_click, None
+        if handler is not None:
+            handler()
 
     # ---- window plumbing ------------------------------------------------
     def _on_activated(self, reason) -> None:
@@ -139,10 +150,11 @@ class TrayController:
         self.window.close()
         QApplication.quit()
 
-    def notify(self, title: str, text: str, warning: bool = False) -> None:
+    def notify(self, title: str, text: str, warning: bool = False, on_click=None) -> None:
         if self.tray is None:
             return
         icon = QSystemTrayIcon.Warning if warning else QSystemTrayIcon.Information
+        self._last_message_click = on_click
         self.tray.showMessage(title, text, icon, 8000)
 
     # ---- state -> tooltip and notifications -----------------------------

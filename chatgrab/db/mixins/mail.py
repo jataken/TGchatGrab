@@ -23,6 +23,9 @@ from .search import _fts_query
 _MESSAGE_HEADER_COLUMNS = [
     "thread_id", "message_id", "in_reply_to", "refs", "subject",
     "sender_name", "sender_address", "to_addresses", "date", "is_outgoing",
+    # П7: parsed once from the same header bytes as everything else above
+    # — see imap_client.parse_headers()'s docstring for what each means.
+    "has_list_unsubscribe", "is_bulk_precedence",
 ]
 
 
@@ -212,6 +215,23 @@ class MailMixin:
         row = self.query_one("SELECT MAX(date) AS d FROM mail_message WHERE thread_id = ?", (thread_id,))
         return row["d"] if row else None
 
+    def thread_has_own_message(self, thread_id: int, own_address: str) -> bool:
+        """П7's "reply_in_thread" triage signal: has the mailbox's own
+        address already sent something into this thread. Goes by
+        sender_address rather than is_outgoing — that column is part of
+        _MESSAGE_HEADER_COLUMNS but nothing in the sync pipeline actually
+        sets it yet (parse_headers() never returns it), a pre-existing
+        gap from П1 noted here rather than fixed, since it's unrelated to
+        this session's own change."""
+        own = (own_address or "").strip().lower()
+        if not own:
+            return False
+        row = self.query_one(
+            "SELECT 1 FROM mail_message WHERE thread_id = ? AND LOWER(sender_address) = ? LIMIT 1",
+            (thread_id, own),
+        )
+        return row is not None
+
     def set_message_thread(self, message_id: int, thread_id: int) -> None:
         with self._lock:
             self._conn.execute("UPDATE mail_message SET thread_id = ? WHERE id = ?", (thread_id, message_id))
@@ -359,6 +379,25 @@ class MailMixin:
         row = self.query_one(
             "SELECT count(*) AS c FROM mail_message WHERE mailbox_id = ?", (mailbox_id,))
         return row["c"] if row else 0
+
+    def list_recent_mail_messages(self, mailbox_id: int | None = None, limit: int = 50) -> list[sqlite3.Row]:
+        """The "Разбор" screen's "последние 50, с баллом и причинами"
+        (П7) — across every mailbox by default, or one when given."""
+        sql = "SELECT * FROM mail_message"
+        params: list[Any] = []
+        if mailbox_id is not None:
+            sql += " WHERE mailbox_id = ?"
+            params.append(mailbox_id)
+        sql += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
+    # ---- triage (П7) --------------------------------------------------
+    def set_message_triage(self, message_id: int, score: int, category: str, reasons: list[str]) -> None:
+        self.execute(
+            "UPDATE mail_message SET triage_score = ?, triage_category = ?, triage_reasons = ? WHERE id = ?",
+            (score, category, json.dumps(reasons, ensure_ascii=False), message_id),
+        )
 
     def set_mail_message_body(self, message_id: int, body_text: str | None,
                                body_html_path: str | None, has_attachments: bool) -> None:

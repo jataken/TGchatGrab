@@ -886,6 +886,24 @@ _DDL_MAIL_LABEL_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_mail_thread_label_label ON mail_thread_label(label_id);",
 ]
 
+# П7 (migration 019) — triage scoring. has_list_unsubscribe/
+# is_bulk_precedence are parsed once from the headers already fetched for
+# every message (see imap_client.parse_headers) — cheap, no extra network
+# call — and feed core/mail_triage.score()'s "bulk_signal". The other
+# three are that function's own *output*, stored so the thread list/
+# reading screen can show a score without recomputing it, and so
+# "Разбор" → "Пересчитать" has something to overwrite. triage_reasons is
+# JSON (a list of strings); NULL score means "not scored yet" (a message
+# synced before this migration, or one whose scoring genuinely failed),
+# distinct from an actual score of 0.
+_MAIL_MESSAGE_TRIAGE_COLUMNS = [
+    ("has_list_unsubscribe", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_bulk_precedence", "INTEGER NOT NULL DEFAULT 0"),
+    ("triage_score", "INTEGER"),
+    ("triage_category", "TEXT"),
+    ("triage_reasons", "TEXT"),
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

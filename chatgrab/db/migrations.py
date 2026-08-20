@@ -315,6 +315,17 @@ def _down_mail_labels(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS mail_label;")
 
 
+def _up_mail_triage(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П7: five new columns on mail_message — two parsed from headers
+    (has_list_unsubscribe/is_bulk_precedence), three the scorer's own
+    output (triage_score/category/reasons). ALTER-only, no down(), same
+    reasoning as 008/011/015/016: existing rows gain columns, there's no
+    separate table a rollback could cleanly drop."""
+    for name, coltype in schema._MAIL_MESSAGE_TRIAGE_COLUMNS:
+        if not schema._column_exists(conn, "mail_message", name):
+            conn.execute(f"ALTER TABLE mail_message ADD COLUMN {name} {coltype};")
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -342,6 +353,8 @@ MIGRATIONS: list[Migration] = [
     # plan's pre-guess, only stay unique and applied in order.
     Migration("018", "mail: labels and thread-label assignments (triage)",
               _up_mail_labels, _down_mail_labels),
+    Migration("019", "mail: triage scoring (bulk-mail header flags + stored score)",
+              _up_mail_triage),
 ]
 
 

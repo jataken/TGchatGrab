@@ -28,6 +28,7 @@ from .screens.directions import DirectionsScreen
 from .screens.export_screen import ExportScreen
 from .screens.mail import MailScreen
 from .screens.mail_settings import MailSettingsScreen
+from .screens.mail_triage import MailTriageScreen
 from .screens.reports_screen import ReportsScreen
 from .screens.settings import SettingsScreen
 from .screens.today import TodayScreen
@@ -70,6 +71,7 @@ NAV_BY_BLOCK: dict[str, list[tuple[str, str]]] = {
     # списка ящиков — входящие с цепочками, поиском и пометкой «прочитано».
     "mail": [
         ("mail", "Входящие"),
+        ("mail_triage", "Разбор"),
         ("mail_settings", "Ящики"),
     ],
 }
@@ -216,6 +218,7 @@ class MainWindow(QMainWindow):
             "botlog": BotLogScreen(ctx, self.navigate),
             "bitrix": BitrixScreen(ctx, self.navigate),
             "mail": MailScreen(ctx, self.navigate),
+            "mail_triage": MailTriageScreen(ctx, self.navigate),
             "mail_settings": MailSettingsScreen(ctx, self.navigate),
             "settings": SettingsScreen(ctx, self.navigate),
         }
@@ -239,6 +242,7 @@ class MainWindow(QMainWindow):
         # for — it is what the user explicitly asked to be told about.
         ctx.watch_service.on_hit = self._on_watch_hit
         ctx.lead_reminder_service.on_fire = self._on_lead_reminder
+        ctx.mail_service.on_triage_hit = self._on_triage_hit
 
         self._switch_block("collect", navigate_to="today")
         self._refresh_sidebar()
@@ -321,6 +325,16 @@ class MainWindow(QMainWindow):
         text = lead["next_action_text"] or "пора вернуться к этому лиду"
         self.tray.notify(f"Напоминание: {handle}", text)
         self._refresh_sidebar()
+
+    def _on_triage_hit(self, message, score, category, reasons) -> None:
+        who = message["sender_name"] or message["sender_address"] or "—"
+        mailbox = self.ctx.db.get_mailbox(message["mailbox_id"])
+        subject = message["subject"] or "(без темы)"
+        mailbox_id, thread_id = message["mailbox_id"], message["thread_id"]
+        self.tray.notify(
+            f"Похоже на {category}: {subject}",
+            f"{who} · {mailbox['address'] if mailbox else '?'} · балл {score}",
+            on_click=lambda: self.navigate("mail", mailbox_id=mailbox_id, thread_id=thread_id))
 
     def _on_bot_selector_changed(self, _index: int) -> None:
         self.ctx.bot_selection.set_current(self.bot_selector.currentData())
