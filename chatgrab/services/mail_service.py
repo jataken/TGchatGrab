@@ -19,7 +19,7 @@ import asyncio
 import json
 import logging
 
-from ..core import mail_thread
+from ..core import mail_attachment_text, mail_thread
 from ..db.database import Database, now_iso
 from ..integrations.mail import imap_client
 from ..integrations.mail.imap_client import ImapClient
@@ -204,6 +204,32 @@ class MailService:
         for att in parsed["attachments"]:
             self.db.add_mail_attachment(
                 message_id, att["filename"], att["content_type"], att["size_bytes"], att["path"])
+
+    # ---- текст вложения -> поиск (П3) -----------------------------------
+    def extract_attachment_text(self, attachment_id: int) -> None:
+        """docx/xlsx/plain-text attachments only — blocking, pure Python,
+        safe off the GUI thread via run_in_executor exactly like
+        fetch_body(). PDF text comes from QPdfDocument.getAllText()
+        instead, called from ui/screens/mail/attachment_view.py while the
+        viewer is already open: QPdfDocument is a Qt object and has to be
+        built on the GUI thread, so it doesn't go through this method.
+
+        Best-effort like every other network/parsing call here: a corrupt
+        or booby-trapped attachment (see core/mail_attachment_text.py's
+        zip-bomb guard) just stays unindexed, it doesn't fail whatever
+        triggered this call."""
+        att = self.db.get_mail_attachment(attachment_id)
+        if att is None or att["extracted_text"] is not None or not att["path"]:
+            return
+        try:
+            text = mail_attachment_text.extract_text_for_search(
+                att["path"], att["filename"], att["content_type"])
+        except (mail_attachment_text.AttachmentParseError,
+                mail_attachment_text.AttachmentTooLargeError) as e:
+            _logger.info("Почта: текст вложения %r не извлечён: %s", att["filename"], e)
+            return
+        if text:
+            self.db.set_attachment_extracted_text(attachment_id, text)
 
     # ---- поиск на сервере (П2) ------------------------------------------
     def search_server(self, mailbox_id: int, folder: str, query: str) -> int:

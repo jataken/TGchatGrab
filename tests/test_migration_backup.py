@@ -83,8 +83,11 @@ conn = sqlite3.connect(str(copy_path))
 tables_before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables_before and "outbox_sends" in tables_before and "mailbox" in tables_before
 
-# 014 (почта) — теперь самая свежая миграция с down() — таблицы mail_*
-# добавлены с нуля, откатить нечего терять, — и должна откатиться первой.
+# 014 (почта) — самая свежая миграция с down(): 015 новее, но у неё
+# down() нет (она ALTER'ит mail_message и пересобирает mail_fts, а не
+# только добавляет новое — тот же случай, что 008/009/011/012 ниже), так
+# что откат пропускает её и берёт 014 — таблицы mail_* добавлены с нуля,
+# откатить нечего терять.
 undone0 = migrations.rollback_last(conn)
 print("  откачена миграция:", undone0)
 assert undone0 == "014", "014 — самая свежая обратимая миграция, должна откатиться первой"
@@ -118,8 +121,11 @@ assert tables_after2 == tables_after - {"direction"}, "откат не долж�
 
 applied = {r[0] for r in conn.execute("SELECT id FROM schema_migrations")}
 print("  осталось применённых:", sorted(applied))
-assert applied == {"006", "008", "009", "011", "012"}, \
-    "008/009/011/012 без down() не откатывались — должны остаться применёнными"
+assert applied == {"006", "008", "009", "011", "012", "015"}, \
+    "008/009/011/012/015 без down() не откатывались — должны остаться применёнными " \
+    "(015 в этом смысле не отличается от 012: обе ALTER'ят таблицу, чей down() уже " \
+    "откатился раньше — 014 для 015, 007 для 012 — числящаяся-применённой запись " \
+    "переживает откат основания ровно так же в обоих случаях)"
 conn.close()
 
 # Оригинальный файл (не копия) не тронут — direction по-прежнему на месте.

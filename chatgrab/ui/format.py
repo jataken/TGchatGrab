@@ -19,3 +19,20 @@ def short_dt(value: str | None) -> str:
     if not value:
         return ""
     return str(value)[:16].replace("T", " ")
+
+
+def human_size(n: int | None) -> str:
+    """Bytes -> "12,3 КБ" / "4,1 МБ" — the attachment viewer's (П3) file
+    size line. None or a non-positive size (a header seen before the
+    body was ever fetched) -> "" rather than "0 Б", which would read as
+    an empty file instead of "we don't know yet"."""
+    if not n or n <= 0:
+        return ""
+    units = ("Б", "КБ", "МБ", "ГБ")
+    size = float(n)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            text = f"{size:.1f}".rstrip("0").rstrip(".") if unit != "Б" else str(int(size))
+            return f"{text.replace('.', ',')} {unit}"
+        size /= 1024
+    return f"{n} Б"

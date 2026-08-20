@@ -670,6 +670,69 @@ _MAIL_FTS_TRIGGERS = [
     """,
 ]
 
+# П3: the widening the 014 comment above already anticipated — a third
+# column, attachments_text, so an attachment's extracted text is
+# searchable the same way subject/body_text already are. FTS5 can't ALTER
+# a virtual table's column list, so migration 015 drops and recreates
+# mail_fts and all three triggers from these definitions rather than the
+# ones above; see migrations.py's _up_mail_attachments for the repopulate
+# step that has to follow a drop-and-recreate of external-content FTS5.
+_DDL_MAIL_FTS_V2 = """
+CREATE VIRTUAL TABLE IF NOT EXISTS mail_fts USING fts5(
+    subject, body_text, attachments_text, content='mail_message', content_rowid='id'
+);
+"""
+
+_MAIL_FTS_TRIGGERS_V2 = [
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_message_ai AFTER INSERT ON mail_message BEGIN
+        INSERT INTO mail_fts(rowid, subject, body_text, attachments_text)
+        VALUES (new.id, new.subject, new.body_text, new.attachments_text);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_message_ad AFTER DELETE ON mail_message BEGIN
+        INSERT INTO mail_fts(mail_fts, rowid, subject, body_text, attachments_text)
+        VALUES ('delete', old.id, old.subject, old.body_text, old.attachments_text);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_message_au AFTER UPDATE ON mail_message BEGIN
+        INSERT INTO mail_fts(mail_fts, rowid, subject, body_text, attachments_text)
+        VALUES ('delete', old.id, old.subject, old.body_text, old.attachments_text);
+        INSERT INTO mail_fts(rowid, subject, body_text, attachments_text)
+        VALUES (new.id, new.subject, new.body_text, new.attachments_text);
+    END;
+    """,
+]
+
+# Keeps mail_message.attachments_text an aggregate of its own
+# attachments' extracted_text, the same way set_message_thread() already
+# keeps mail_thread.updated_at in step with its messages — one row
+# changes, a trigger recomputes the derived value on the row that owns
+# it, and mail_message_au above (already re-registered) carries that on
+# into mail_fts without either side needing to know about the other.
+_MAIL_ATTACHMENT_TEXT_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_attachment_text_ai AFTER INSERT ON mail_attachment
+    WHEN new.extracted_text IS NOT NULL BEGIN
+        UPDATE mail_message SET attachments_text = (
+            SELECT group_concat(extracted_text, ' ') FROM mail_attachment
+            WHERE message_id = new.message_id AND extracted_text IS NOT NULL
+        ) WHERE id = new.message_id;
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS mail_attachment_text_au AFTER UPDATE OF extracted_text
+    ON mail_attachment BEGIN
+        UPDATE mail_message SET attachments_text = (
+            SELECT group_concat(extracted_text, ' ') FROM mail_attachment
+            WHERE message_id = new.message_id AND extracted_text IS NOT NULL
+        ) WHERE id = new.message_id;
+    END;
+    """,
+]
+
 _DDL_BOT_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS bot_activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

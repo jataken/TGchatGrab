@@ -7,18 +7,34 @@ main_window.py.
 from __future__ import annotations
 
 import re
+import shutil
+from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 from ...context import AppContext
-from ...format import short_dt
+from ...format import human_size, short_dt
 from ...util import fire, run_blocking
 from ...widgets import button, card, chip, h1, muted
+from .attachment_view import AttachmentViewerDialog
+
+# П-4: "Заявка.pdf.exe" must still read as executable — checked against
+# every dot-separated suffix, not just the last one, so a double
+# extension trick doesn't hide the real one.
+_EXECUTABLE_EXTENSIONS = {
+    ".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".vbe", ".js",
+    ".jse", ".jar", ".msi", ".msp", ".sh", ".app", ".apk", ".hta", ".wsf",
+}
+
+
+def is_executable_attachment(filename: str) -> bool:
+    suffixes = [s.lower() for s in re.findall(r"\.[A-Za-z0-9]+", filename or "")]
+    return any(s in _EXECUTABLE_EXTENSIONS for s in suffixes)
 
 # «> текст» — самый частый маркер цитаты, плюс два разделителя, которыми
 # Outlook и большинство веб-почтовиков подписывают пересланный/
@@ -125,8 +141,24 @@ class MessagePane(QWidget):
 
         attachments = self.ctx.db.list_mail_attachments(message["id"])
         if attachments:
-            names = ", ".join(a["filename"] for a in attachments)
-            self.body_container.addWidget(muted(f"📎 {names}"))
+            att_row = QHBoxLayout()
+            att_row.addWidget(muted("📎"))
+            for att in attachments:
+                label = att["filename"] or "вложение"
+                if is_executable_attachment(label):
+                    label = f"⚠ {label}"  # П-4: исполняемое расширение помечается
+                size_text = human_size(att["size_bytes"])
+                if size_text:
+                    label += f" ({size_text})"
+                att_btn = button(label, "ghost")
+                att_btn.clicked.connect(lambda _c=False, a=att: self._open_attachment(a))
+                att_row.addWidget(att_btn)
+            att_row.addStretch(1)
+            if len(attachments) > 1:
+                save_all_btn = button("Сохранить все…", "ghost")
+                save_all_btn.clicked.connect(lambda: self._save_all_attachments(attachments))
+                att_row.addWidget(save_all_btn)
+            self.body_container.addLayout(att_row)
 
     def _on_toggle_quote(self, checked: bool) -> None:
         self.quote_label.setVisible(checked)
@@ -145,6 +177,19 @@ class MessagePane(QWidget):
         path = self.message["body_html_path"]
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _save_all_attachments(self, attachments) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Сохранить вложения в папку")
+        if not folder:
+            return
+        for att in attachments:
+            if att["path"] and Path(att["path"]).exists():
+                shutil.copy2(att["path"], Path(folder) / (att["filename"] or Path(att["path"]).name))
+
+    def _open_attachment(self, attachment) -> None:
+        # П-4: opens a viewer inside the app — never runs the file, no
+        # matter what its extension claims to be.
+        AttachmentViewerDialog(self.ctx, attachment, parent=self).exec()
 
 
 class MailScreen(QWidget):

@@ -99,7 +99,7 @@ print("re-migrate OK, rows =", conn.execute("SELECT count(*) FROM bot_scenario_s
 # отражает применённые шаги ровно по одному разу
 applied = {row[0] for row in conn.execute("SELECT id FROM schema_migrations")}
 print("применённые миграции:", sorted(applied))
-assert applied == {"006", "007", "008", "009", "010", "011", "012", "014"}, applied
+assert applied == {"006", "007", "008", "009", "010", "011", "012", "014", "015"}, applied
 tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "direction" in tables, "таблица direction не создалась"
 assert "lead_events" in tables, "таблица lead_events не создалась"

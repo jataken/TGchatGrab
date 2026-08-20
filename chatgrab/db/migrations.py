@@ -220,6 +220,51 @@ def _down_mail(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS mailbox;")
 
 
+def _up_mail_attachments(conn: sqlite3.Connection, _ctx: dict) -> None:
+    """П3: attachment text (PDF/docx/xlsx/plain text, extracted on first
+    view — see core/mail_attachment_text.py and ui/screens/mail/
+    attachment_view.py) becomes searchable. mail_attachment.extracted_text
+    already exists — added by 014 itself, ahead of need, per that
+    session's journal — so the only new column is mail_message.
+    attachments_text, an aggregate kept in step by a trigger on
+    mail_attachment (see _MAIL_ATTACHMENT_TEXT_TRIGGERS's docstring).
+
+    FTS5 can't ALTER an existing virtual table's column list, so mail_fts
+    itself has to be dropped and recreated at the 3-column shape — which
+    empties it, since it's an external-content table with its own
+    storage separate from mail_message. The INSERT...SELECT at the end
+    repopulates it from every existing message so a pre-015 database
+    doesn't silently lose subject/body search until something happens to
+    touch each row again.
+
+    No down() — like 008/011, this alters existing tables (an ADD COLUMN
+    plus a table rebuild) rather than only adding new standalone ones, so
+    it doesn't get 007/010/014's clean-rollback treatment. The mandatory
+    backup before this runs is the safety net, same as those two.
+    """
+    if not schema._column_exists(conn, "mail_message", "attachments_text"):
+        conn.execute("ALTER TABLE mail_message ADD COLUMN attachments_text TEXT;")
+    for name in ("mail_message_ai", "mail_message_ad", "mail_message_au"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {name};")
+    conn.execute("DROP TABLE IF EXISTS mail_fts;")
+    conn.execute(schema._DDL_MAIL_FTS_V2)
+    for ddl in schema._MAIL_FTS_TRIGGERS_V2:
+        conn.execute(ddl)
+    for ddl in schema._MAIL_ATTACHMENT_TEXT_TRIGGERS:
+        conn.execute(ddl)
+    conn.execute(
+        "UPDATE mail_message SET attachments_text = ("
+        " SELECT group_concat(a.extracted_text, ' ') FROM mail_attachment a"
+        " WHERE a.message_id = mail_message.id AND a.extracted_text IS NOT NULL"
+        ") WHERE EXISTS (SELECT 1 FROM mail_attachment a "
+        " WHERE a.message_id = mail_message.id AND a.extracted_text IS NOT NULL);"
+    )
+    conn.execute(
+        "INSERT INTO mail_fts(rowid, subject, body_text, attachments_text) "
+        "SELECT id, subject, body_text, attachments_text FROM mail_message;"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration("006", "baseline (schema through v6, folded from ad-hoc checks)",
               _up_baseline, self_healing=True),
@@ -236,6 +281,8 @@ MIGRATIONS: list[Migration] = [
     # renumbering once С10 is done.
     Migration("014", "mail: mailboxes, folders, messages, threads, attachments, search",
               _up_mail, _down_mail),
+    Migration("015", "mail: attachment text feeds search (attachments_text + mail_fts rebuild)",
+              _up_mail_attachments),
 ]
 
 

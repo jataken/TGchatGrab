@@ -346,3 +346,15 @@ class MailMixin:
     def list_mail_attachments(self, message_id: int) -> list[sqlite3.Row]:
         return self.query(
             "SELECT * FROM mail_attachment WHERE message_id = ? ORDER BY id", (message_id,))
+
+    def get_mail_attachment(self, attachment_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_attachment WHERE id = ?", (attachment_id,))
+
+    def set_attachment_extracted_text(self, attachment_id: int, text: str) -> None:
+        """The UPDATE alone is enough to make the attachment's content
+        searchable — mail_attachment_text_au (migration 015) recomputes
+        mail_message.attachments_text from it, and mail_message_au
+        carries that into mail_fts, the same cascade
+        thread_participants()'s caller relies on for updated_at."""
+        self.execute(
+            "UPDATE mail_attachment SET extracted_text = ? WHERE id = ?", (text, attachment_id))
