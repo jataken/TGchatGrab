@@ -15,13 +15,13 @@ import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
     QLineEdit, QMessageBox, QPlainTextEdit, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
-from ..widgets import button, card, h1, label, muted, plural
+from ..widgets import Card, TabletCheckBox, ToggleSwitch, button, h1, muted, plural
 
 
 def _split_words(text: str) -> list[str]:
@@ -73,7 +73,7 @@ class DirectionDialog(QDialog):
         self.note_input.setMaximumHeight(70)
         lay.addWidget(self.note_input)
 
-        self.enabled_cb = QCheckBox("Направление активно")
+        self.enabled_cb = TabletCheckBox("Направление активно")
         self.enabled_cb.setChecked(bool(direction["enabled"]) if direction else True)
         lay.addWidget(self.enabled_cb)
 
@@ -145,7 +145,7 @@ class DirectionsScreen(QWidget):
         outer.addWidget(hint)
         outer.addSpacing(14)
 
-        list_card = card()
+        list_card = Card()
         list_lay = QVBoxLayout(list_card)
         list_lay.setContentsMargins(16, 12, 16, 14)
         list_lay.setSpacing(8)
@@ -203,11 +203,10 @@ class DirectionsScreen(QWidget):
             enabled_holder = QWidget()
             enabled_lay = QHBoxLayout(enabled_holder)
             enabled_lay.setContentsMargins(8, 0, 0, 0)
-            enabled_cb = QCheckBox()
-            enabled_cb.setChecked(bool(row["enabled"]))
-            enabled_cb.toggled.connect(
+            enabled_sw = ToggleSwitch(bool(row["enabled"]))
+            enabled_sw.toggled.connect(
                 lambda on, did=row["id"]: self._on_toggle_enabled(did, on))
-            enabled_lay.addWidget(enabled_cb)
+            enabled_lay.addWidget(enabled_sw)
             enabled_lay.addStretch(1)
             self.table.setCellWidget(i, 3, enabled_holder)
 

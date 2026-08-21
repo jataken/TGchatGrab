@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from ..context import AppContext
 from ..format import short_dt
 from ..util import fire
-from ..widgets import FieldRow, button, card, h1, muted
+from ..widgets import Card, FieldRow, button, h1, label, muted
 from ...integrations import bitrix
 from ...integrations.bitrix import BitrixClient, BitrixError
 
@@ -67,10 +67,10 @@ class BitrixScreen(QWidget):
         outer.addSpacing(18)
 
         # ---- webhook -----------------------------------------------------
-        wh_card = card()
+        wh_card = Card()
         wh_lay = QVBoxLayout(wh_card)
         wh_lay.setContentsMargins(16, 14, 16, 14)
-        wh_lay.addWidget(muted("ПОДКЛЮЧЕНИЕ"))
+        wh_lay.addWidget(label("ПОДКЛЮЧЕНИЕ", "kicker"))
         wh_hint = muted(
             "Входящий вебхук портала (Приложения → Разработчикам → Другое → Входящий "
             "вебхук, с правами на CRM). Вставьте ссылку целиком, включая /rest/…/…/ на конце."
@@ -103,10 +103,10 @@ class BitrixScreen(QWidget):
         outer.addSpacing(20)
 
         # ---- auto-send policy ----------------------------------------------
-        policy_card = card()
+        policy_card = Card()
         policy_lay = QVBoxLayout(policy_card)
         policy_lay.setContentsMargins(16, 14, 16, 14)
-        policy_lay.addWidget(muted("КОГДА ОТПРАВЛЯТЬ"))
+        policy_lay.addWidget(label("КОГДА ОТПРАВЛЯТЬ", "kicker"))
         policy_hint = muted(
             "Кнопка «Отправить в Битрикс24» на карточке лида работает всегда, независимо "
             "от этой настройки — она только про автоматическую постановку в очередь."
@@ -122,11 +122,11 @@ class BitrixScreen(QWidget):
         outer.addSpacing(20)
 
         # ---- status mapping ------------------------------------------------
-        status_card = card()
+        status_card = Card()
         status_lay = QVBoxLayout(status_card)
         status_lay.setContentsMargins(16, 14, 16, 14)
         status_header = QHBoxLayout()
-        status_header.addWidget(muted("СТАТУСЫ: ВОРОНКА CHATGRAB → СТАДИЯ ЛИДА В BITRIX24"))
+        status_header.addWidget(label("СТАТУСЫ: ВОРОНКА CHATGRAB → СТАДИЯ ЛИДА В BITRIX24", "kicker"))
         status_header.addStretch(1)
         load_statuses_btn = button("Загрузить статусы из Bitrix24", "secondary")
         load_statuses_btn.clicked.connect(self._on_load_statuses)
@@ -147,11 +147,11 @@ class BitrixScreen(QWidget):
         outer.addSpacing(20)
 
         # ---- direction -> source mapping ------------------------------------
-        source_card = card()
+        source_card = Card()
         source_lay = QVBoxLayout(source_card)
         source_lay.setContentsMargins(16, 14, 16, 14)
         source_header = QHBoxLayout()
-        source_header.addWidget(muted("ИСТОЧНИКИ: НАПРАВЛЕНИЕ → SOURCE_ID В BITRIX24"))
+        source_header.addWidget(label("ИСТОЧНИКИ: НАПРАВЛЕНИЕ → SOURCE_ID В BITRIX24", "kicker"))
         source_header.addStretch(1)
         load_sources_btn = button("Загрузить источники из Bitrix24", "secondary")
         load_sources_btn.clicked.connect(self._on_load_sources)
@@ -170,11 +170,11 @@ class BitrixScreen(QWidget):
         outer.addSpacing(20)
 
         # ---- sync journal ----------------------------------------------------
-        journal_card = card()
+        journal_card = Card()
         journal_lay = QVBoxLayout(journal_card)
         journal_lay.setContentsMargins(16, 14, 16, 14)
         journal_header = QHBoxLayout()
-        journal_header.addWidget(muted("ЖУРНАЛ СИНХРОНИЗАЦИИ"))
+        journal_header.addWidget(label("ЖУРНАЛ СИНХРОНИЗАЦИИ", "kicker"))
         journal_header.addStretch(1)
         refresh_journal_btn = button("Обновить", "ghost")
         refresh_journal_btn.clicked.connect(self._refresh_journal)
@@ -307,9 +307,9 @@ class BitrixScreen(QWidget):
         self.source_empty.setVisible(not directions)
         for direction in directions:
             row = QHBoxLayout()
-            label = muted(direction["name"])
-            label.setFixedWidth(160)
-            row.addWidget(label)
+            source_label = muted(direction["name"])
+            source_label.setFixedWidth(160)
+            row.addWidget(source_label)
             combo = QComboBox()
             _populate_entity_combo(combo, [], direction["crm_source_id"])
             row.addWidget(combo, 1)

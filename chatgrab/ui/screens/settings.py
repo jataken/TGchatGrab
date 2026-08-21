@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
@@ -9,12 +10,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .. import theme
 from ..context import AppContext
 from .. import tray
 from ..format import short_dt
 from ..util import fire
 from ... import __version__, diagnostics
-from ..widgets import FieldRow, button, card, h1, muted, plural
+from ..widgets import Card, FieldRow, MetricsBar, TabletCheckBox, ToggleSwitch, button, h1, label, muted, plural
 from ...integrations import llm
 from ...integrations.llm import LLMClient, LLMError
 from ...security import WrongPasswordError
@@ -26,15 +28,16 @@ WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
 class SettingsScreen(QWidget):
-    """16 independent sections in one long scrolling page — see PLAN.md's
-    Р4 journal entry. Each lives in its own `_build_*` method (a card
-    widget it returns, or a shared QGridLayout it populates for the two
-    sections — Telegram access and speed — that sit side by side in one
-    grid rather than as separate cards); `__init__` just assembles them
-    in the same order and with the same spacing the page always had.
-    Splitting further into separate files wasn't done here — every
-    section is still a handful of widgets and one save handler, and nothing
-    about that got harder to find once it had its own method name.
+    """Independent sections, each its own `Card`, laid out in a 2-column
+    top-aligned grid (Д5, design-brief.md §4.8) — see PLAN.md's Р4 journal
+    entry for the section list's own history. Each section lives in its
+    own `_build_*_card` method returning a `Card`; `__init__` just builds
+    the list and places it into the grid. Two of the original 16 sections
+    (security + "прочее") were merged into one card to match the brief's
+    §4.8 п.6 grouping; splitting the rest further into separate files
+    wasn't done — every section is still a handful of widgets and one save
+    handler, and nothing about that got harder to find with its own method
+    name.
     """
 
     def __init__(self, ctx: AppContext, navigate):
@@ -52,7 +55,17 @@ class SettingsScreen(QWidget):
 
         outer = QVBoxLayout(container)
         outer.setContentsMargins(40, 28, 40, 32)
-        outer.addWidget(h1("Настройки"))
+        head_row = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        head_col.addWidget(h1("Настройки"))
+        head_col.addWidget(muted(
+            "Доступ, скорость сбора, медиа, безопасность и обслуживание базы"
+        ))
+        head_row.addLayout(head_col)
+        head_row.addStretch(1)
+        outer.addLayout(head_row)
+        outer.addSpacing(4)
         outer.addWidget(muted(
             "Ключи доступа берутся на my.telegram.org и хранятся в отдельном файле "
             "рядом с программой, не в её коде."
@@ -69,51 +82,53 @@ class SettingsScreen(QWidget):
         outer.addLayout(version_row)
         outer.addSpacing(18)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(28)
-        grid.setVerticalSpacing(10)
-        outer.addLayout(grid)
-        self._build_telegram_access_grid(grid)
-        self._build_speed_grid(grid)
-        outer.addSpacing(24)
+        # design-brief.md §4.8: «Сетка 2 колонки, зазор 12px, карточки
+        # выравниваются по верху». Qt.AlignTop on each cell keeps a
+        # shorter card from being stretched to match a taller neighbour
+        # in the same row — the same fix as Д4's watch.py bug, applied
+        # up front this time instead of found after the fact. Cards with
+        # a table or a multi-button/multi-combo row (measured to need
+        # 600px+ at the app's default 1320px window — half a column is
+        # only ~490px there) span both columns instead of being squeezed;
+        # everything else pairs up at half width.
+        cards_grid = QGridLayout()
+        cards_grid.setHorizontalSpacing(12)
+        cards_grid.setVerticalSpacing(12)
+        cards_grid.setColumnStretch(0, 1)
+        cards_grid.setColumnStretch(1, 1)
+        outer.addLayout(cards_grid)
 
-        outer.addWidget(self._build_media_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_security_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_schedule_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_ignore_rules_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_authors_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_database_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_tray_card())
-
-        outer.addWidget(self._build_retention_card())
-
-        outer.addWidget(self._build_productivity_card())
-
-        outer.addWidget(self._build_export_schedule_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_integrations_pointer_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_llm_card())
-        outer.addSpacing(24)
-
-        outer.addWidget(self._build_diagnostics_card())
+        cards = [
+            (self._build_telegram_access_card(), False),
+            (self._build_speed_card(), False),
+            (self._build_media_card(), False),
+            (self._build_security_card(), False),
+            (self._build_ignore_rules_card(), True),
+            (self._build_authors_card(), True),
+            (self._build_database_card(), True),
+            (self._build_tray_card(), False),
+            (self._build_retention_card(), True),
+            (self._build_productivity_card(), True),
+            (self._build_export_schedule_card(), True),
+            (self._build_integrations_pointer_card(), False),
+            (self._build_llm_card(), False),
+            (self._build_diagnostics_card(), False),
+        ]
+        row = col = 0
+        for widget, wide in cards:
+            if wide:
+                if col == 1:
+                    row += 1
+                    col = 0
+                cards_grid.addWidget(widget, row, 0, 1, 2, Qt.AlignTop)
+                row += 1
+            else:
+                cards_grid.addWidget(widget, row, col, Qt.AlignTop)
+                col += 1
+                if col == 2:
+                    col = 0
+                    row += 1
         self._refresh_diagnostics_status()
-
-        outer.addWidget(self._build_misc_card())
         outer.addStretch(1)
 
         self._refresh_rules()
@@ -123,6 +138,7 @@ class SettingsScreen(QWidget):
         self._refresh_retention_preview()
         self._populate_sched_presets()
         self._refresh_schedules()
+        self._refresh_speed_current()
 
     def on_show(self, **kwargs) -> None:
         self._refresh_rules()
@@ -133,36 +149,81 @@ class SettingsScreen(QWidget):
         self._refresh_productivity()
         self._populate_sched_presets()
         self._refresh_schedules()
+        self._refresh_speed_current()
+
+    def _refresh_speed_current(self) -> None:
+        self.speed_current_label.setText(f"{self.ctx.collector.delay.current:.1f}")
 
     # ---- section builders ----------------------------------------------
-    def _build_telegram_access_grid(self, grid: QGridLayout) -> None:
-        grid.addWidget(muted("ДОСТУП К TELEGRAM"), 0, 0)
-        grid.addWidget(QLabel("Ключ приложения (api_id)"), 1, 0)
+    def _build_telegram_access_card(self) -> QWidget:
+        access_card = Card()
+        lay = QVBoxLayout(access_card)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(6)
+        lay.addWidget(label("ДОСТУП К TELEGRAM", "kicker"))
+        lay.addWidget(QLabel("Ключ приложения (api_id)"))
         self.api_id_input = QLineEdit(self.ctx.config.api_id)
-        grid.addWidget(self.api_id_input, 2, 0)
+        self.api_id_input.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO};")
+        lay.addWidget(self.api_id_input)
         self.api_hash_field = FieldRow("Секрет приложения (api_hash)", password=True)
         self.api_hash_field.set_text(self.ctx.config.api_hash)
-        grid.addWidget(self.api_hash_field, 3, 0)
-        grid.addWidget(QLabel("Файл входа в аккаунт"), 4, 0)
+        self.api_hash_field.input.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO};")
+        lay.addWidget(self.api_hash_field)
+        lay.addWidget(QLabel("Файл входа в аккаунт"))
         session_row = QHBoxLayout()
         self.session_path_input = QLineEdit(self.ctx.config.session_path)
+        self.session_path_input.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO}; font-size: 11.5px;")
         session_row.addWidget(self.session_path_input)
         session_browse = button("Обзор…", "secondary")
         session_browse.clicked.connect(self._browse_session)
         session_row.addWidget(session_browse)
-        session_row_w = QWidget()
-        session_row_w.setLayout(session_row)
-        grid.addWidget(session_row_w, 5, 0)
-        note = muted("Этот файл даёт полный доступ к аккаунту. Не пересылайте его и не кладите в выгрузки.")
+        lay.addLayout(session_row)
+        # Плашка-предупреждение WARN (design-brief.md §4.2/§4.8's shared
+        # convention for "this file grants full access").
+        note = QLabel("⚠ Этот файл даёт полный доступ к аккаунту. Не пересылайте его и не кладите в выгрузки.")
         note.setWordWrap(True)
-        grid.addWidget(note, 6, 0)
+        note.setStyleSheet(
+            f"background: rgba(240,198,160,.07); border: 1px solid rgba(240,198,160,.22); "
+            f"border-radius: 10px; padding: 8px 10px; color: {theme.WARN_FG}; font-size: 12px;"
+        )
+        lay.addWidget(note)
         save_creds_btn = button("Сохранить", "primary")
         save_creds_btn.clicked.connect(self._save_credentials)
-        grid.addWidget(save_creds_btn, 7, 0)
+        lay.addWidget(save_creds_btn)
+        return access_card
 
-    def _build_speed_grid(self, grid: QGridLayout) -> None:
-        grid.addWidget(muted("СКОРОСТЬ ЗАГРУЗКИ ИСТОРИИ"), 0, 1)
-        grid.addWidget(QLabel("Пауза между запросами истории, с"), 1, 1)
+    def _build_speed_card(self) -> QWidget:
+        speed_card = Card()
+        lay = QVBoxLayout(speed_card)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(6)
+        lay.addWidget(label("СКОРОСТЬ ЗАГРУЗКИ ИСТОРИИ", "kicker"))
+
+        # Гигантское значение текущей паузы (design-brief.md §4.8 п.2) —
+        # реальное текущее значение адаптивного алгоритма коллектора, не
+        # редактируемое напрямую (см. ниже — почему это не один ползунок).
+        current_row = QHBoxLayout()
+        self.speed_current_label = QLabel("—")
+        self.speed_current_label.setStyleSheet(
+            f"font-family: {theme.FONT_MONO}; font-size: 30px; color: {theme.TEXT};"
+        )
+        current_row.addWidget(self.speed_current_label)
+        current_col = QVBoxLayout()
+        current_col.setSpacing(0)
+        current_col.addWidget(muted("с пауза между запросами"))
+        current_col.addStretch(1)
+        current_row.addLayout(current_col)
+        current_row.addStretch(1)
+        lay.addLayout(current_row)
+
+        # Ползунок брифа предполагает одно перетаскиваемое значение —
+        # реальный алгоритм коллектора адаптивный (сам растёт после
+        # отказа, сам снижается после серии успехов) и настраивается
+        # только границами min/max, не одной точкой. Полосу-ползунок не
+        # изображаю поверх интерфейса, который на самом деле её не
+        # использует — оставлены существующие поля границ, тот же трюк,
+        # что уже был с today.py в Д4 (не подменять функцию видом).
+        lay.addWidget(QLabel("Границы паузы между запросами истории, с"))
         delay_row = QHBoxLayout()
         self.delay_min = QDoubleSpinBox()
         self.delay_min.setRange(0.1, 10.0)
@@ -177,39 +238,106 @@ class SettingsScreen(QWidget):
         delay_row.addWidget(self.delay_min)
         delay_row.addWidget(muted("до"))
         delay_row.addWidget(self.delay_max)
-        delay_row_w = QWidget()
-        delay_row_w.setLayout(delay_row)
-        grid.addWidget(delay_row_w, 2, 1)
+        lay.addLayout(delay_row)
+        ends_row = QHBoxLayout()
+        faster = label("быстрее · чаще остановки")
+        faster.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 10px; color: {theme.TEXT_FAINT};")
+        ends_row.addWidget(faster)
+        ends_row.addStretch(1)
+        slower = label("медленнее · надёжнее")
+        slower.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 10px; color: {theme.TEXT_FAINT};")
+        ends_row.addWidget(slower)
+        lay.addLayout(ends_row)
         hint = muted("Больше пауза — реже остановки со стороны Telegram, но история собирается дольше. "
                       "Пауза подстраивается сама: растёт после отказа, плавно снижается при успешной серии.")
         hint.setWordWrap(True)
-        grid.addWidget(hint, 3, 1)
+        lay.addWidget(hint)
         save_speed_btn = button("Сохранить", "primary")
         save_speed_btn.clicked.connect(self._save_speed_photos)
-        grid.addWidget(save_speed_btn, 4, 1)
+        lay.addWidget(save_speed_btn)
+
+        lay.addWidget(self._hline())
+        lay.addWidget(label("РАСПИСАНИЕ", "kicker"))
+        sched_toggle_row = QHBoxLayout()
+        self.sched_enabled_toggle = ToggleSwitch()
+        sched_toggle_row.addWidget(self.sched_enabled_toggle)
+        sched_toggle_row.addWidget(muted("Ограничить загрузку истории окном времени"), 1)
+        lay.addLayout(sched_toggle_row)
+        time_row = QHBoxLayout()
+        time_row.addWidget(muted("с"))
+        self.sched_start = QLineEdit()
+        self.sched_start.setMaximumWidth(70)
+        self.sched_start.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO};")
+        time_row.addWidget(self.sched_start)
+        time_row.addWidget(muted("до"))
+        self.sched_end = QLineEdit()
+        self.sched_end.setMaximumWidth(70)
+        self.sched_end.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO};")
+        time_row.addWidget(self.sched_end)
+        time_row.addStretch(1)
+        lay.addLayout(time_row)
+        self.day_checks: list[QCheckBox] = []
+        days_row = QHBoxLayout()
+        schedule = self.ctx.db.get_setting("schedule", DEFAULT_SCHEDULE)
+        self.sched_enabled_toggle.set_checked(bool(schedule.get("enabled", False)))
+        self.sched_start.setText(schedule.get("start", "23:00"))
+        self.sched_end.setText(schedule.get("end", "08:00"))
+        for i, name in enumerate(WEEKDAYS):
+            cb = QCheckBox(name)
+            cb.setChecked(i in schedule.get("days", list(range(7))))
+            self.day_checks.append(cb)
+            days_row.addWidget(cb)
+        days_row.addStretch(1)
+        lay.addLayout(days_row)
+        save_sched_btn = button("Сохранить расписание", "secondary")
+        save_sched_btn.clicked.connect(self._save_schedule)
+        lay.addWidget(save_sched_btn)
+        return speed_card
+
+    @staticmethod
+    def _hline() -> QWidget:
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {theme.DIVIDER_SOFT};")
+        return line
 
     def _build_media_card(self) -> QWidget:
-        media_card = card()
+        media_card = Card()
         media_lay = QVBoxLayout(media_card)
         media_lay.setContentsMargins(16, 14, 16, 14)
-        media_lay.addWidget(muted("КАКИЕ МЕДИАФАЙЛЫ СКАЧИВАТЬ"))
-        media_lay.addWidget(muted(
+        media_lay.addWidget(label("КАКИЕ МЕДИАФАЙЛЫ СКАЧИВАТЬ", "kicker"))
+        media_intro = muted(
             "По умолчанию скачиваются только фото — остальное включайте, если нужно "
             "разобрать чат, где важны видео, голосовые или документы."
-        ))
+        )
+        media_intro.setWordWrap(True)
+        media_lay.addWidget(media_intro)
 
-        self.photos_cb = self._media_toggle_row(
-            media_lay, "Фотографии", "photos/<chat_id>/<message_id>.jpg", self.ctx.config.photos_enabled,
-        )
-        self.videos_cb = self._media_toggle_row(
-            media_lay, "Видео", "videos/<chat_id>/<message_id>.mp4", self.ctx.config.videos_enabled,
-        )
-        self.voice_cb = self._media_toggle_row(
-            media_lay, "Голосовые сообщения", "voice/<chat_id>/<message_id>.ogg", self.ctx.config.voice_enabled,
-        )
-        self.documents_cb = self._media_toggle_row(
-            media_lay, "Документы", "documents/<chat_id>/<message_id>_<имя файла>", self.ctx.config.documents_enabled,
-        )
+        # design-brief.md §4.8 п.3: сетка 2×2 чекбоксов-таблеток, справа —
+        # фактическое число уже скачанных файлов этого типа
+        # (db.media_count(media_type=...) уже поддерживает chat_id=None —
+        # across all chats — не понадобилось заводить новый метод в БД).
+        # TabletCheckBox не даёт отдельного правого слота под моно-число,
+        # так что счётчик приписан к подписи одной строкой, как и в
+        # export_screen.py в Д4.
+        media_grid = QGridLayout()
+        media_grid.setHorizontalSpacing(8)
+        media_grid.setVerticalSpacing(4)
+        db = self.ctx.db
+        media_specs = [
+            ("Фотографии", "photo", self.ctx.config.photos_enabled),
+            ("Видео", "video", self.ctx.config.videos_enabled),
+            ("Голосовые", "voice", self.ctx.config.voice_enabled),
+            ("Документы", "document", self.ctx.config.documents_enabled),
+        ]
+        cb_attrs = ["photos_cb", "videos_cb", "voice_cb", "documents_cb"]
+        for i, (title, media_type, checked) in enumerate(media_specs):
+            count = db.media_count(media_type=media_type)
+            cb = TabletCheckBox(f"{title}   ·   {count:,}".replace(",", " ") if count else title)
+            cb.setChecked(checked)
+            media_grid.addWidget(cb, i // 2, i % 2)
+            setattr(self, cb_attrs[i], cb)
+        media_lay.addLayout(media_grid)
 
         size_row = QHBoxLayout()
         size_row.addWidget(muted("Максимальный размер файла (кроме фото)"))
@@ -237,6 +365,7 @@ class SettingsScreen(QWidget):
         photos_dir_row.addWidget(photos_dir_browse)
         media_lay.addLayout(photos_dir_row)
         media_note = muted("Видео, голосовые и документы сохраняются рядом, в подпапках videos/voice/documents.")
+        media_note.setWordWrap(True)
         media_lay.addWidget(media_note)
 
         save_media_btn = button("Сохранить", "primary")
@@ -245,65 +374,65 @@ class SettingsScreen(QWidget):
         return media_card
 
     def _build_security_card(self) -> QWidget:
-        self.security_card = card()
+        # design-brief.md §4.8 п.6 «ЗАЩИТА И ПРОЧЕЕ» merges what this app
+        # had as two separate cards (master-password + the gap-notify/
+        # markdown-header "прочее" card) into one — done here rather than
+        # kept apart, low-risk (just moving widgets, no logic change).
+        self.security_card = Card()
         sec_lay = QVBoxLayout(self.security_card)
         sec_lay.setContentsMargins(16, 14, 16, 14)
-        sec_lay.addWidget(muted("ЗАЩИТА МАСТЕР-ПАРОЛЕМ"))
+        sec_lay.addWidget(label("ЗАЩИТА И ПРОЧЕЕ", "kicker"))
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(10)
+        self.security_toggle = ToggleSwitch()
+        self.security_toggle.toggled.connect(self._on_toggle_security)
+        toggle_row.addWidget(self.security_toggle)
+        toggle_col = QVBoxLayout()
+        toggle_col.setSpacing(0)
+        toggle_col.addWidget(muted("Защита мастер-паролем"))
+        toggle_col.addWidget(muted("запрос пароля при запуске приложения"))
+        toggle_row.addLayout(toggle_col, 1)
+        sec_lay.addLayout(toggle_row)
         self.security_status_label = QLabel("")
         self.security_status_label.setWordWrap(True)
         sec_lay.addWidget(self.security_status_label)
-        sec_btn_row = QHBoxLayout()
-        self.security_toggle_btn = button("", "primary")
-        self.security_toggle_btn.clicked.connect(self._on_toggle_security)
-        sec_btn_row.addWidget(self.security_toggle_btn)
-        sec_btn_row.addStretch(1)
-        sec_lay.addLayout(sec_btn_row)
+
+        sec_lay.addWidget(self._hline())
+        gap_label = QLabel("Предупреждать, если по чату нет новых сообщений дольше, суток")
+        gap_label.setWordWrap(True)
+        sec_lay.addWidget(gap_label)
+        gap_row = QHBoxLayout()
+        self.gap_days_spin = QSpinBox()
+        self.gap_days_spin.setRange(1, 90)
+        self.gap_days_spin.setValue(self.ctx.db.get_setting("gap_notify_days", 7))
+        gap_row.addWidget(self.gap_days_spin)
+        gap_row.addStretch(1)
+        sec_lay.addLayout(gap_row)
+
+        sec_lay.addWidget(QLabel("Шапка Markdown-дайджеста"))
+        self.md_header_edit = QPlainTextEdit(self.ctx.db.get_setting("markdown_header", DEFAULT_MD_HEADER))
+        self.md_header_edit.setMaximumHeight(120)
+        self.md_header_edit.setStyleSheet(
+            f"QPlainTextEdit {{ background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO}; font-size: 11.5px; }}"
+        )
+        sec_lay.addWidget(self.md_header_edit)
+        save_misc_btn = button("Сохранить", "primary")
+        save_misc_btn.clicked.connect(self._save_misc)
+        sec_lay.addWidget(save_misc_btn)
         return self.security_card
 
-    def _build_schedule_card(self) -> QWidget:
-        sched_card = card()
-        sched_lay = QVBoxLayout(sched_card)
-        sched_lay.setContentsMargins(16, 14, 16, 14)
-        sched_lay.addWidget(muted("РАСПИСАНИЕ ЗАГРУЗКИ ИСТОРИИ"))
-        sched_lay.addWidget(muted(
-            "Прослушивание новых сообщений работает всегда, независимо от расписания."
-        ))
-        schedule = self.ctx.db.get_setting("schedule", DEFAULT_SCHEDULE)
-        self.sched_enabled_cb = QCheckBox("Ограничить загрузку истории окном времени")
-        self.sched_enabled_cb.setChecked(schedule.get("enabled", False))
-        sched_lay.addWidget(self.sched_enabled_cb)
-        time_row = QHBoxLayout()
-        time_row.addWidget(muted("с"))
-        self.sched_start = QLineEdit(schedule.get("start", "23:00"))
-        self.sched_start.setMaximumWidth(70)
-        time_row.addWidget(self.sched_start)
-        time_row.addWidget(muted("до"))
-        self.sched_end = QLineEdit(schedule.get("end", "08:00"))
-        self.sched_end.setMaximumWidth(70)
-        time_row.addWidget(self.sched_end)
-        time_row.addSpacing(16)
-        self.day_checks: list[QCheckBox] = []
-        for i, name in enumerate(WEEKDAYS):
-            cb = QCheckBox(name)
-            cb.setChecked(i in schedule.get("days", list(range(7))))
-            self.day_checks.append(cb)
-            time_row.addWidget(cb)
-        time_row.addStretch(1)
-        sched_lay.addLayout(time_row)
-        save_sched_btn = button("Сохранить расписание", "primary")
-        save_sched_btn.clicked.connect(self._save_schedule)
-        sched_lay.addWidget(save_sched_btn)
-        return sched_card
-
     def _build_ignore_rules_card(self) -> QWidget:
-        ignore_card = card()
+        ignore_card = Card()
         ig_lay = QVBoxLayout(ignore_card)
         ig_lay.setContentsMargins(16, 14, 16, 14)
-        ig_lay.addWidget(muted("ПРАВИЛА ИГНОРА"))
-        ig_lay.addWidget(muted(
+        ig_lay.addWidget(label("ПРАВИЛА ИГНОРА", "kicker"))
+        ig_hint = muted(
             "Сообщения от автора или со стоп-словом помечаются скрытыми — не удаляются, "
             "не попадают в выгрузку по умолчанию."
-        ))
+        )
+        ig_hint.setWordWrap(True)
+        ig_lay.addWidget(ig_hint)
         add_row = QHBoxLayout()
         self.rule_type_combo = QComboBox()
         self.rule_type_combo.addItems(["автор (имя или @ник)", "стоп-слово"])
@@ -336,10 +465,10 @@ class SettingsScreen(QWidget):
         return ignore_card
 
     def _build_authors_card(self) -> QWidget:
-        authors_card = card()
+        authors_card = Card()
         au_lay = QVBoxLayout(authors_card)
         au_lay.setContentsMargins(16, 14, 16, 14)
-        au_lay.addWidget(muted("АВТОРЫ ПО ЧАТУ"))
+        au_lay.addWidget(label("АВТОРЫ ПО ЧАТУ", "kicker"))
         au_pick_row = QHBoxLayout()
         self.authors_chat_combo = QComboBox()
         for chat in self.ctx.db.list_chats():
@@ -355,10 +484,17 @@ class SettingsScreen(QWidget):
         return authors_card
 
     def _build_database_card(self) -> QWidget:
-        db_card = card()
+        db_card = Card()
         db_lay = QVBoxLayout(db_card)
         db_lay.setContentsMargins(16, 14, 16, 14)
-        db_lay.addWidget(muted("БАЗА ДАННЫХ"))
+        db_lay.addWidget(label("БАЗА ДАННЫХ И РЕЗЕРВНЫЕ КОПИИ", "kicker"))
+        # design-brief.md §4.8 п.4: три метрики в ряд. МЕДИА/ПОСЛЕДНИЙ
+        # БЭКАП не были готовыми методами — посчитаны напрямую здесь
+        # (сумма размеров файлов в четырёх media-папках; mtime самого
+        # свежего файла в папке бэкапов), не заведены как новые методы в
+        # database.py — это read-only агрегаты только для этой карточки.
+        self.db_metrics = MetricsBar()
+        db_lay.addWidget(self.db_metrics)
         paths_row = QHBoxLayout()
         paths_row.addWidget(QLabel(f"База: {self.ctx.paths.db_path}"))
         open_db_btn = button("Открыть в проводнике", "secondary")
@@ -376,7 +512,7 @@ class SettingsScreen(QWidget):
 
         backup_settings = self.ctx.backup_service.settings()
         backup_row = QHBoxLayout()
-        self.backup_enabled_cb = QCheckBox("Резервная копия по расписанию")
+        self.backup_enabled_cb = TabletCheckBox("Резервная копия по расписанию")
         self.backup_enabled_cb.setChecked(backup_settings.get("enabled", True))
         backup_row.addWidget(self.backup_enabled_cb)
         backup_row.addWidget(muted("каждые"))
@@ -410,10 +546,10 @@ class SettingsScreen(QWidget):
         return db_card
 
     def _build_tray_card(self) -> QWidget:
-        tray_card = card()
+        tray_card = Card()
         tray_lay = QVBoxLayout(tray_card)
         tray_lay.setContentsMargins(16, 14, 16, 14)
-        tray_lay.addWidget(muted("РАБОТА В ФОНЕ"))
+        tray_lay.addWidget(label("РАБОТА В ФОНЕ", "kicker"))
         tray_hint = muted(
             "Приложение слушает чаты, только пока запущено. Эти настройки позволяют "
             "держать его включённым, не занимая место на панели задач."
@@ -421,11 +557,11 @@ class SettingsScreen(QWidget):
         tray_hint.setWordWrap(True)
         tray_lay.addWidget(tray_hint)
 
-        self.tray_close_cb = QCheckBox("Сворачивать в область уведомлений вместо закрытия")
+        self.tray_close_cb = TabletCheckBox("Сворачивать в область уведомлений вместо закрытия")
         self.tray_close_cb.setChecked(self.ctx.db.get_setting("tray_minimize_on_close", True))
         tray_lay.addWidget(self.tray_close_cb)
 
-        self.autostart_cb = QCheckBox("Запускать вместе с Windows")
+        self.autostart_cb = TabletCheckBox("Запускать вместе с Windows")
         self.autostart_cb.setChecked(tray.autostart_enabled())
         if not tray.autostart_supported():
             self.autostart_cb.setEnabled(False)
@@ -441,10 +577,10 @@ class SettingsScreen(QWidget):
         return tray_card
 
     def _build_retention_card(self) -> QWidget:
-        ret_card = card()
+        ret_card = Card()
         ret_lay = QVBoxLayout(ret_card)
         ret_lay.setContentsMargins(16, 14, 16, 14)
-        ret_lay.addWidget(muted("СКОЛЬКО ХРАНИТЬ"))
+        ret_lay.addWidget(label("СКОЛЬКО ХРАНИТЬ", "kicker"))
         ret_hint = muted(
             "База растёт, пока её не подрезать. Старое сначала выписывается в "
             "архивный файл рядом с выгрузками и только потом удаляется — "
@@ -485,10 +621,10 @@ class SettingsScreen(QWidget):
         return ret_card
 
     def _build_productivity_card(self) -> QWidget:
-        prod_card = card()
+        prod_card = Card()
         prod_lay = QVBoxLayout(prod_card)
         prod_lay.setContentsMargins(16, 14, 16, 14)
-        prod_lay.addWidget(muted("ОТДАЧА ИСТОЧНИКОВ ЗА 30 ДНЕЙ"))
+        prod_lay.addWidget(label("ОТДАЧА ИСТОЧНИКОВ ЗА 30 ДНЕЙ", "kicker"))
         prod_hint = muted(
             "Объём сам по себе не говорит, стоит ли собирать чат. Рядом — сколько "
             "раз он дал то, о чём вы просили сообщить: совпадения по наблюдению и "
@@ -514,10 +650,10 @@ class SettingsScreen(QWidget):
         return prod_card
 
     def _build_export_schedule_card(self) -> QWidget:
-        xsched_card = card()
+        xsched_card = Card()
         xsched_lay = QVBoxLayout(xsched_card)
         xsched_lay.setContentsMargins(16, 14, 16, 14)
-        xsched_lay.addWidget(muted("ВЫГРУЗКА ПО РАСПИСАНИЮ"))
+        xsched_lay.addWidget(label("ВЫГРУЗКА ПО РАСПИСАНИЮ", "kicker"))
         sched_hint = muted(
             "Запускает сохранённый пресет экспорта сам, чтобы свежий файл просто "
             "появлялся в папке. Если компьютер был выключен в назначенный час, "
@@ -569,12 +705,14 @@ class SettingsScreen(QWidget):
     def _build_integrations_pointer_card(self) -> QWidget:
         """С7: Bitrix24 moved to its own screen — this card is what's left
         behind on Настройки, pointing at it."""
-        integrations_card = card()
+        integrations_card = Card()
         integrations_lay = QHBoxLayout(integrations_card)
         integrations_lay.setContentsMargins(16, 14, 16, 14)
-        integrations_lay.addWidget(muted(
+        integrations_hint = muted(
             "Подключение к Bitrix24, соответствие статусов и источников — на отдельном экране."
-        ), 1)
+        )
+        integrations_hint.setWordWrap(True)
+        integrations_lay.addWidget(integrations_hint, 1)
         open_bitrix_btn = button("Bitrix24 →", "secondary")
         open_bitrix_btn.clicked.connect(lambda: self.navigate("bitrix"))
         integrations_lay.addWidget(open_bitrix_btn)
@@ -582,10 +720,10 @@ class SettingsScreen(QWidget):
 
     def _build_llm_card(self) -> QWidget:
         """С9 — опционально, выключен по умолчанию."""
-        llm_card = card()
+        llm_card = Card()
         llm_lay = QVBoxLayout(llm_card)
         llm_lay.setContentsMargins(16, 14, 16, 14)
-        llm_lay.addWidget(muted("LLM-ПОМОЩНИК · ОПЦИОНАЛЬНО, ВЫКЛЮЧЕН ПО УМОЛЧАНИЮ"))
+        llm_lay.addWidget(label("LLM-ПОМОЩНИК · ОПЦИОНАЛЬНО, ВЫКЛЮЧЕН ПО УМОЛЧАНИЮ", "kicker"))
         llm_hint = muted(
             "Извлекает поля заявки из переписки, готовит краткое содержание и черновик "
             "ответа — на карточке лида, по кнопке, ничего не сохраняет само. Без ключа и "
@@ -627,10 +765,10 @@ class SettingsScreen(QWidget):
 
     def _build_diagnostics_card(self) -> QWidget:
         """Temporary — see TEMPORARY.md."""
-        diag_card = card()
+        diag_card = Card()
         diag_lay = QVBoxLayout(diag_card)
         diag_lay.setContentsMargins(16, 14, 16, 14)
-        diag_lay.addWidget(muted("ДИАГНОСТИЧЕСКАЯ ЗАПИСЬ · ВРЕМЕННАЯ ФУНКЦИЯ"))
+        diag_lay.addWidget(label("ДИАГНОСТИЧЕСКАЯ ЗАПИСЬ · ВРЕМЕННАЯ ФУНКЦИЯ", "kicker"))
         diag_hint = muted(
             "Пишет в отдельный файл, какие экраны вы открывали, что нажимали и что "
             "приложение при этом делало — включая ошибки, которые не видно на экране. "
@@ -640,7 +778,7 @@ class SettingsScreen(QWidget):
         diag_hint.setWordWrap(True)
         diag_lay.addWidget(diag_hint)
 
-        self.diag_cb = QCheckBox("Вести диагностическую запись")
+        self.diag_cb = TabletCheckBox("Вести диагностическую запись")
         self.diag_cb.setChecked(bool(self.ctx.db.get_setting(diagnostics.SETTING_KEY, False)))
         diag_lay.addWidget(self.diag_cb)
 
@@ -659,28 +797,6 @@ class SettingsScreen(QWidget):
         diag_lay.addLayout(diag_row)
         return diag_card
 
-    def _build_misc_card(self) -> QWidget:
-        misc_card = card()
-        misc_lay = QVBoxLayout(misc_card)
-        misc_lay.setContentsMargins(16, 14, 16, 14)
-        misc_lay.addWidget(muted("ПРОЧЕЕ"))
-        gap_row = QHBoxLayout()
-        gap_row.addWidget(QLabel("Предупреждать, если по чату нет новых сообщений дольше, суток"))
-        self.gap_days_spin = QSpinBox()
-        self.gap_days_spin.setRange(1, 90)
-        self.gap_days_spin.setValue(self.ctx.db.get_setting("gap_notify_days", 7))
-        gap_row.addWidget(self.gap_days_spin)
-        gap_row.addStretch(1)
-        misc_lay.addLayout(gap_row)
-
-        misc_lay.addWidget(QLabel("Шапка Markdown-дайджеста"))
-        self.md_header_edit = QPlainTextEdit(self.ctx.db.get_setting("markdown_header", DEFAULT_MD_HEADER))
-        self.md_header_edit.setMaximumHeight(120)
-        misc_lay.addWidget(self.md_header_edit)
-        save_misc_btn = button("Сохранить", "primary")
-        save_misc_btn.clicked.connect(self._save_misc)
-        misc_lay.addWidget(save_misc_btn)
-        return misc_card
 
     # ---- actions -----------------------------------------------------
     def _refresh_llm_status(self) -> None:
@@ -736,22 +852,6 @@ class SettingsScreen(QWidget):
         if d:
             self.photos_dir_input.setText(d)
 
-    @staticmethod
-    def _media_toggle_row(parent_layout: QVBoxLayout, title: str, path_pattern: str, checked: bool) -> QCheckBox:
-        row = QHBoxLayout()
-        col = QVBoxLayout()
-        col.addWidget(QLabel(title))
-        path_label = QLabel(path_pattern)
-        path_label.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #6c6c78;")
-        col.addWidget(path_label)
-        row.addLayout(col)
-        row.addStretch(1)
-        cb = QCheckBox()
-        cb.setChecked(checked)
-        row.addWidget(cb)
-        parent_layout.addLayout(row)
-        return cb
-
     def _save_credentials(self) -> None:
         cfg = self.ctx.config
         new_api_id = self.api_id_input.text().strip()
@@ -787,35 +887,43 @@ class SettingsScreen(QWidget):
         )
 
     def _refresh_security_section(self) -> None:
+        # Синхронизирует и текст, и сам тумблер с реальным состоянием —
+        # вызывается и после успешного включения/выключения, и после
+        # отменённого диалога, так что тумблер не может застрять в
+        # положении, которое не подтвердилось паролем.
+        self.security_toggle.blockSignals(True)
+        self.security_toggle.set_checked(self.ctx.security.enabled)
+        self.security_toggle.blockSignals(False)
         if self.ctx.security.enabled:
             self.security_status_label.setText(
                 "Файл входа в Telegram и ключ приложения зашифрованы мастер-паролем. "
                 "Он нигде не хранится — забыв его, нужно будет войти в Telegram заново."
             )
-            self.security_toggle_btn.setText("Выключить защиту")
         else:
             self.security_status_label.setText(
                 "Файл входа в Telegram и ключ приложения сейчас хранятся на диске "
                 "открытым текстом. Мастер-пароль шифрует их — без пароля эти файлы "
                 "бесполезны, даже если их скопировать с этого компьютера."
             )
-            self.security_toggle_btn.setText("Включить защиту мастер-паролем")
 
-    def _on_toggle_security(self) -> None:
-        if self.ctx.security.enabled:
-            self._disable_security()
-        else:
+    def _on_toggle_security(self, checked: bool) -> None:
+        if checked:
             self._enable_security()
+        else:
+            self._disable_security()
 
     def _enable_security(self) -> None:
         pwd, ok = QInputDialog.getText(self, "Мастер-пароль", "Придумайте мастер-пароль:", QLineEdit.Password)
         if not ok or not pwd:
+            self._refresh_security_section()
             return
         pwd2, ok2 = QInputDialog.getText(self, "Мастер-пароль", "Повторите пароль:", QLineEdit.Password)
         if not ok2:
+            self._refresh_security_section()
             return
         if pwd != pwd2:
             QMessageBox.warning(self, "Не совпадает", "Пароли не совпадают — попробуйте ещё раз.")
+            self._refresh_security_section()
             return
         self.ctx.security.enable(pwd)
         self._refresh_security_section()
@@ -828,11 +936,13 @@ class SettingsScreen(QWidget):
     def _disable_security(self) -> None:
         pwd, ok = QInputDialog.getText(self, "Мастер-пароль", "Введите текущий мастер-пароль:", QLineEdit.Password)
         if not ok or not pwd:
+            self._refresh_security_section()
             return
         try:
             self.ctx.security.disable(pwd)
         except WrongPasswordError:
             QMessageBox.warning(self, "Неверный пароль", "Не удалось выключить защиту — пароль неверен.")
+            self._refresh_security_section()
             return
         self._refresh_security_section()
         QMessageBox.information(self, "Готово", "Защита выключена.")
@@ -857,7 +967,7 @@ class SettingsScreen(QWidget):
     def _save_schedule(self) -> None:
         days = [i for i, cb in enumerate(self.day_checks) if cb.isChecked()]
         self.ctx.collector.save_schedule(
-            self.sched_enabled_cb.isChecked(), self.sched_start.text().strip(),
+            self.sched_enabled_toggle.is_checked(), self.sched_start.text().strip(),
             self.sched_end.text().strip(), days,
         )
         QMessageBox.information(self, "Сохранено", "Расписание обновлено.")
@@ -910,6 +1020,32 @@ class SettingsScreen(QWidget):
     def _refresh_db_size(self) -> None:
         size_mb = self.ctx.db.file_size() / (1024 * 1024)
         self.db_size_label.setText(f"Текущий размер базы: {size_mb:.1f} МБ")
+        media_mb = self._media_dir_size() / (1024 * 1024)
+        last_backup = self._last_backup_text()
+        self.db_metrics.set_cells([
+            ("РАЗМЕР", f"{size_mb:.1f}", "МБ"),
+            ("МЕДИА", f"{media_mb:.1f}", "МБ"),
+            ("ПОСЛЕДНИЙ БЭКАП", last_backup, ""),
+        ])
+
+    def _media_dir_size(self) -> int:
+        total = 0
+        for d in (self.ctx.paths.photos_dir, self.ctx.paths.videos_dir,
+                  self.ctx.paths.voice_dir, self.ctx.paths.documents_dir):
+            if d.exists():
+                total += sum(p.stat().st_size for p in d.rglob("*") if p.is_file())
+        return total
+
+    def _last_backup_text(self) -> str:
+        backup_dir = self.ctx.backup_service.backup_dir()
+        if not backup_dir.exists():
+            return "ещё не было"
+        files = [p for p in backup_dir.iterdir() if p.is_file()]
+        if not files:
+            return "ещё не было"
+        newest = max(files, key=lambda p: p.stat().st_mtime)
+        import datetime as _dt
+        return _dt.datetime.fromtimestamp(newest.stat().st_mtime).strftime("%d.%m %H:%M")
 
     def _save_backup_settings(self) -> None:
         self.ctx.backup_service.save_settings(
