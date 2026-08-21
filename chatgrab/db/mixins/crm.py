@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
-from typing import Any
 
 from ..timeutil import now_iso
 from ...core import lead as lead_domain

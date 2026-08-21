@@ -15,7 +15,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 _logger = logging.getLogger("chatgrab")

@@ -253,7 +253,7 @@ class WidgetWindow(QWidget):
         # window past what that row needs, no matter what resize() asks for.
         self.title_label.setVisible(not mail_only)
         self.opacity_slider.setVisible(not mail_only)
-        for key, pill in self._section_pills.items():
+        for pill in self._section_pills.values():
             pill.setVisible(not mail_only)
         # A bare resize() after a batch of setVisible() calls can lose to
         # the layout's own still-pending, stale-cached size hint — asking

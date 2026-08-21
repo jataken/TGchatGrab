@@ -189,9 +189,16 @@ class LeadsTab(QWidget):
         db = self.ctx.db
         all_leads = db.list_leads()
         status = None if self.status_filter == "all" else self.status_filter
+        # П9's mail funnel seeds stage codes ("new"/"qualified"/…) that
+        # collide with the default funnel's own — a status filter without
+        # funnel_id would leak an email lead sitting at, say, "new" into
+        # this screen's Telegram-funnel-scoped chips, showing rows the
+        # chip's own count (from leads_status_counts() below, already
+        # funnel-scoped) doesn't account for.
         leads = db.list_leads(
             status=status, direction_id=self.direction_combo.currentData(),
             source_type=self.source_combo.currentData(), since=self._since(),
+            funnel_id=self.ctx.db.default_funnel_id() if status is not None else None,
         )
         counts = db.leads_status_counts()
         for key, btn in self.status_chips.items():

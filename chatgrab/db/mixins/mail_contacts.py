@@ -47,7 +47,7 @@ class MailContactsMixin:
                              group_name: str | None = None, source: str = "manual") -> int:
         address = address.strip().lower()
         now = now_iso()
-        cur = self.execute(
+        self.execute(
             "INSERT INTO mail_contact(address, display_name, group_name, source, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(address) DO UPDATE SET display_name = excluded.display_name, "

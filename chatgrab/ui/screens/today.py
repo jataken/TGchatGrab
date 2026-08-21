@@ -43,7 +43,7 @@ class StatCell(QWidget):
         self.value_label = label(value)
         color = _TONE_COLORS.get(tone, "")
         self.value_label.setStyleSheet(
-            f"font-size: 18px;" + (f" color: {color};" if color else "")
+            "font-size: 18px;" + (f" color: {color};" if color else "")
         )
         lay.addWidget(self.value_label)
 
@@ -51,7 +51,7 @@ class StatCell(QWidget):
         self.value_label.setText(value)
         color = _TONE_COLORS.get(tone, "")
         self.value_label.setStyleSheet(
-            f"font-size: 18px;" + (f" color: {color};" if color else "")
+            "font-size: 18px;" + (f" color: {color};" if color else "")
         )
 
 

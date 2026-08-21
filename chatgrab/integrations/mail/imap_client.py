@@ -441,7 +441,19 @@ class ImapClient:
         time this app ever sees it — arrived that way, or set by another
         client before this app connected — so the initial sync has to
         read them, not assume every new message starts blank. Returns
-        [] when there's nothing newer."""
+        [] when there's nothing newer.
+
+        RFC 3501 §9 treats a range's two endpoints as interchangeable
+        ("2:4" and "4:2" are the same range) — so once the mailbox is
+        fully caught up (since_uid is already the highest UID that
+        exists), "<since_uid+1>:*" is a range whose low end doesn't
+        exist and whose high end (`*`) resolves to since_uid itself;
+        several real servers respond to that by returning the message
+        at since_uid rather than an empty result. Without the filter
+        below, that already-seen message would look "new" again on
+        every single tick — re-triggering a triage notification and
+        resetting the П9 "мы не ответили" reminder indefinitely, for as
+        long as no genuinely new mail arrives."""
         typ, _ = self._conn.select(folder, readonly=True)
         if typ != "OK":
             raise ImapError(f"не удалось открыть папку {folder!r}")
@@ -449,7 +461,7 @@ class ImapClient:
             "fetch", f"{since_uid + 1}:*", "(UID FLAGS BODY.PEEK[HEADER])")
         if typ != "OK":
             raise ImapError(f"не удалось получить письма из {folder!r}")
-        return _parse_fetch_pairs_with_flags(data)
+        return [pair for pair in _parse_fetch_pairs_with_flags(data) if pair[0] > since_uid]
 
     def fetch_full_message(self, folder: str, uid: int) -> bytes:
         """The complete RFC822 body for one UID — «тело по требованию»."""

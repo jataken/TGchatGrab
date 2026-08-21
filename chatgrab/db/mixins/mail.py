@@ -452,11 +452,23 @@ class MailMixin:
         return self.query_one("SELECT * FROM mail_attachment WHERE id = ?", (attachment_id,))
 
     # ---- ретеншн (П10) --------------------------------------------------
+    # COALESCE(date, created_at), not a bare date < cutoff: date is NULL
+    # whenever the message's own Date header was missing or too malformed
+    # to parse (imap_client._parse_date() returns None) — a plain `date <
+    # cutoff_iso` comparison against SQL NULL is never true, so those rows
+    # would be silently, permanently exempt from every retention query
+    # below. created_at (set once, at insert time, always present) is the
+    # fallback — "when this app first saw it" is still a fair ageing
+    # signal for a message whose own claimed date can't be trusted anyway.
     def count_mail_messages_older_than(self, cutoff_iso: str) -> int:
-        return self.query_one("SELECT count(*) AS c FROM mail_message WHERE date < ?", (cutoff_iso,))["c"]
+        return self.query_one(
+            "SELECT count(*) AS c FROM mail_message WHERE COALESCE(date, created_at) < ?",
+            (cutoff_iso,))["c"]
 
     def select_mail_messages_older_than(self, cutoff_iso: str) -> list[sqlite3.Row]:
-        return self.query("SELECT * FROM mail_message WHERE date < ? ORDER BY date", (cutoff_iso,))
+        return self.query(
+            "SELECT * FROM mail_message WHERE COALESCE(date, created_at) < ? "
+            "ORDER BY COALESCE(date, created_at)", (cutoff_iso,))
 
     def delete_mail_messages_older_than(self, cutoff_iso: str) -> tuple[int, list[str]]:
         """Deletes mail_message rows (and their attachment rows, filter-
@@ -468,7 +480,8 @@ class MailMixin:
         for Telegram media; MailRetentionService deletes those files."""
         with self._lock:
             message_ids = [r[0] for r in self._conn.execute(
-                "SELECT id FROM mail_message WHERE date < ?", (cutoff_iso,)).fetchall()]
+                "SELECT id FROM mail_message WHERE COALESCE(date, created_at) < ?",
+                (cutoff_iso,)).fetchall()]
             if not message_ids:
                 return 0, []
             placeholders = ",".join("?" for _ in message_ids)
@@ -494,7 +507,7 @@ class MailMixin:
         attachment goes."""
         return self.query(
             "SELECT a.* FROM mail_attachment a JOIN mail_message m ON m.id = a.message_id "
-            "WHERE m.date < ? AND a.path IS NOT NULL", (cutoff_iso,))
+            "WHERE COALESCE(m.date, m.created_at) < ? AND a.path IS NOT NULL", (cutoff_iso,))
 
     def delete_mail_attachment_rows(self, attachment_ids: list[int]) -> None:
         if not attachment_ids:

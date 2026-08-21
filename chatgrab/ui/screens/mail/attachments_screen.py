@@ -6,7 +6,6 @@ message (П3), so a viewer built once still only exists once.
 """
 from __future__ import annotations
 
-import datetime as dt
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -17,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from ...context import AppContext
 from ...format import human_size, short_dt
-from ...widgets import button, card, h1, muted
+from ...widgets import card, h1, muted
 
 _EXT_ALL = "Любой тип"
 

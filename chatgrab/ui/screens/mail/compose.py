@@ -219,7 +219,6 @@ class ComposeDialog(QDialog):
     # ---- отправка (П-1: только через подтверждение) ------------------------
     def _on_send_clicked(self) -> None:
         self._save_local()
-        draft = self.ctx.db.get_mail_draft(self.draft_id)
         to = _split_addresses(self.to_field.text())
         if not to:
             QMessageBox.warning(self, "Нет получателя", "Укажите хотя бы одного получателя.")
