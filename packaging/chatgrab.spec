@@ -8,6 +8,7 @@ ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
 datas = [
     (os.path.join(ROOT, "resources", "icon.png"), "resources"),
+    (os.path.join(ROOT, "resources", "icons"), os.path.join("resources", "icons")),
     (os.path.join(ROOT, "presets"), "presets"),
 ]
 binaries = []

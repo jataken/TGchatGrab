@@ -167,6 +167,21 @@ def build_qss() -> str:
         background: {LOG_BG}; border-radius: {RADIUS_CARD_OUTER}px; border: 1px solid {DIVIDER};
     }}
 
+    /* Sidebar nav row (Д3, design-brief.md §3.1) — one shared rule set for
+       every _NavItem instead of ~26 duplicated per-widget stylesheets, the
+       same convention "card"/"chip"/"blocktab" already use. Checked state
+       is a dynamic property (`navChecked`), toggled via unpolish/polish —
+       the standard Qt idiom for state that isn't a native pseudo-class. */
+    QFrame[class="navitem"] {{ background: transparent; border-radius: 8px; }}
+    QFrame[class="navitem"]:hover {{ background: {HOVER_NEUTRAL}; }}
+    QFrame[class="navitem"][navChecked="true"] {{ background: {OVERLAY_ACCENT_ACTIVE}; }}
+    QLabel[class="navtitle"] {{ color: rgba(233,233,237,.66); font-size: 13px; background: transparent; }}
+    QFrame[class="navitem"]:hover QLabel[class="navtitle"] {{ color: {TEXT}; }}
+    QFrame[class="navitem"][navChecked="true"] QLabel[class="navtitle"] {{ color: {ACCENT_300}; }}
+    QLabel[class="navbadge"] {{
+        color: {TEXT_FAINT}; font-family: {FONT_MONO}; font-size: 10.5px; background: transparent;
+    }}
+
     QPushButton {{
         border-radius: {RADIUS_BUTTON}px; padding: 6px 14px; font-size: 12.5px; font-weight: 500;
         border: 1px solid transparent; background: transparent; color: {TEXT};
