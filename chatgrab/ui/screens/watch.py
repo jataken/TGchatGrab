@@ -8,14 +8,15 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMenu, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
+    QLineEdit, QMenu, QMessageBox, QSizePolicy, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
 from ..format import short_dt
 from ..util import fire, run_blocking
-from ..widgets import button, card, h1, label, muted, plural
+from ..widgets import Card, TabletCheckBox, button, h1, label, muted, plural
 from ...core import lead as lead_domain
 from .bots.lead_card import LeadCardDialog
 
@@ -54,7 +55,17 @@ class WatchScreen(QWidget):
         outer.addSpacing(14)
 
         # ---- rules ----
-        rules_card = card()
+        rules_card = Card()
+        # Found by the way (pre-existing, not introduced this session):
+        # `hits_table` below is the layout's designated stretch=1 taker,
+        # but it's `setVisible(False)` in the empty-hits state — a hidden
+        # widget stops claiming its stretch, and Qt hands the leftover
+        # vertical space to whichever *visible* sibling's size policy
+        # allows growing, which by default is any plain QFrame/Card. That
+        # stretched this card to fill most of the window instead of
+        # hugging its own three rows. Pinning it to Maximum vertically
+        # means it never competes for space it didn't ask for.
+        rules_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         rules_lay = QVBoxLayout(rules_card)
         rules_lay.setContentsMargins(16, 12, 16, 14)
         rules_lay.setSpacing(8)
@@ -69,7 +80,7 @@ class WatchScreen(QWidget):
         self.chat_combo = QComboBox()
         self.chat_combo.setMinimumWidth(180)
         add_row.addWidget(self.chat_combo)
-        self.notify_cb = QCheckBox("Уведомлять")
+        self.notify_cb = TabletCheckBox("Уведомлять")
         self.notify_cb.setChecked(True)
         add_row.addWidget(self.notify_cb)
         add_btn = button("Добавить", "primary")
@@ -92,7 +103,7 @@ class WatchScreen(QWidget):
         hits_head = QHBoxLayout()
         hits_head.addWidget(label("НАЙДЕННОЕ", "kicker"))
         hits_head.addStretch(1)
-        self.only_unseen_cb = QCheckBox("Только непрочитанные")
+        self.only_unseen_cb = TabletCheckBox("Только непрочитанные")
         self.only_unseen_cb.toggled.connect(self.refresh)
         hits_head.addWidget(self.only_unseen_cb)
         outer.addLayout(hits_head)

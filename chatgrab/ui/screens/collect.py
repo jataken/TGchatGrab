@@ -1,18 +1,114 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QTimer, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QDate, QPoint, QRect, QSize, QTimer, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDateEdit, QGridLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QRadioButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QDateEdit, QHBoxLayout, QLabel, QLayout, QListWidget,
+    QListWidgetItem, QMessageBox, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from .. import theme
 from ..context import AppContext
+from ..format import short_dt
 from ..util import fire
 from ..widgets import (
-    KeyValue, LiveChart, StatusPill, button, card, h1, label, muted, plural,
+    AnimatedProgressBar, Card, LiveChart, LogPanel, MetricsBar,
+    StatusPill, button, chip, h1, label, muted, plural,
 )
+
+
+class _FlowLayout(QLayout):
+    """Wraps children onto additional rows instead of clipping or
+    scrolling — Qt has no built-in flow layout. Used for the chat-chip row
+    (design-brief.md §4.4: "с переносом на вторую строку"), the standard
+    recipe from Qt's own flow-layout example, adapted for PySide6."""
+
+    def __init__(self, parent=None, margin: int = 0, spacing: int = 6):
+        super().__init__(parent)
+        self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+        self._items: list = []
+
+    def addItem(self, item) -> None:  # noqa: N802 (Qt override)
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):  # noqa: N802
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int):  # noqa: N802
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientations:  # noqa: N802
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        x, y = rect.x(), rect.y()
+        line_height = 0
+        spacing = self.spacing()
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + spacing
+            if next_x - spacing > rect.right() and line_height > 0:
+                x = rect.x()
+                y += line_height + spacing
+                next_x = x + hint.width() + spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y()
+
+
+def _dot_icon(color: str, diameter: int = 5) -> QIcon:
+    """A tiny solid-color circle as a QIcon — QPushButton lays an icon out
+    left of its text natively, which is the simplest way to give the chat
+    chip row's chips a status dot (design-brief.md §4.4) without turning
+    the "chip" QSS-styled QPushButton into a composite widget."""
+    pm = QPixmap(diameter, diameter)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor(color))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(0, 0, diameter, diameter)
+    p.end()
+    return QIcon(pm)
+
+
+# «паузы»/«ошибки» — оба тона в col.log_entries приходят как tone="warn"
+# (design-brief.md §4.4), различаются только текстом. Эвристика простая и
+# текстовая, не заводит новый tone в самом коллекторе — паузы FloodWait
+# сообщают о себе словом «подожда(ть)»/«пауза», всё остальное warn — ошибка.
+def _log_bucket(entry: dict) -> str | None:
+    if entry.get("tone") != "warn":
+        return None
+    text = entry.get("text", "")
+    return "pauses" if ("подожда" in text or "пауза" in text) else "errors"
 
 
 class CollectScreen(QWidget):
@@ -28,6 +124,8 @@ class CollectScreen(QWidget):
         self.ctx = ctx
         self.navigate = navigate
         self.selected_chat_id: int | None = None
+        self.log_filter = "all"
+        self.chat_chips: dict[int, QWidget] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(40, 26, 40, 24)
@@ -35,37 +133,61 @@ class CollectScreen(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(14)
-        head.addWidget(h1("Сбор"))
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        head_col.addWidget(label("ВЫБРАННЫЙ ЧАТ", "kicker"))
+        head_col.addWidget(h1("Сбор"))
+        head.addLayout(head_col)
         self.headline_label = muted("")
-        head.addWidget(self.headline_label)
-        head.addStretch(1)
-        self.chat_picker = QComboBox()
-        self.chat_picker.setMinimumWidth(220)
-        self.chat_picker.currentIndexChanged.connect(self._on_pick_chat)
-        head.addWidget(self.chat_picker)
+        self.headline_label.setWordWrap(True)
+        head.addWidget(self.headline_label, alignment=Qt.AlignBottom, stretch=1)
+        # Кнопки — в собственном _FlowLayout, а не в этой же строке: на
+        # минимальном размере окна (980×620, чек-лист Д4) три подписи
+        # вместе с заголовком не помещаются и обрезаются за краем окна.
+        # _FlowLayout переносит их на вторую строку вместо этого.
         outer.addLayout(head)
-        outer.addSpacing(16)
+        outer.addSpacing(8)
+        actions_host = QWidget()
+        actions_flow = _FlowLayout(actions_host, margin=0, spacing=8)
+        self.load_btn = button("Загрузить историю", "primary")
+        self.load_btn.clicked.connect(self._on_toggle_load)
+        actions_flow.addWidget(self.load_btn)
+        self.listen_btn = button("Слушать новые сообщения", "secondary")
+        self.listen_btn.clicked.connect(self._on_toggle_listen)
+        actions_flow.addWidget(self.listen_btn)
+        self.results_btn = button("Смотреть собранное", "ghost")
+        self.results_btn.clicked.connect(self._on_open_results)
+        actions_flow.addWidget(self.results_btn)
+        outer.addWidget(actions_host)
+        outer.addSpacing(10)
+
+        # «Выпадающий список чатов заменён на ряд чипов» (design-brief.md
+        # §4.4) — перенос на вторую строку через _FlowLayout, а не
+        # горизонтальная прокрутка.
+        chip_host = QWidget()
+        self.chip_flow = _FlowLayout(chip_host, margin=0, spacing=6)
+        outer.addWidget(chip_host)
+        outer.addSpacing(12)
 
         body = QHBoxLayout()
         body.setSpacing(18)
         outer.addLayout(body, 1)
 
         # ---- left column: current chat + queue ----
-        # Scrolled: this column carries five cards (chat, speed, integrity,
-        # depth, queue) and a short window would otherwise compress them
-        # until their numbers clipped each other.
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
-        # Never scroll sideways — the cards should reflow to the column's
-        # width, not slide out of it.
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # AsNeeded, not AlwaysOff: real chat titles/dates vary in width, and
+        # a hidden scrollbar over AlwaysOff would silently clip content
+        # instead of making it reachable — safer than tuning column ratios
+        # to a single test window's exact content.
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         left_host = QWidget()
         left_scroll.setWidget(left_host)
         left_col = QVBoxLayout(left_host)
         left_col.setContentsMargins(0, 0, 8, 0)
         left_col.setSpacing(12)
 
-        cur_frame = card()
+        cur_frame = Card()
         cur_lay = QVBoxLayout(cur_frame)
         cur_lay.setContentsMargins(18, 16, 18, 16)
         cur_lay.setSpacing(0)
@@ -74,60 +196,50 @@ class CollectScreen(QWidget):
         title_row.setSpacing(10)
         self.title_label = QLabel("—")
         self.title_label.setTextFormat(Qt.PlainText)
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+        self.title_label.setStyleSheet("font-size: 20px; font-weight: 600;")
         self.title_label.setWordWrap(True)
         title_row.addWidget(self.title_label, 1)
         self.status_pill = StatusPill("idle")
         title_row.addWidget(self.status_pill, alignment=Qt.AlignVCenter)
         cur_lay.addLayout(title_row)
-        cur_lay.addSpacing(10)
+        cur_lay.addSpacing(14)
 
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(8)
-        self.load_btn = button("Загрузить историю", "secondary")
-        self.load_btn.clicked.connect(self._on_toggle_load)
-        actions_row.addWidget(self.load_btn)
-        self.listen_btn = button("Слушать новые сообщения", "secondary")
-        self.listen_btn.clicked.connect(self._on_toggle_listen)
-        actions_row.addWidget(self.listen_btn)
-        self.results_btn = button("Смотреть собранное", "ghost")
-        self.results_btn.clicked.connect(self._on_open_results)
-        actions_row.addWidget(self.results_btn)
-        actions_row.addStretch(1)
-        cur_lay.addLayout(actions_row)
+        self.metrics = MetricsBar([
+            ("СОБРАНО", "0", ""),
+            ("МЕДИАФАЙЛОВ НА ДИСКЕ", "0", ""),
+            ("ПОСЛЕДНЕЕ СООБЩЕНИЕ", "—", ""),
+            ("ГЛУБИНА ИСТОРИИ", "вся история", ""),
+        ])
+        cur_lay.addWidget(self.metrics)
         cur_lay.addSpacing(14)
 
         prog_row = QHBoxLayout()
-        self.prog_label = muted("Загрузка не запущена")
+        self.prog_label = label("Загрузка не запущена")
+        self.prog_label.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 11px; color: {theme.TEXT_MUTED};")
         prog_row.addWidget(self.prog_label)
         prog_row.addStretch(1)
-        self.prog_pct = muted("0%")
+        self.prog_pct = label("0%")
+        self.prog_pct.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 13px; color: {theme.ACCENT_300};")
         prog_row.addWidget(self.prog_pct)
         cur_lay.addLayout(prog_row)
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setRange(0, 100)
+        cur_lay.addSpacing(6)
+        self.progress = AnimatedProgressBar(height=8)
         cur_lay.addWidget(self.progress)
-        cur_lay.addSpacing(14)
+        cur_lay.addSpacing(8)
 
-        stats_row = QGridLayout()
-        stats_row.setHorizontalSpacing(18)
-        stats_row.setVerticalSpacing(10)
-        self.kv_count = KeyValue("Собрано")
-        self.kv_photos = KeyValue("Медиафайлов на диске")
-        self.kv_last = KeyValue("Последнее сообщение")
-        self.kv_speed = KeyValue("Скорость")
-        stats_row.addWidget(self.kv_count, 0, 0)
-        stats_row.addWidget(self.kv_photos, 0, 1)
-        stats_row.addWidget(self.kv_last, 1, 0)
-        stats_row.addWidget(self.kv_speed, 1, 1)
-        stats_row.setColumnStretch(0, 1)
-        stats_row.setColumnStretch(1, 1)
-        cur_lay.addLayout(stats_row)
+        health_row = QHBoxLayout()
+        self.health_label = label("")
+        self.health_label.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 11px; color: {theme.TEXT_FAINT};")
+        health_row.addWidget(self.health_label)
+        health_row.addStretch(1)
+        self.delay_label = label("")
+        self.delay_label.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 11px; color: {theme.TEXT_FAINT};")
+        health_row.addWidget(self.delay_label)
+        cur_lay.addLayout(health_row)
         left_col.addWidget(cur_frame)
 
         # ---- live speed chart ----
-        chart_frame = card()
+        chart_frame = Card()
         chart_lay = QVBoxLayout(chart_frame)
         chart_lay.setContentsMargins(16, 12, 16, 12)
         chart_lay.setSpacing(6)
@@ -144,7 +256,7 @@ class CollectScreen(QWidget):
         left_col.addWidget(chart_frame)
 
         # ---- integrity: gaps in the collected id sequence ----
-        gaps_frame = card()
+        gaps_frame = Card()
         gaps_lay = QVBoxLayout(gaps_frame)
         gaps_lay.setContentsMargins(16, 12, 16, 14)
         gaps_lay.setSpacing(8)
@@ -161,13 +273,11 @@ class CollectScreen(QWidget):
         left_col.addWidget(gaps_frame)
 
         # ---- history depth (date range) ----
-        depth_frame = card()
+        depth_frame = Card()
         depth_lay = QVBoxLayout(depth_frame)
         depth_lay.setContentsMargins(16, 12, 16, 14)
         depth_lay.setSpacing(8)
         depth_lay.addWidget(label("ЗА КАКОЙ ПЕРИОД СОБИРАТЬ", "kicker"))
-        # Two rows rather than one: the radio pair, the date field and the
-        # button together overflow a narrow column.
         self.depth_all = QRadioButton("Всю историю с начала чата")
         self.depth_all.toggled.connect(self._on_depth_mode_changed)
         depth_lay.addWidget(self.depth_all)
@@ -191,7 +301,7 @@ class CollectScreen(QWidget):
         left_col.addWidget(depth_frame)
 
         # ---- queue panel ----
-        queue_frame = card()
+        queue_frame = Card()
         queue_lay = QVBoxLayout(queue_frame)
         queue_lay.setContentsMargins(16, 12, 16, 14)
         queue_lay.setSpacing(8)
@@ -211,43 +321,35 @@ class CollectScreen(QWidget):
         left_col.addWidget(queue_frame)
         left_col.addStretch(1)
 
-        # Account health stays outside the scroll area — it is a status
-        # line about the whole session, not one more card to scroll past.
         left_wrap = QVBoxLayout()
         left_wrap.setSpacing(8)
         left_wrap.addWidget(left_scroll, 1)
-        health_row = QHBoxLayout()
-        self.health_label = muted("")
-        health_row.addWidget(self.health_label)
-        health_row.addStretch(1)
-        self.delay_label = muted("")
-        health_row.addWidget(self.delay_label)
-        left_wrap.addLayout(health_row)
 
-        body.addLayout(left_wrap, 62)
+        body.addLayout(left_wrap, 66)
 
         # ---- right column: log ----
-        log_panel = QWidget()
-        log_panel.setProperty("class", "logpanel")
-        log_lay = QVBoxLayout(log_panel)
-        log_lay.setContentsMargins(0, 0, 0, 0)
-        log_lay.setSpacing(0)
-        log_header = QHBoxLayout()
-        log_header.setContentsMargins(16, 11, 16, 11)
-        log_header.addWidget(label("ЖУРНАЛ", "kicker"))
-        log_header.addStretch(1)
-        self.log_count_label = muted("")
-        log_header.addWidget(self.log_count_label)
-        log_header_widget = QWidget()
-        log_header_widget.setLayout(log_header)
-        log_lay.addWidget(log_header_widget)
-        self.log_list = QListWidget()
-        self.log_list.setStyleSheet(
-            "QListWidget { border: none; background: transparent; font-family: Consolas, monospace; font-size: 12px; }"
-            "QListWidget::item { padding: 4px 12px; }"
-        )
-        log_lay.addWidget(self.log_list, 1)
-        body.addWidget(log_panel, 38)
+        log_head_row = QHBoxLayout()
+        log_head_row.setSpacing(6)
+        self.log_filter_group = QButtonGroup(self)
+        self.log_filter_group.setExclusive(True)
+        self.log_filter_chips: dict[str, QWidget] = {}
+        for key, title in (("all", "всё"), ("pauses", "паузы"), ("errors", "ошибки")):
+            c = chip(title)
+            c.setChecked(key == "all")
+            c.clicked.connect(lambda _c, k=key: self._on_log_filter(k))
+            self.log_filter_group.addButton(c)
+            log_head_row.addWidget(c)
+            self.log_filter_chips[key] = c
+        log_head_row.addStretch(1)
+        body_right = QVBoxLayout()
+        body_right.setSpacing(8)
+        body_right.addLayout(log_head_row)
+        # Уже колонка, чем брифом заданные 230px под чат (§3.9) — этой
+        # правой колонке столько не выделить одновременно с левой картой
+        # метрик на ширине окна 1320px, экран у́же мокапа брифа.
+        self.log_panel = LogPanel(kicker="ЖУРНАЛ", chat_col_width=120)
+        body_right.addWidget(self.log_panel, 1)
+        body.addLayout(body_right, 34)
 
         ctx.collector.chats_changed.connect(self.refresh)
         ctx.collector.log_event.connect(self._on_log_event)
@@ -265,7 +367,7 @@ class CollectScreen(QWidget):
         self._speed_timer.start(self.SPEED_SAMPLE_MS)
 
         self._reload_log()
-        self._populate_picker()
+        self._populate_chips()
 
     def _sample_speed(self) -> None:
         total = self.ctx.db.message_count()
@@ -281,41 +383,41 @@ class CollectScreen(QWidget):
         recent = values[-5:] if values else [0.0]
         avg = sum(recent) / len(recent)
         self.chart_now_label.setText(f"сейчас {per_second:.1f}/с · в среднем {avg:.1f}/с")
-        self.kv_speed.set_value(f"{per_second:.1f} сообщ./с")
 
     def on_show(self, chat_id: int | None = None, **kwargs) -> None:
-        self._populate_picker()
+        self._populate_chips()
         if chat_id is not None:
             self.selected_chat_id = chat_id
         elif self.selected_chat_id is None:
             chats = self.ctx.db.list_chats()
             if chats:
                 self.selected_chat_id = chats[0]["chat_id"]
-        self._sync_picker_selection()
+        self._sync_chip_selection()
         self.refresh()
 
-    def _populate_picker(self) -> None:
-        self.chat_picker.blockSignals(True)
-        self.chat_picker.clear()
+    def _populate_chips(self) -> None:
+        for c in self.chat_chips.values():
+            c.setParent(None)
+            c.deleteLater()
+        self.chat_chips.clear()
         for chat in self.ctx.db.list_chats():
-            self.chat_picker.addItem(chat["title"], chat["chat_id"])
-        self.chat_picker.blockSignals(False)
-        self._sync_picker_selection()
+            s = theme.STATUS_STYLES.get(chat["status"], theme.STATUS_STYLES["idle"])
+            btn = chip(chat["title"])
+            btn.setIcon(_dot_icon(s["dot"]))
+            btn.setIconSize(QSize(5, 5))
+            btn.clicked.connect(lambda _c, cid=chat["chat_id"]: self._on_pick_chip(cid))
+            self.chip_flow.addWidget(btn)
+            self.chat_chips[chat["chat_id"]] = btn
+        self._sync_chip_selection()
 
-    def _sync_picker_selection(self) -> None:
-        if self.selected_chat_id is None:
-            return
-        idx = self.chat_picker.findData(self.selected_chat_id)
-        if idx >= 0:
-            self.chat_picker.blockSignals(True)
-            self.chat_picker.setCurrentIndex(idx)
-            self.chat_picker.blockSignals(False)
+    def _sync_chip_selection(self) -> None:
+        for cid, btn in self.chat_chips.items():
+            btn.setChecked(cid == self.selected_chat_id)
 
-    def _on_pick_chat(self, index: int) -> None:
-        chat_id = self.chat_picker.itemData(index)
-        if chat_id is not None:
-            self.selected_chat_id = chat_id
-            self.refresh()
+    def _on_pick_chip(self, chat_id: int) -> None:
+        self.selected_chat_id = chat_id
+        self._sync_chip_selection()
+        self.refresh()
 
     def refresh(self) -> None:
         db = self.ctx.db
@@ -336,24 +438,32 @@ class CollectScreen(QWidget):
         for r in rows:
             item = QListWidgetItem(f"{r['title']}   —   {r['note']}")
             if r["note"] == "грузится":
-                item.setForeground(QColor("#b5abfc"))
+                from PySide6.QtGui import QColor
+                item.setForeground(QColor(theme.ACCENT_400))
             self.queue_list.addItem(item)
 
+        if not chats:
+            self._sync_chip_selection()
         if self.selected_chat_id is None:
             return
         chat = db.get_chat(self.selected_chat_id)
         if not chat:
             return
+        self._sync_chip_selection()
         self.title_label.setText(chat["title"])
         self.status_pill.set_status(chat["status"])
         count = db.message_count(chat["chat_id"])
-        self.kv_count.set_value(f"{count:,}".replace(",", " "))
+        self.metrics.set_cell(0, f"{count:,}".replace(",", " "))
         cfg = self.ctx.config
         media_enabled = cfg.photos_enabled or cfg.videos_enabled or cfg.voice_enabled or cfg.documents_enabled
         media = db.media_count(chat["chat_id"]) if media_enabled else 0
-        self.kv_photos.set_value(f"{media:,}".replace(",", " ") if media_enabled else "выключено")
+        self.metrics.set_cell(1, f"{media:,}".replace(",", " ") if media_enabled else "выключено")
         last = db.last_message_date(chat["chat_id"])
-        self.kv_last.set_value(str(last)[:19].replace("T", " ") if last else "—")
+        self.metrics.set_cell(2, short_dt(last) or "—")
+        depth_text = "вся история" if chat["depth_mode"] == "all" else f"с {str(chat['depth_from_date'])[:10]}"
+        if chat["history_done"]:
+            depth_text += " · собрана"
+        self.metrics.set_cell(3, depth_text)
         self._sync_depth_controls(chat)
         self._refresh_gaps(chat)
 
@@ -364,16 +474,21 @@ class CollectScreen(QWidget):
 
         if chat_loading:
             approx = chat["approx_total"]
-            pct = min(100, round(100 * count / max(approx, 1))) if approx else 0
-            self.progress.setValue(pct)
-            self.prog_pct.setText(f"{pct}%")
-            self.prog_label.setText(f"Загрузка истории · пауза между запросами {self.ctx.collector.delay.current:.1f} с")
+            pct = min(100, round(100 * count / max(approx, 1))) if approx else None
+            self.progress.set_progress(pct)
+            self.progress.set_active(True)
+            self.prog_pct.setText(f"{pct}%" if pct is not None else "…")
+            self.prog_label.setText(
+                f"Загрузка истории · пауза между запросами {self.ctx.collector.delay.current:.1f} с"
+            )
         elif chat["history_done"]:
-            self.progress.setValue(100)
+            self.progress.set_active(False)
+            self.progress.set_progress(100)
             self.prog_pct.setText("100%")
             self.prog_label.setText("История собрана полностью")
         else:
-            self.progress.setValue(0)
+            self.progress.set_active(False)
+            self.progress.set_progress(0)
             self.prog_pct.setText("0%")
             self.prog_label.setText("Загрузка не запущена")
 
@@ -519,10 +634,10 @@ class CollectScreen(QWidget):
     def _refresh_health(self) -> None:
         h = self.ctx.collector.health
         self.health_label.setText(
-            f"Запросов за час: {h.requests_last_hour()} · пауз сегодня: {h.floodwaits_today} "
+            f"запросов за час: {h.requests_last_hour()} · пауз сегодня: {h.floodwaits_today} "
             f"· время в паузах: {h.pause_seconds_today} с"
         )
-        self.delay_label.setText(f"Текущая пауза: {self.ctx.collector.delay.current:.1f} с")
+        self.delay_label.setText(f"текущая пауза: {self.ctx.collector.delay.current:.1f} с")
 
     def _on_toggle_load(self) -> None:
         if self.selected_chat_id is not None:
@@ -537,24 +652,31 @@ class CollectScreen(QWidget):
     def _on_open_results(self) -> None:
         self.navigate("browse", chat_id=self.selected_chat_id)
 
+    # ---- log ------------------------------------------------------
+    def _on_log_filter(self, key: str) -> None:
+        self.log_filter = key
+        self._reload_log()
+
+    def _visible_entries(self, entries: list[dict]) -> list[dict]:
+        if self.log_filter == "all":
+            return entries
+        return [e for e in entries if _log_bucket(e) == self.log_filter]
+
     def _reload_log(self) -> None:
-        self.log_list.clear()
-        for entry in self.ctx.collector.log_entries[:200]:
-            self._add_log_item(entry)
-        self.log_count_label.setText(f"по всем чатам · {len(self.ctx.collector.log_entries)} записей")
+        entries = self.ctx.collector.log_entries[:200]
+        self.log_panel.set_entries(self._visible_entries(entries))
+        self._set_log_count()
 
     def _on_log_event(self, entry: dict) -> None:
-        self._add_log_item(entry, prepend=True)
-        if self.log_list.count() > 300:
-            self.log_list.takeItem(self.log_list.count() - 1)
-        self.log_count_label.setText(f"по всем чатам · {len(self.ctx.collector.log_entries)} записей")
+        if self.log_filter == "all" or _log_bucket(entry) == self.log_filter:
+            self.log_panel.add_entry(entry)
+        self._set_log_count()
 
-    def _add_log_item(self, entry: dict, prepend: bool = False) -> None:
-        color = {"warn": "#f0c6a0", "ok": "#bfe5cd"}.get(entry.get("tone"), "#d6d6db")
-        text = f"{entry['time']}   {entry['chat']}   —   {entry['text']}"
-        item = QListWidgetItem(text)
-        item.setForeground(QColor(color))
-        if prepend:
-            self.log_list.insertItem(0, item)
-        else:
-            self.log_list.addItem(item)
+    def _set_log_count(self) -> None:
+        # design-brief.md §4.4: счётчик считает *все* записи коллектора,
+        # не только те, что проходят текущий фильтр — LogPanel.set_entries
+        # само по себе посчитало бы только показанные, поэтому переопределяю
+        # текст напрямую поверх его собственного счётчика.
+        self.log_panel._count_label.setText(
+            f"по всем чатам · {len(self.ctx.collector.log_entries)} записей"
+        )

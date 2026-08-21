@@ -16,17 +16,22 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from .. import theme
 from ..context import AppContext
 from ..format import short_dt
-from ..widgets import ActivityBars, fmt_int as _fmt, h1, label, muted, plural as _plural
+from ..widgets import ActivityBars, Card, fmt_int as _fmt, h1, label, muted, plural as _plural
 from ...core import lead as lead_domain
 
+# Д4 («Плотный рефреш»): цвета тона строк — из theme.py, не хардкод-хекс
+# (design-brief.md §9.7). Раньше "bad" был #c98a9a — тем самым устаревшим
+# красным, который Д1 уже поправил в самом theme.py (BAD/BAD_FG); здесь он
+# был отдельной копией того же значения и не подхватил правку автоматически.
 _TONE_COLORS = {
-    "accent": "#9184d9",
-    "good": "#7fc79b",
-    "warn": "#f0c6a0",
-    "bad": "#c98a9a",
-    "faint": "#6c6c78",
+    "accent": theme.ACCENT,
+    "good": theme.GOOD,
+    "warn": theme.WARN,
+    "bad": theme.BAD,
+    "faint": theme.TEXT_FAINT,
 }
 
 
@@ -68,8 +73,8 @@ class ActionRow(QFrame):
         # to this widget by object name.
         self.setObjectName("actionRow")
         self.setStyleSheet(
-            "QFrame#actionRow { background: rgba(233,233,237,8); border-radius: 9px; }"
-            "QFrame#actionRow:hover { background: rgba(233,233,237,18); }"
+            f"QFrame#actionRow {{ background: {theme.CHECKBOX_OFF_BG}; border-radius: 9px; }}"
+            f"QFrame#actionRow:hover {{ background: {theme.HOVER_NEUTRAL}; }}"
         )
         self.setCursor(Qt.PointingHandCursor)
         self._on_act = on_act
@@ -94,20 +99,20 @@ class ActionRow(QFrame):
         lay.addLayout(text_col, 1)
 
         act = label(action_text)
-        act.setStyleSheet("color: #b5abfc; font-size: 12px;")
+        act.setStyleSheet(f"color: {theme.ACCENT_400}; font-size: 12px;")
         lay.addWidget(act, alignment=Qt.AlignVCenter)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self._on_act()
 
 
-class BlockColumn(QFrame):
+class BlockColumn(Card):
     """One of the two panels. Holds a header (title + live state), a
-    16-day chart, a totals row, and the rows list."""
+    16-day chart, a totals row, and the rows list. `Card` (Д2) gives the
+    top inner blik for free — this class only adds its own layout."""
 
     def __init__(self, title: str, chart_caption: str):
         super().__init__()
-        self.setProperty("class", "card")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)

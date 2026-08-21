@@ -3,26 +3,30 @@ from __future__ import annotations
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QInputDialog,
+    QButtonGroup, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from .. import theme
 from ..context import AppContext
 from ..format import short_dt
 from ..util import fire, run_blocking
-from ..widgets import button, card, h1, muted, plural
+from ..widgets import Card, TabletCheckBox, button, h1, label, muted, plural
 from ...services.export_service import DEFAULT_TOKEN_LIMIT, ExportParams
 
 
 def _pill_button(text: str, hint: str = "") -> QPushButton:
+    """design-brief.md §4.6 — «карточка-переключатель», радио-поведение:
+    заголовок 13px + подпись 11px TEXT_FAINT."""
     btn = QPushButton(f"{text}\n{hint}" if hint else text)
     btn.setCheckable(True)
     btn.setCursor(Qt.PointingHandCursor)
     btn.setStyleSheet(
         "QPushButton { text-align: left; padding: 10px 13px; border-radius: 9px; "
-        "background: rgba(233,233,237,8); border: 1px solid rgba(233,233,237,20); font-size: 13px; }"
-        "QPushButton:checked { background: rgba(145,132,217,30); border: 1px solid #9184d9; color: #b5abfc; }"
+        f"background: {theme.CHECKBOX_OFF_BG}; border: 1px solid rgba(233,233,237,20); font-size: 13px; }}"
+        f"QPushButton:checked {{ background: {theme.OVERLAY_ACCENT_ACTIVE}; "
+        f"border: 1px solid {theme.ACCENT}; color: {theme.ACCENT_300}; }}"
     )
     return btn
 
@@ -32,7 +36,7 @@ class ExportScreen(QWidget):
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate
-        self.chat_checks: dict[int, QCheckBox] = {}
+        self.chat_checks: dict[int, TabletCheckBox] = {}
         self._search_filters: dict = {}
 
         scroll = QScrollArea()
@@ -52,34 +56,50 @@ class ExportScreen(QWidget):
         ))
         outer.addSpacing(18)
 
+        # design-brief.md §4.6: сетка 11:9, левая колонка — четыре карточки
+        # + строка запуска, правая — превью и журнал.
         cols = QHBoxLayout()
+        cols.setSpacing(14)
         left = QVBoxLayout()
-        left.setSpacing(18)
+        left.setSpacing(14)
+        left.setAlignment(Qt.AlignTop)
         right = QVBoxLayout()
+        right.setSpacing(14)
         cols.addLayout(left, 11)
         cols.addLayout(right, 9)
         outer.addLayout(cols)
 
-        # ---- chats ------------------------------------------------------
-        left.addWidget(muted("КАКИЕ ЧАТЫ ВЫГРУЗИТЬ"))
-        self.chat_list_widget = QWidget()
-        self.chat_list_lay = QVBoxLayout(self.chat_list_widget)
-        self.chat_list_lay.setContentsMargins(0, 0, 0, 0)
-        self.chat_list_lay.setSpacing(4)
-        left.addWidget(self.chat_list_widget)
-        sel_row = QHBoxLayout()
+        # ---- 1. chats -----------------------------------------------------
+        chats_card = Card()
+        chats_lay = QVBoxLayout(chats_card)
+        chats_lay.setContentsMargins(14, 12, 14, 14)
+        chats_lay.setSpacing(8)
+        chats_head = QHBoxLayout()
+        chats_head.addWidget(label("КАКИЕ ЧАТЫ ВЫГРУЗИТЬ", "kicker"))
+        chats_head.addStretch(1)
         all_btn = button("Выбрать все", "ghost")
         all_btn.clicked.connect(self._select_all)
-        sel_row.addWidget(all_btn)
+        chats_head.addWidget(all_btn)
         none_btn = button("Снять выбор", "ghost")
         none_btn.clicked.connect(self._select_none)
-        sel_row.addWidget(none_btn)
-        sel_row.addStretch(1)
-        left.addLayout(sel_row)
+        chats_head.addWidget(none_btn)
+        chats_lay.addLayout(chats_head)
+        self.chat_list_widget = QWidget()
+        self.chat_list_lay = QGridLayout(self.chat_list_widget)
+        self.chat_list_lay.setContentsMargins(0, 0, 0, 0)
+        self.chat_list_lay.setHorizontalSpacing(8)
+        self.chat_list_lay.setVerticalSpacing(4)
+        chats_lay.addWidget(self.chat_list_widget)
+        left.addWidget(chats_card)
 
-        # ---- format ------------------------------------------------------
-        left.addWidget(muted("ФОРМАТ"))
+        # ---- 2. format + split ---------------------------------------------
+        fmt_card = Card()
+        fmt_lay = QVBoxLayout(fmt_card)
+        fmt_lay.setContentsMargins(14, 12, 14, 14)
+        fmt_lay.setSpacing(8)
+        fmt_lay.addWidget(label("ФОРМАТ", "kicker"))
         fmt_row = QHBoxLayout()
+        fmt_row.setSpacing(8)
         self.fmt_group = QButtonGroup(self)
         self.fmt_group.setExclusive(True)
         self.fmt_buttons: dict[str, QPushButton] = {}
@@ -92,47 +112,13 @@ class ExportScreen(QWidget):
             self.fmt_buttons[key] = btn
             fmt_row.addWidget(btn)
         self.fmt_buttons["xlsx"].setChecked(True)
-        left.addLayout(fmt_row)
+        fmt_lay.addLayout(fmt_row)
 
-        # ---- dates ------------------------------------------------------
-        date_row = QHBoxLayout()
-        from_col = QVBoxLayout()
-        from_col.addWidget(muted("Период — с"))
-        self.date_from = QLineEdit()
-        self.date_from.setPlaceholderText("ГГГГ-ММ-ДД")
-        from_col.addWidget(self.date_from)
-        to_col = QVBoxLayout()
-        to_col.addWidget(muted("Период — по"))
-        self.date_to = QLineEdit()
-        self.date_to.setPlaceholderText("ГГГГ-ММ-ДД")
-        to_col.addWidget(self.date_to)
-        date_row.addLayout(from_col)
-        date_row.addLayout(to_col)
-        left.addLayout(date_row)
-
-        # ---- toggles ------------------------------------------------------
-        self.merge_cb = QCheckBox("Объединить выбранные чаты в один файл")
-        left.addWidget(self.merge_cb)
-        self.incremental_cb = QCheckBox("Только новое с прошлой выгрузки")
-        left.addWidget(self.incremental_cb)
-        self.zip_cb = QCheckBox("Приложить папку с медиафайлами (zip рядом с выгрузкой)")
-        self.zip_cb.setChecked(True)
-        left.addWidget(self.zip_cb)
-        self.include_hidden_cb = QCheckBox("Включить скрытые правилами игнора записи")
-        left.addWidget(self.include_hidden_cb)
-        self.unique_only_cb = QCheckBox("Только уникальные — без повторов одного и того же текста")
-        left.addWidget(self.unique_only_cb)
-        self.repeats_hint = muted("")
-        self.repeats_hint.setWordWrap(True)
-        left.addWidget(self.repeats_hint)
-        for cb in (self.merge_cb, self.incremental_cb, self.zip_cb, self.include_hidden_cb,
-                    self.unique_only_cb):
-            cb.toggled.connect(self._on_settings_changed)
-
-        # ---- split mode ------------------------------------------------------
-        left.addWidget(muted("КАК ДЕЛИТЬ ФАЙЛЫ"))
+        fmt_lay.addWidget(label("КАК ДЕЛИТЬ ФАЙЛЫ", "kicker"))
         split_row = QHBoxLayout()
+        split_row.setSpacing(8)
         self.split_group = QButtonGroup(self)
+        self.split_group.setExclusive(True)
         self.split_buttons: dict[str, QPushButton] = {}
         for key, label_, hint in [("tokens", "По размеру для Claude", "части ≤ лимита токенов"),
                                    ("month", "По месяцам", "отдельный файл на месяц"),
@@ -143,7 +129,7 @@ class ExportScreen(QWidget):
             self.split_buttons[key] = btn
             split_row.addWidget(btn)
         self.split_buttons["tokens"].setChecked(True)
-        left.addLayout(split_row)
+        fmt_lay.addLayout(split_row)
 
         token_row = QHBoxLayout()
         token_row.addWidget(muted("Лимит токенов на файл"))
@@ -154,19 +140,70 @@ class ExportScreen(QWidget):
         self.token_limit_spin.valueChanged.connect(self._on_settings_changed)
         token_row.addWidget(self.token_limit_spin)
         token_row.addStretch(1)
-        left.addLayout(token_row)
+        fmt_lay.addLayout(token_row)
+        left.addWidget(fmt_card)
 
-        # ---- folder ------------------------------------------------------
-        left.addWidget(muted("Папка сохранения"))
+        # ---- 3. period + folder + toggles -----------------------------------
+        period_card = Card()
+        period_lay = QVBoxLayout(period_card)
+        period_lay.setContentsMargins(14, 12, 14, 14)
+        period_lay.setSpacing(8)
+        date_row = QHBoxLayout()
+        date_row.setSpacing(10)
+        from_col = QVBoxLayout()
+        from_col.addWidget(muted("Период — с"))
+        self.date_from = QLineEdit()
+        self.date_from.setPlaceholderText("ГГГГ-ММ-ДД")
+        self.date_from.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO};")
+        from_col.addWidget(self.date_from)
+        to_col = QVBoxLayout()
+        to_col.addWidget(muted("Период — по"))
+        self.date_to = QLineEdit()
+        self.date_to.setPlaceholderText("ГГГГ-ММ-ДД")
+        self.date_to.setStyleSheet(f"background: {theme.SURFACE_INPUT}; font-family: {theme.FONT_MONO};")
+        to_col.addWidget(self.date_to)
+        date_row.addLayout(from_col)
+        date_row.addLayout(to_col)
+        period_lay.addLayout(date_row)
+
+        period_lay.addWidget(muted("Папка сохранения"))
         folder_row = QHBoxLayout()
         self.folder_input = QLineEdit(str(ctx.paths.exports_dir))
+        self.folder_input.setStyleSheet(f"background: {theme.SURFACE_INPUT};")
         folder_row.addWidget(self.folder_input)
         browse_btn = button("Обзор…", "secondary")
         browse_btn.clicked.connect(self._browse_folder)
         folder_row.addWidget(browse_btn)
-        left.addLayout(folder_row)
+        period_lay.addLayout(folder_row)
 
-        # ---- presets ------------------------------------------------------
+        toggles_grid = QGridLayout()
+        toggles_grid.setHorizontalSpacing(8)
+        toggles_grid.setVerticalSpacing(4)
+        self.merge_cb = TabletCheckBox("Объединить выбранные чаты в один файл")
+        toggles_grid.addWidget(self.merge_cb, 0, 0)
+        self.incremental_cb = TabletCheckBox("Только новое с прошлой выгрузки")
+        toggles_grid.addWidget(self.incremental_cb, 0, 1)
+        self.zip_cb = TabletCheckBox("Приложить папку с медиафайлами (zip)")
+        self.zip_cb.setChecked(True)
+        toggles_grid.addWidget(self.zip_cb, 1, 0)
+        self.include_hidden_cb = TabletCheckBox("Включить скрытые правилами игнора записи")
+        toggles_grid.addWidget(self.include_hidden_cb, 1, 1)
+        period_lay.addLayout(toggles_grid)
+        # Не входит в сетку 2×2 брифа (§4.6 п.3 перечисляет ровно четыре
+        # флажка) — существующая функция «только уникальные», которой не
+        # было в брифе (он писан по более ранней версии приложения), не
+        # выброшена, просто своей строкой под сеткой.
+        self.unique_only_cb = TabletCheckBox("Только уникальные — без повторов одного и того же текста")
+        period_lay.addWidget(self.unique_only_cb)
+        self.repeats_hint = muted("")
+        self.repeats_hint.setWordWrap(True)
+        period_lay.addWidget(self.repeats_hint)
+        for cb in (self.merge_cb, self.incremental_cb, self.zip_cb, self.include_hidden_cb,
+                    self.unique_only_cb):
+            cb.toggled.connect(self._on_settings_changed)
+        left.addWidget(period_card)
+
+        # ---- 4. presets + run row -------------------------------------------
         left.addWidget(muted("ПРЕСЕТЫ"))
         preset_row = QHBoxLayout()
         self.preset_combo = QComboBox()
@@ -181,22 +218,25 @@ class ExportScreen(QWidget):
 
         run_row = QHBoxLayout()
         self.run_btn = button("Экспортировать", "primary")
+        self.run_btn.setStyleSheet("padding: 9px 18px; font-size: 13px;")
         self.run_btn.clicked.connect(self._run_export)
         run_row.addWidget(self.run_btn)
-        self.estimate_label = muted("")
+        self.estimate_label = label("")
+        self.estimate_label.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 11.5px; color: {theme.TEXT_MUTED};")
         run_row.addWidget(self.estimate_label)
         run_row.addStretch(1)
         left.addLayout(run_row)
-        left.addStretch(1)
 
         # ---- right column: preview ------------------------------------------
-        preview_card = card()
+        preview_card = Card()
         prev_lay = QVBoxLayout(preview_card)
         prev_lay.setContentsMargins(16, 16, 16, 16)
-        kicker = muted("ЧТО ПОЛУЧИТСЯ")
-        kicker.setStyleSheet("color: #9184d9; font-size: 11px;")
+        prev_lay.setSpacing(6)
+        kicker = label("ЧТО ПОЛУЧИТСЯ", "kicker")
+        kicker.setStyleSheet(f"color: {theme.ACCENT}; font-family: {theme.FONT_MONO}; font-size: 10px;")
         prev_lay.addWidget(kicker)
         self.token_line_label = QLabel("—")
+        self.token_line_label.setWordWrap(True)
         self.token_line_label.setStyleSheet("font-size: 15px;")
         prev_lay.addWidget(self.token_line_label)
         self.file_preview_list = QVBoxLayout()
@@ -208,19 +248,42 @@ class ExportScreen(QWidget):
         self.done_label = QLabel("")
         self.done_label.setWordWrap(True)
         self.done_label.setStyleSheet(
-            "background: rgba(145,132,217,20); color: #e7e5fe; border-radius: 8px; "
+            f"background: {theme.OVERLAY_ACCENT_WEAK}; color: {theme.ACCENT_200}; border-radius: 8px; "
             "padding: 10px 12px; font-size: 12.5px;"
         )
         self.done_label.hide()
         prev_lay.addWidget(self.done_label)
         right.addWidget(preview_card)
 
-        right.addWidget(muted("ЖУРНАЛ ВЫГРУЗОК"))
+        # «Панель журнала выгрузок» (design-brief.md §4.6) — тот же LOG_BG
+        # контейнер, что и у остальных панелей журнала в приложении.
+        log_card = QWidget()
+        log_card.setProperty("class", "logpanel")
+        log_card_lay = QVBoxLayout(log_card)
+        log_card_lay.setContentsMargins(0, 0, 0, 0)
+        log_card_lay.setSpacing(0)
+        log_head = QHBoxLayout()
+        log_head.setContentsMargins(16, 11, 16, 11)
+        log_head.addWidget(label("ЖУРНАЛ ВЫГРУЗОК", "kicker"))
+        log_head.addSpacing(10)
+        log_head.addWidget(muted("20 последних"))
+        log_head.addStretch(1)
+        log_head_widget = QWidget()
+        log_head_widget.setLayout(log_head)
+        log_card_lay.addWidget(log_head_widget)
         self.log_list = QListWidget()
+        self.log_list.setStyleSheet(
+            f"QListWidget {{ border: none; background: transparent; font-family: {theme.FONT_MONO}; "
+            "font-size: 11.5px; }"
+            "QListWidget::item { padding: 4px 16px; }"
+        )
         self.log_list.setMaximumHeight(220)
         self.log_list.itemDoubleClicked.connect(self._repeat_from_log)
-        right.addWidget(self.log_list)
-        right.addWidget(muted("Двойной клик по записи — повторить ту же выгрузку."))
+        log_card_lay.addWidget(self.log_list)
+        right.addWidget(log_card)
+        footnote = muted("Двойной клик по записи — повторить ту же выгрузку.")
+        footnote.setStyleSheet(f"color: {theme.TEXT_FAINT}; font-size: 11px;")
+        right.addWidget(footnote)
         right.addStretch(1)
 
         for w in (self.date_from, self.date_to, self.folder_input):
@@ -236,16 +299,20 @@ class ExportScreen(QWidget):
         self._update_estimate()
 
     def _populate_chats(self) -> None:
+        # design-brief.md §4.6 п.1: «сетка 2×N чекбоксов-таблеток». Name +
+        # count share one TabletCheckBox label (that widget has no
+        # separate trailing-text slot yet) rather than the brief's exact
+        # right-aligned count column — a deliberate, documented trim.
         existing = {cid: cb.isChecked() for cid, cb in self.chat_checks.items()}
         for cb in self.chat_checks.values():
             cb.setParent(None)
         self.chat_checks.clear()
-        for chat in self.ctx.db.list_chats():
+        for i, chat in enumerate(self.ctx.db.list_chats()):
             count = self.ctx.db.message_count(chat["chat_id"])
-            cb = QCheckBox(f"{chat['title']}   ·   {count:,}".replace(",", " "))
+            cb = TabletCheckBox(f"{chat['title']}   ·   {count:,}".replace(",", " "))
             cb.setChecked(existing.get(chat["chat_id"], True))
             cb.toggled.connect(self._on_settings_changed)
-            self.chat_list_lay.addWidget(cb)
+            self.chat_list_lay.addWidget(cb, i // 2, i % 2)
             self.chat_checks[chat["chat_id"]] = cb
 
     def _populate_presets(self) -> None:
@@ -344,8 +411,14 @@ class ExportScreen(QWidget):
         self._clear_preview()
         for name in est.file_names[:6]:
             row = QHBoxLayout()
-            lbl = QLabel(f"▸ {name}")
-            lbl.setStyleSheet("font-family: Consolas, monospace; font-size: 12px; color: #d6d6db;")
+            lbl = QLabel()
+            lbl.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 12px; color: {theme.TEXT_LOG};")
+            # Elided, not wrapped: a long generated filename breaking mid-
+            # word onto a second line reads worse than a trailing "…", and
+            # the full name is still one hover away.
+            fm = lbl.fontMetrics()
+            lbl.setText("▸ " + fm.elidedText(name, Qt.ElideMiddle, 260))
+            lbl.setToolTip(name)
             row.addWidget(lbl)
             row.addStretch(1)
             w = QWidget()

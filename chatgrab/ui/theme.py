@@ -182,6 +182,12 @@ def build_qss() -> str:
         color: {TEXT_FAINT}; font-family: {FONT_MONO}; font-size: 10.5px; background: transparent;
     }}
 
+    /* «Таблица становится карточкой» — строка списка вместо строки
+       QTableWidget (Д4, design-brief.md §4.3, также используется списками
+       в других экранах этой сессии). */
+    QFrame[class="tablerow"] {{ background: transparent; border-bottom: 1px solid rgba(51,53,74,.55); }}
+    QFrame[class="tablerow"]:hover {{ background: {HOVER_NEUTRAL}; }}
+
     QPushButton {{
         border-radius: {RADIUS_BUTTON}px; padding: 6px 14px; font-size: 12.5px; font-weight: 500;
         border: 1px solid transparent; background: transparent; color: {TEXT};
@@ -195,6 +201,7 @@ def build_qss() -> str:
     QPushButton[class="primary"]:disabled {{ background: rgba(122,107,208,89); color: {TEXT_FAINT}; }}
     QPushButton[class="secondary"] {{ border: 1px solid {DIVIDER}; }}
     QPushButton[class="secondary"]:hover {{ background: {HOVER_NEUTRAL}; }}
+    QPushButton[class="secondary"]:disabled {{ color: {TEXT_FAINT}; border-color: {DIVIDER_SOFT}; }}
     QPushButton[class="ghost"] {{ color: {ACCENT_600}; }}
     QPushButton[class="ghost"]:hover {{ color: {ACCENT_400}; background: transparent; }}
     QPushButton[class="danger"] {{ color: {TEXT_MUTED}; }}

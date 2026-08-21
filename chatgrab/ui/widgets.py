@@ -416,13 +416,10 @@ class ToggleSwitch(QWidget):
 
 class TabletCheckBox(QAbstractButton):
     """design-brief.md §3.4 — a full-row pill, not a small square + label:
-    padding 6px 9px, radius 8, 12.5px text, a 15×15 square (radius 5) to
+    padding 6px 9px, radius 8, 13px text, a 15×15 square (radius 5) to
     the left. `QAbstractButton` gives click-toggles-anywhere-in-the-row
     and a native `toggled(bool)` signal for free; only the paint is
-    custom. Not adopted by any screen this session (that's Д4+ per the
-    checklist — Поиск/Экспорт/Настройки) — the existing system
-    `QCheckBox` stays the working default everywhere until then (see the
-    comment already left for this in theme.py's `build_qss`)."""
+    custom."""
 
     def __init__(self, text: str = ""):
         super().__init__()
@@ -430,6 +427,13 @@ class TabletCheckBox(QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumHeight(30)
+        # sizeHint() below measures with this exact font — paintEvent used
+        # to build its own local QFont copy instead of setting it on the
+        # widget, so fontMetrics() (used for sizing) and the font actually
+        # painted disagreed and text clipped past the computed width.
+        font = self.font()
+        font.setPixelSize(13)
+        self.setFont(font)
 
     def sizeHint(self) -> QSize:  # noqa: N802
         fm = self.fontMetrics()
@@ -549,7 +553,7 @@ class MetricsBar(Card):
         for i, (kicker, value, unit) in enumerate(cells):
             cell = QWidget()
             cl = QVBoxLayout(cell)
-            cl.setContentsMargins(14, 11, 14, 11)
+            cl.setContentsMargins(12, 11, 12, 11)
             cl.setSpacing(4)
             cl.addWidget(label(kicker, "kicker"))
             row = QHBoxLayout()
