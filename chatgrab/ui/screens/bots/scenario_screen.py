@@ -8,8 +8,9 @@ from PySide6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
-from ...widgets import button, card, chip, label, muted, plural as _plural
+from ...widgets import Card, button, chip, label, muted, plural as _plural
 from ....bots.rules_engine import RulesEngine
 from ....bots.scenario_engine import BRANCHING, END, LINEAR, format_question, options_of
 from ....bots.templating import render
@@ -56,7 +57,7 @@ class StepRow(QFrame):
         super().__init__()
         self.index = index
         color = "rgba(145,132,217,46)" if selected else "rgba(233,233,237,8)"
-        ring = "#5d5294" if selected else "#33354a"
+        ring = theme.ACCENT_700 if selected else theme.DIVIDER
         # Scoped by object name: QLabel is a QFrame subclass, so an
         # unscoped QFrame rule would repaint every child label's box too.
         self.setObjectName("stepRow")
@@ -72,8 +73,8 @@ class StepRow(QFrame):
         num = label(str(index + 1))
         num.setFixedSize(22, 22)
         num.setAlignment(Qt.AlignCenter)
-        num_bg = "#9184d9" if selected else "rgba(233,233,237,10)"
-        num_fg = "#161826" if selected else "#9a9aa3"
+        num_bg = theme.ACCENT if selected else "rgba(233,233,237,10)"
+        num_fg = theme.BG if selected else theme.TEXT_MUTED
         num.setStyleSheet(f"background: {num_bg}; color: {num_fg}; border-radius: 6px; font-size: 11.5px;")
         lay.addWidget(num, alignment=Qt.AlignTop)
 
@@ -88,19 +89,19 @@ class StepRow(QFrame):
             f"ответ сохранится как {step.get('field', '')} · "
             f"{_VALIDATION_LABELS.get(step.get('validation', 'text'), step.get('validation', 'text'))}"
         )
-        detail.setStyleSheet("color: #6c6c78; font-size: 11.5px;")
+        detail.setStyleSheet(f"color: {theme.TEXT_FAINT}; font-size: 11.5px;")
         text_col.addWidget(detail)
         if branch_text:
             branch = label(branch_text)
             branch.setWordWrap(True)
-            branch.setStyleSheet("color: #b5abfc; font-size: 11.5px;")
+            branch.setStyleSheet(f"color: {theme.ACCENT_400}; font-size: 11.5px;")
             text_col.addWidget(branch)
         lay.addLayout(text_col, 1)
 
         if not q.strip():
             warn = label("вопрос пустой")
             warn.setStyleSheet(
-                "background: rgba(220,150,90,46); color: #f0c6a0; border-radius: 6px; "
+                f"background: rgba(220,150,90,46); color: {theme.WARN}; border-radius: 6px; "
                 "padding: 3px 9px; font-size: 11.5px;"
             )
             lay.addWidget(warn, alignment=Qt.AlignTop)
@@ -157,7 +158,8 @@ class ScenarioScreen(QWidget):
         mode_row.setSpacing(10)
         self.mode_badge = label("●  Черновик · правки сохраняются сами")
         self.mode_badge.setStyleSheet(
-            "background: rgba(145,132,217,36); color: #d2cefd; border: 1px solid rgba(145,132,217,102); "
+            f"background: rgba(145,132,217,36); color: {theme.ACCENT_300}; "
+            "border: 1px solid rgba(145,132,217,102); "
             "border-radius: 8px; padding: 5px 12px; font-size: 12.5px;"
         )
         mode_row.addWidget(self.mode_badge)
@@ -231,7 +233,7 @@ class ScenarioScreen(QWidget):
         self.add_step_btn.clicked.connect(self._on_add_step)
         left_col.addWidget(self.add_step_btn)
 
-        self.test_panel = card()
+        self.test_panel = Card()
         test_lay = QVBoxLayout(self.test_panel)
         test_lay.setContentsMargins(14, 12, 14, 12)
         test_head = QHBoxLayout()
@@ -254,7 +256,7 @@ class ScenarioScreen(QWidget):
         left_col.addWidget(self.test_panel)
 
         # ---- completion message + funnel ----
-        tail = card()
+        tail = Card()
         tail_lay = QVBoxLayout(tail)
         tail_lay.setContentsMargins(16, 12, 16, 14)
         tail_lay.setSpacing(8)
@@ -279,7 +281,7 @@ class ScenarioScreen(QWidget):
 
         # Панель прокручивается: число вариантов задаёт пользователь, и на
         # пятом переход последнего варианта просто обрезался снизу.
-        self.props_panel = card()
+        self.props_panel = Card()
         panel_lay = QVBoxLayout(self.props_panel)
         panel_lay.setContentsMargins(0, 0, 0, 0)
         props_scroll = QScrollArea()
@@ -487,7 +489,7 @@ class ScenarioScreen(QWidget):
 
             num = label(str(row["index"] + 1))
             num.setFixedWidth(16)
-            num.setStyleSheet("color: #6c6c78; font-size: 11.5px;")
+            num.setStyleSheet(f"color: {theme.TEXT_FAINT}; font-size: 11.5px;")
             lay.addWidget(num)
 
             bar = QWidget()
@@ -495,7 +497,7 @@ class ScenarioScreen(QWidget):
             bar.setFixedHeight(8)
             bar.setMinimumWidth(max(4, int(220 * share)))
             bar.setMaximumWidth(max(4, int(220 * share)))
-            bar.setStyleSheet("background: #9184d9; border-radius: 4px;")
+            bar.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 4px;")
             lay.addWidget(bar)
 
             caption = muted(
@@ -827,14 +829,14 @@ class ScenarioScreen(QWidget):
         if self.test_open:
             self.mode_badge.setText("●  Тестовый прогон — ничего не отправляется")
             self.mode_badge.setStyleSheet(
-                "background: rgba(220,150,90,40); color: #f0c6a0; "
+                f"background: rgba(220,150,90,40); color: {theme.WARN}; "
                 "border: 1px solid rgba(240,198,160,115); border-radius: 8px; "
                 "padding: 5px 12px; font-size: 12.5px;"
             )
         else:
             self.mode_badge.setText("●  Черновик · правки сохраняются сами")
             self.mode_badge.setStyleSheet(
-                "background: rgba(145,132,217,36); color: #d2cefd; "
+                f"background: rgba(145,132,217,36); color: {theme.ACCENT_300}; "
                 "border: 1px solid rgba(145,132,217,102); border-radius: 8px; "
                 "padding: 5px 12px; font-size: 12.5px;"
             )

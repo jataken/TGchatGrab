@@ -1,19 +1,23 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTime, Qt, QTimer
+from PySide6.QtCore import QTime, Qt, QTimer, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMessageBox, QScrollArea, QSpinBox, QTimeEdit, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QMessageBox, QScrollArea, QSpinBox, QTimeEdit, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
+from ...icons import nav_icon
 from ...util import fire
-from ...widgets import StatusPill, button, card, h1, label, muted, plural as _plural
+from ...widgets import Card, StatusPill, button, h1, hline, label, muted
 from ....bots import settings as bot_settings
 from .wizard import BotWizardDialog
 
 _TYPE_LABELS = {"bot_api": "отдельный бот-аккаунт", "userbot": "от вашего аккаунта"}
 _PRESET_LABELS = {"b2b": "B2B", "b2c": "B2C", "custom": "CUSTOM"}
+_STATUS_STRIPE = {"running": theme.GOOD, "stopped": theme.TEXT_FAINT, "error": theme.BAD}
 
 
 class SendLimitsDialog(QDialog):
@@ -287,10 +291,14 @@ class StatCell(QWidget):
         self.value_label.setText(value)
 
 
-class BotRow(QWidget):
-    """One bot as a full-width row: identity and controls on the top line,
-    its numbers underneath, and the one-line explanation of what it does
-    (or why it stopped) at the bottom."""
+class BotCard(QWidget):
+    """One bot as a grid card (design-brief.md §4.7): status-striped
+    `Card`, identity + status pill, an error banner when `last_error` is
+    set, three metrics under a top divider, and actions. The three
+    metrics (rules / leads / replies sent in the last 24h) are all
+    already computable from existing `db` methods (`list_triggers`,
+    `list_leads`, `outbox_counts`) — no new `count_bot_*` methods needed,
+    same reasoning as `settings.py`'s Д5 media/backup metrics."""
 
     def __init__(self, ctx: AppContext, bot_id: int, on_changed, navigate):
         super().__init__()
@@ -299,64 +307,76 @@ class BotRow(QWidget):
         self.on_changed = on_changed
         self.navigate = navigate
 
-        frame = card()
+        self.frame = Card()
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(frame)
+        outer.addWidget(self.frame)
 
-        lay = QVBoxLayout(frame)
+        lay = QVBoxLayout(self.frame)
         lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(0)
+        lay.setSpacing(8)
 
         top = QHBoxLayout()
-        top.setSpacing(10)
+        top.setSpacing(8)
         self.title_label = QLabel("")
         self.title_label.setTextFormat(Qt.PlainText)
-        self.title_label.setStyleSheet("font-size: 15px; font-weight: 600;")
-        top.addWidget(self.title_label)
-        self.type_label = label("")
-        self.type_label.setStyleSheet(
-            "background: rgba(233,233,237,16); color: #9a9aa3; border-radius: 6px; "
-            "padding: 2px 9px; font-size: 11.5px;"
-        )
-        top.addWidget(self.type_label)
+        self.title_label.setStyleSheet("font-size: 14px; font-weight: 600;")
+        top.addWidget(self.title_label, 1)
         self.status_pill = StatusPill("stopped")
         top.addWidget(self.status_pill)
-        top.addStretch(1)
-        self.rules_btn = button("Правила и сценарий", "secondary")
-        self.rules_btn.clicked.connect(lambda: self.navigate("rules"))
-        top.addWidget(self.rules_btn)
-        self.limits_btn = button("Отправка", "secondary")
-        self.limits_btn.clicked.connect(self._on_limits)
-        top.addWidget(self.limits_btn)
-        self.toggle_btn = button("Запустить", "primary")
-        self.toggle_btn.clicked.connect(self._on_toggle)
-        top.addWidget(self.toggle_btn)
-        self.delete_btn = button("Удалить", "ghost")
-        self.delete_btn.clicked.connect(self._on_delete)
-        top.addWidget(self.delete_btn)
         lay.addLayout(top)
-        lay.addSpacing(11)
 
-        stats = QHBoxLayout()
-        stats.setSpacing(26)
-        self.st_leads = StatCell("Заявок")
-        self.st_contacts = StatCell("Контактов")
-        self.st_manager = StatCell("Менеджер")
-        self.st_preset = StatCell("Сценарий")
-        for cell in (self.st_leads, self.st_contacts, self.st_manager, self.st_preset):
-            stats.addWidget(cell)
-        stats.addStretch(1)
-        lay.addLayout(stats)
-        lay.addSpacing(9)
+        self.subtitle_label = QLabel("")
+        self.subtitle_label.setTextFormat(Qt.PlainText)
+        self.subtitle_label.setWordWrap(True)
+        self.subtitle_label.setStyleSheet(f"font-size: 11.5px; color: {theme.TEXT_MUTED};")
+        lay.addWidget(self.subtitle_label)
 
-        self.note_label = QLabel("")
         # last_error can echo text from an exception raised by a 3rd-party
         # library (aiogram/Telethon) — plain text only, same reasoning as
         # every other label showing content this app doesn't fully control.
-        self.note_label.setTextFormat(Qt.PlainText)
-        self.note_label.setWordWrap(True)
-        lay.addWidget(self.note_label)
+        self.error_label = QLabel("")
+        self.error_label.setTextFormat(Qt.PlainText)
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet(
+            "background: rgba(200,90,110,.12); border: 1px solid rgba(200,90,110,.25); "
+            f"border-radius: 8px; padding: 6px 9px; color: {theme.BAD_FG}; font-size: 11.5px;"
+        )
+        self.error_label.hide()
+        lay.addWidget(self.error_label)
+
+        lay.addWidget(hline())
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(18)
+        self.st_rules = StatCell("ПРАВИЛ")
+        self.st_leads = StatCell("ЗАЯВОК")
+        self.st_replies = StatCell("ОТВЕТОВ 24Ч")
+        for cell in (self.st_rules, self.st_leads, self.st_replies):
+            metrics_row.addWidget(cell)
+        metrics_row.addStretch(1)
+        lay.addLayout(metrics_row)
+
+        btn_row1 = QHBoxLayout()
+        btn_row1.setSpacing(6)
+        self.toggle_btn = button("Запустить", "primary")
+        self.toggle_btn.clicked.connect(self._on_toggle)
+        btn_row1.addWidget(self.toggle_btn)
+        self.rules_btn = button("Правила", "secondary")
+        self.rules_btn.clicked.connect(lambda: self.navigate("rules"))
+        btn_row1.addWidget(self.rules_btn)
+        btn_row1.addStretch(1)
+        lay.addLayout(btn_row1)
+
+        btn_row2 = QHBoxLayout()
+        btn_row2.setSpacing(6)
+        self.limits_btn = button("Отправка", "ghost")
+        self.limits_btn.clicked.connect(self._on_limits)
+        btn_row2.addWidget(self.limits_btn)
+        btn_row2.addStretch(1)
+        self.delete_btn = button("Удалить", "danger")
+        self.delete_btn.clicked.connect(self._on_delete)
+        btn_row2.addWidget(self.delete_btn)
+        lay.addLayout(btn_row2)
 
     def refresh(self) -> None:
         db = self.ctx.db
@@ -365,29 +385,21 @@ class BotRow(QWidget):
             return
         self.title_label.setText(bot["name"])
         self.status_pill.set_status(bot["status"])
-        self.type_label.setText(_TYPE_LABELS.get(bot["type"], bot["type"]))
-
-        leads = db.list_leads(bot_id=self.bot_id)
-        contacts = {l["contact_id"] for l in leads}
-        self.st_leads.set_value(str(len(leads)))
-        self.st_contacts.set_value(str(len(contacts)))
-        self.st_manager.set_value(bot["manager_chat_id"] or "не задан")
-        self.st_preset.set_value(_PRESET_LABELS.get(bot["preset"], bot["preset"]))
-
+        self.frame.set_stripe_color(_STATUS_STRIPE.get(bot["status"], theme.TEXT_FAINT))
+        self.subtitle_label.setText(
+            f"{_TYPE_LABELS.get(bot['type'], bot['type'])} · "
+            f"пресет {_PRESET_LABELS.get(bot['preset'], bot['preset'])} · "
+            f"менеджер: {bot['manager_chat_id'] or 'не задан'}"
+        )
         if bot["last_error"]:
-            self.note_label.setText(bot["last_error"])
-            self.note_label.setStyleSheet("color: #f0c6a0; font-size: 12.5px;")
+            self.error_label.setText(bot["last_error"])
+            self.error_label.show()
         else:
-            n_t = len(db.list_triggers(self.bot_id))
-            n_s = len(db.list_scenarios(self.bot_id))
-            self.note_label.setText(
-                f"{n_t} {_plural(n_t, 'правило', 'правила', 'правил')} · "
-                f"{n_s} {_plural(n_s, 'сценарий', 'сценария', 'сценариев')}. "
-                + ("Отвечает на личные сообщения по сценарию."
-                   if bot["type"] == "bot_api"
-                   else "Реагирует на сообщения в чатах вашего аккаунта.")
-            )
-            self.note_label.setStyleSheet("color: #9a9aa3; font-size: 12.5px;")
+            self.error_label.hide()
+
+        self.st_rules.set_value(str(len(db.list_triggers(self.bot_id))))
+        self.st_leads.set_value(str(len(db.list_leads(bot_id=self.bot_id))))
+        self.st_replies.set_value(str(db.outbox_counts(self.bot_id)["day"]))
 
         running = bot["status"] == "running"
         self.toggle_btn.setText("Остановить" if running else "Запустить")
@@ -432,12 +444,61 @@ class BotRow(QWidget):
         fire(self.ctx.bot_manager.delete_bot(self.bot_id), parent=self, on_done=self.on_changed)
 
 
+class _NewBotCard(QFrame):
+    """design-brief.md §4.7's dashed placeholder — the grid's last cell,
+    and (when there are no bots at all) its only cell."""
+
+    clicked = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("newbotcard")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(150)
+        self.setStyleSheet(
+            f"QFrame#newbotcard {{ border: 1px dashed {theme.BORDER_HOVER}; "
+            "border-radius: 11px; background: transparent; }\n"
+            f"QFrame#newbotcard:hover {{ border-color: {theme.ACCENT}; }}"
+        )
+        lay = QVBoxLayout(self)
+        lay.setAlignment(Qt.AlignCenter)
+        lay.setSpacing(8)
+        self._icon_label = QLabel()
+        self._icon_label.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self._icon_label)
+        self._text_label = label("Новый бот из пресета B2B / B2C")
+        self._text_label.setWordWrap(True)
+        self._text_label.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self._text_label)
+        self._set_hovered(False)
+
+    def _set_hovered(self, hovered: bool) -> None:
+        color = theme.ACCENT if hovered else theme.TEXT_FAINT
+        icon = nav_icon("bots", color, size=22)
+        self._icon_label.setPixmap(icon.pixmap(22, 22) if icon else QPixmap())
+        text_color = theme.ACCENT_300 if hovered else theme.TEXT_MUTED
+        self._text_label.setStyleSheet(f"font-size: 12.5px; color: {text_color};")
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._set_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._set_hovered(False)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class BotsListTab(QWidget):
     def __init__(self, ctx: AppContext, navigate=None):
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate or (lambda *_a, **_k: None)
-        self.rows: dict[int, BotRow] = {}
+        self.cards: dict[int, BotCard] = {}
+        self._new_bot_card: _NewBotCard | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -457,12 +518,12 @@ class BotsListTab(QWidget):
         outer.addLayout(header)
         outer.addSpacing(16)
 
-        self.empty_label = muted("Ботов пока нет — нажмите «Новый бот», чтобы создать первого.")
-        outer.addWidget(self.empty_label)
-
-        self.rows_lay = QVBoxLayout()
-        self.rows_lay.setSpacing(9)
-        outer.addLayout(self.rows_lay)
+        self.grid = QGridLayout()
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(12)
+        for col in range(3):
+            self.grid.setColumnStretch(col, 1)
+        outer.addLayout(self.grid)
 
         ctx.bot_manager.bots_changed.connect(self.refresh)
         self._timer = QTimer(self)
@@ -480,7 +541,6 @@ class BotsListTab(QWidget):
     def refresh(self) -> None:
         db = self.ctx.db
         bots = db.list_bots()
-        self.empty_label.setVisible(not bots)
 
         running = len([b for b in bots if b["status"] == "running"])
         total_leads = len(db.list_leads())
@@ -490,16 +550,31 @@ class BotsListTab(QWidget):
         )
 
         current_ids = {b["id"] for b in bots}
-        for bid in list(self.rows):
+        for bid in list(self.cards):
             if bid not in current_ids:
-                row = self.rows.pop(bid)
-                row.setParent(None)
-                row.deleteLater()
+                gone = self.cards.pop(bid)
+                gone.setParent(None)
+                gone.deleteLater()
+
+        # Detach everything from the grid (widgets survive — just get
+        # reparented out) so positions can be recomputed cleanly each
+        # tick, same as bots are added/removed/reordered underneath.
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
 
         for i, bot in enumerate(bots):
-            row = self.rows.get(bot["id"])
-            if row is None:
-                row = BotRow(self.ctx, bot["id"], self.refresh, self.navigate)
-                self.rows[bot["id"]] = row
-            self.rows_lay.insertWidget(i, row)
-            row.refresh()
+            bot_card = self.cards.get(bot["id"])
+            if bot_card is None:
+                bot_card = BotCard(self.ctx, bot["id"], self.refresh, self.navigate)
+                self.cards[bot["id"]] = bot_card
+            bot_card.refresh()
+            self.grid.addWidget(bot_card, i // 3, i % 3, Qt.AlignTop)
+
+        if self._new_bot_card is None:
+            self._new_bot_card = _NewBotCard()
+            self._new_bot_card.clicked.connect(self._on_add)
+        n = len(bots)
+        self.grid.addWidget(self._new_bot_card, n // 3, n % 3, Qt.AlignTop)

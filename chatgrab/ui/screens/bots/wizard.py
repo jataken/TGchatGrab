@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QRadioButton, QVBoxLayout, QHBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...widgets import FieldRow, button, muted
 from ....bots import preset_library as pl
@@ -114,7 +115,8 @@ class BotWizardDialog(QDialog):
                 "иначе юзербот не сможет получать сообщения."
             )
             self.userbot_status.setStyleSheet(
-                "color: #7fc79b; font-size: 12px;" if authed else "color: #e0a8b0; font-size: 12px;"
+                f"color: {theme.GOOD}; font-size: 12px;" if authed
+                else f"color: {theme.BAD_FG}; font-size: 12px;"
             )
 
     def _clear_variables(self) -> None:

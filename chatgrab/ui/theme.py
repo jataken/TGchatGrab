@@ -206,6 +206,13 @@ def build_qss() -> str:
     QPushButton[class="ghost"]:hover {{ color: {ACCENT_400}; background: transparent; }}
     QPushButton[class="danger"] {{ color: {TEXT_MUTED}; }}
     QPushButton[class="danger"]:hover {{ background: rgba(200,90,110,41); color: {BAD_FG}; }}
+    /* design-brief.md §4.7 — the dashed "плюс + action" button under a
+       list-left panel (a new trigger/scenario/template, or an export
+       action) and, at card scale, the empty "new bot" placeholder. */
+    QPushButton[class="dashed"] {{
+        border: 1px dashed {BORDER_HOVER}; color: {TEXT_MUTED}; background: transparent;
+    }}
+    QPushButton[class="dashed"]:hover {{ border-color: {ACCENT}; color: {ACCENT_300}; }}
     /* Иконка-кнопка (✕ и подобные) — квадрат 24×24, задаётся вызывающим
        кодом через setFixedSize; здесь только цвет/форма. */
     QPushButton[class="icon"] {{

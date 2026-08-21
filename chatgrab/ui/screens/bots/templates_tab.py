@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
-from ...widgets import button, card, muted, plural as _plural
+from ...widgets import Card, button, dashed_button, label, muted, plural as _plural
 
 _VAR_RE = re.compile(r"\{(\w+)\}")
 
@@ -35,16 +35,16 @@ class TemplatesTab(QWidget):
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 8, 0)
-        left_lay.addWidget(muted("Шаблоны"))
+        left_lay.addWidget(label("ШАБЛОНЫ", "kicker"))
         self.tpl_list = QListWidget()
         self.tpl_list.currentItemChanged.connect(self._on_selected)
         left_lay.addWidget(self.tpl_list, 1)
-        add_btn = button("＋ Новый шаблон", "secondary")
+        add_btn = dashed_button("＋ Новый шаблон")
         add_btn.clicked.connect(self._on_add)
         left_lay.addWidget(add_btn)
         split.addWidget(left)
 
-        right = card()
+        right = Card()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(14, 14, 14, 14)
         right_lay.addWidget(muted("Название"))

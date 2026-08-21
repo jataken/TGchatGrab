@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from ...context import AppContext
 from ...util import fire
-from ...widgets import button, hline, muted
+from ...widgets import button, hline, label, muted
 from ....core import lead as lead_domain
 from ....integrations import llm
 
@@ -46,7 +46,7 @@ class LeadCardAssistantPanel(QWidget):
         self.assist_hint.setWordWrap(True)
         assist_lay.addWidget(self.assist_hint)
 
-        assist_lay.addWidget(muted("ИЗВЛЕЧЬ ПОЛЯ ИЗ ПЕРЕПИСКИ"))
+        assist_lay.addWidget(label("ИЗВЛЕЧЬ ПОЛЯ ИЗ ПЕРЕПИСКИ", "kicker"))
         extract_row = QHBoxLayout()
         self.extract_btn = button("Извлечь поля", "secondary")
         self.extract_btn.clicked.connect(self._on_llm_extract)
@@ -73,7 +73,7 @@ class LeadCardAssistantPanel(QWidget):
         assist_lay.addWidget(apply_extract_btn)
         assist_lay.addWidget(hline())
 
-        assist_lay.addWidget(muted("КРАТКОЕ СОДЕРЖАНИЕ ПЕРЕПИСКИ"))
+        assist_lay.addWidget(label("КРАТКОЕ СОДЕРЖАНИЕ ПЕРЕПИСКИ", "kicker"))
         summary_row = QHBoxLayout()
         self.summary_btn = button("Составить резюме", "secondary")
         self.summary_btn.clicked.connect(self._on_llm_summary)
@@ -88,7 +88,7 @@ class LeadCardAssistantPanel(QWidget):
         assist_lay.addWidget(save_summary_btn)
         assist_lay.addWidget(hline())
 
-        assist_lay.addWidget(muted("ЧЕРНОВИК ОТВЕТА"))
+        assist_lay.addWidget(label("ЧЕРНОВИК ОТВЕТА", "kicker"))
         draft_row = QHBoxLayout()
         draft_row.addWidget(muted("От имени бота"))
         self.draft_bot_combo = QComboBox()

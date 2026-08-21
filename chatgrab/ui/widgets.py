@@ -90,6 +90,12 @@ def button(text: str, cls: str = "secondary") -> QPushButton:
     return btn
 
 
+def dashed_button(text: str) -> QPushButton:
+    """design-brief.md §4.7 — the dashed "＋ {action}" button under a
+    list-left panel."""
+    return button(text, "dashed")
+
+
 def icon_button(text: str = "✕", tooltip: str = "") -> QPushButton:
     """24×24 icon-only button (design-brief.md §3.3 «Иконка-кнопка») — the
     QSS `class="icon"` rule already exists (Д1); this just fixes the size

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from ...context import AppContext
 from ...format import short_dt
-from ...widgets import LeadStatusPill, button, label, muted
+from ...widgets import Card, LeadStatusPill, button, label, muted
 from ....core import lead as lead_domain
 from .lead_card_assistant import LeadCardAssistantPanel
 from .lead_card_bitrix import LeadCardBitrixPanel
@@ -75,6 +75,9 @@ class LeadCardDialog(QDialog):
         self.status_combo.currentIndexChanged.connect(self._on_status_combo_changed)
 
         # ---- editable business fields -----------------------------------
+        fields_card = Card()
+        fields_lay = QVBoxLayout(fields_card)
+        fields_lay.setContentsMargins(14, 12, 14, 12)
         form_row = QHBoxLayout()
         form_left = QFormLayout()
         form_left.setSpacing(6)
@@ -108,14 +111,15 @@ class LeadCardDialog(QDialog):
         self.manager_input = QLineEdit()
         form_right.addRow("Менеджер", self.manager_input)
         form_row.addLayout(form_right, 1)
-        outer.addLayout(form_row)
+        fields_lay.addLayout(form_row)
 
         save_row = QHBoxLayout()
         save_row.addStretch(1)
         save_fields_btn = button("Сохранить поля", "primary")
         save_fields_btn.clicked.connect(self._on_save_fields)
         save_row.addWidget(save_fields_btn)
-        outer.addLayout(save_row)
+        fields_lay.addLayout(save_row)
+        outer.addWidget(fields_card)
 
         # ---- reminder ------------------------------------------------
         reminder_row = QHBoxLayout()

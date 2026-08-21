@@ -9,8 +9,9 @@ from PySide6.QtWidgets import (
     QStackedWidget, QTimeEdit, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
-from ...widgets import button, card, muted
+from ...widgets import Card, TabletCheckBox, button, dashed_button, label, muted
 
 _TRIGGER_TYPES = [
     ("incoming_dm", "Написали боту в личку"),
@@ -63,16 +64,16 @@ class RulesTab(QWidget):
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 8, 0)
-        left_lay.addWidget(muted("Правила"))
+        left_lay.addWidget(label("ТРИГГЕРЫ", "kicker"))
         self.trigger_list = QListWidget()
         self.trigger_list.currentItemChanged.connect(self._on_trigger_selected)
         left_lay.addWidget(self.trigger_list, 1)
-        add_trigger_btn = button("＋ Добавить правило", "secondary")
+        add_trigger_btn = dashed_button("＋ Новый триггер")
         add_trigger_btn.clicked.connect(self._on_add_trigger)
         left_lay.addWidget(add_trigger_btn)
         split.addWidget(left)
 
-        right = card()
+        right = Card()
         self.right_lay = QVBoxLayout(right)
         self.right_lay.setContentsMargins(14, 14, 14, 14)
         self.empty_hint = muted("Выберите правило слева или создайте новое.")
@@ -89,7 +90,7 @@ class RulesTab(QWidget):
             self.type_combo.addItem(lbl, key)
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         type_row.addWidget(self.type_combo, 1)
-        self.enabled_cb = QCheckBox("Включено")
+        self.enabled_cb = TabletCheckBox("Включено")
         self.enabled_cb.setChecked(True)
         type_row.addWidget(self.enabled_cb)
         detail_lay.addLayout(type_row)
@@ -118,7 +119,7 @@ class RulesTab(QWidget):
         self.problem_label = QLabel("")
         self.problem_label.setTextFormat(Qt.PlainText)
         self.problem_label.setWordWrap(True)
-        self.problem_label.setStyleSheet("color: #f0c6a0; font-size: 12px;")
+        self.problem_label.setStyleSheet(f"color: {theme.WARN}; font-size: 12px;")
         detail_lay.addWidget(self.problem_label)
 
         detail_lay.addSpacing(8)
