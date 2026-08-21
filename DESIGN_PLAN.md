@@ -565,3 +565,6 @@ conclusion `success`) — полный регресс подтверждён н�
 (Д3+), `ActivityBars`/`LeadStatusPill`/системный `QCheckBox` оставлены как
 рабочая база до своих сессий, `Sparkline`/`Card`/`MetricsBar`/`LogPanel`
 существуют только как готовые к переиспользованию классы.
+
+Дополнение по факту CI: `tests.yml` зелёный на `2e23419` (run #108,
+conclusion `success`).
