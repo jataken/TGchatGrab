@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...util import fire, run_blocking
 from ...widgets import button, muted
@@ -66,10 +67,13 @@ class TriageDialog(QDialog):
         self.status = muted("")
         outer.addWidget(self.status)
 
+        # design-brief.md §2 — подпись/сноска моно, тот же приём, что и
+        # у "код живёт ~2 минуты" в connect.py (Д5).
         hint = muted(
             "J/K — вперёд/назад · 1–9 — ярлык · E — в архив · "
             "R — ответить · L — заявка · / — поиск · Esc — выйти")
         hint.setWordWrap(True)
+        hint.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 11px; color: {theme.TEXT_FAINT};")
         outer.addWidget(hint)
 
         close_btn = button("Закрыть", "secondary")

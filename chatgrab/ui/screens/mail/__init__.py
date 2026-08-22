@@ -19,10 +19,11 @@ from PySide6.QtWidgets import (
     QSplitter, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...format import human_size, short_dt
 from ...util import fire, run_blocking
-from ...widgets import button, card, chip, h1, muted, plural
+from ...widgets import Card, button, chip, h1, label, muted, plural
 from .attachment_view import AttachmentViewerDialog
 from .compose import ComposeDialog, DraftsListDialog
 from .triage import TriageDialog
@@ -83,7 +84,7 @@ class MessagePane(QWidget):
         # and offering "Отменить" after a move/trash/permanent-delete.
         self._on_changed = on_changed or (lambda **kw: None)
 
-        frame = card()
+        frame = Card()
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(frame)
@@ -487,7 +488,7 @@ class MailScreen(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(24, 0, 12, 16)
-        lay.addWidget(muted("ЯЩИКИ"))
+        lay.addWidget(label("ЯЩИКИ", "kicker"))
         self.mailbox_list = QListWidget()
         self.mailbox_list.currentItemChanged.connect(self._on_mailbox_selected)
         lay.addWidget(self.mailbox_list, 1)
@@ -517,20 +518,29 @@ class MailScreen(QWidget):
         restore_index = 0
         for i, (mailbox, folder) in enumerate(rows):
             unread = self._folder_unread_count(mailbox["id"], folder["name"])
-            label = f"{mailbox['address']} — {folder['name']}"
+            row_label = f"{mailbox['address']} — {folder['name']}"
             if unread:
-                label += f"  ({unread})"
-            item = QListWidgetItem(label)
+                row_label += f"  ({unread})"
+            item = QListWidgetItem(row_label)
             item.setData(Qt.UserRole, (mailbox["id"], folder["name"]))
             self.mailbox_list.addItem(item)
             if (mailbox["id"], folder["name"]) == current:
                 restore_index = i
-        self.mailbox_list.blockSignals(False)
+        # setCurrentRow() has to stay inside the blocked-signals window —
+        # otherwise it fires currentItemChanged (→ _on_mailbox_selected →
+        # _load_threads()) and the explicit call below runs a second time
+        # on the same mailbox: two back-to-back setItemWidget() passes
+        # over the same thread list left orphaned row widgets rendered at
+        # stale positions (garbled overlapping text in the thread list —
+        # same bug shape as funnels_screen.py's Д7 fix, reproduced on the
+        # pre-session code too, not something this session's edits
+        # introduced).
         if rows:
             self.mailbox_list.setCurrentRow(restore_index)
             self.selected_mailbox_id, self.selected_folder = rows[restore_index][0]["id"], rows[restore_index][1]["name"]
         else:
             self.selected_mailbox_id = self.selected_folder = None
+        self.mailbox_list.blockSignals(False)
         self._load_threads()
 
     def _folder_unread_count(self, mailbox_id: int, folder: str) -> int:
@@ -671,7 +681,8 @@ class MailScreen(QWidget):
         subject = t["subject"] or "(без темы)"
         who = t["sender_name"] or t["sender_address"] or "—"
         count = f" ({t['message_count']})" if t["message_count"] > 1 else ""
-        text = f"{dot}{star}{subject}{count}{clip}\n{who} · {short_dt(t['last_date'])}"
+        title_text = f"{dot}{star}{subject}{count}{clip}"
+        meta_text = f"{who} · {short_dt(t['last_date'])}"
         thread_id = t["thread_id"]
 
         item = QListWidgetItem()
@@ -684,17 +695,28 @@ class MailScreen(QWidget):
         # снимает ярлык"), а не просто нарисованы. _load_mailboxes_
         # badges_only() читает/пишет row_widget.title_label вместо
         # item.text()/item.font() ровно из-за этой смены.
+        #
+        # Заголовок и метаданные — два отдельных QLabel, не один с "\n"
+        # внутри: та же геометрия, что и у _ChatRow (chats.py)/_LeadRow
+        # (leads_tab.py) — single-label двухстрочный текст с условным
+        # bold давал в офскрин-снимке наложение строк друг на друга.
         row_widget = QWidget()
         row_lay = QVBoxLayout(row_widget)
         row_lay.setContentsMargins(4, 4, 4, 4)
-        row_lay.setSpacing(3)
-        title_label = QLabel(text)
+        row_lay.setSpacing(2)
+        title_label = QLabel(title_text)
         title_label.setTextFormat(Qt.PlainText)
         font = title_label.font()
         font.setBold(unread)
         title_label.setFont(font)
         row_widget.title_label = title_label
         row_lay.addWidget(title_label)
+
+        meta_label = QLabel(meta_text)
+        meta_label.setTextFormat(Qt.PlainText)
+        meta_label.setStyleSheet(f"color: {theme.TEXT_FAINT}; font-size: 11px;")
+        row_widget.meta_label = meta_label
+        row_lay.addWidget(meta_label)
 
         labels = self.ctx.db.list_labels_for_thread(thread_id)
         if labels:

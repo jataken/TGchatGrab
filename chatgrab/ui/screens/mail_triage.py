@@ -4,13 +4,14 @@ guessing game. See core/mail_triage.py for the rule itself.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QHBoxLayout, QLabel, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ..context import AppContext
 from ..util import fire, run_blocking
-from ..widgets import button, card, h1, label, muted
+from ..widgets import Card, TabletCheckBox, button, h1, label, muted
 
 _WEIGHT_LABELS = [
     ("direction_keyword", "Ключевое слово направления (тема, тело или вложение)"),
@@ -57,7 +58,7 @@ class MailTriageScreen(QWidget):
 
     # ---- настройки --------------------------------------------------------
     def _build_settings_card(self) -> QWidget:
-        c = card()
+        c = Card()
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
@@ -89,7 +90,7 @@ class MailTriageScreen(QWidget):
         cap_row.addWidget(self.cap_field)
         lay.addLayout(cap_row)
 
-        self.llm_checkbox = QCheckBox("Второй проход LLM для спорных писем (балл 40–60), выключено по умолчанию")
+        self.llm_checkbox = TabletCheckBox("Второй проход LLM для спорных писем (балл 40–60), выключено по умолчанию")
         lay.addWidget(self.llm_checkbox)
 
         buttons_row = QHBoxLayout()
@@ -150,7 +151,7 @@ class MailTriageScreen(QWidget):
 
     # ---- проверка на живых письмах ----------------------------------------
     def _build_results_card(self) -> QWidget:
-        c = card()
+        c = Card()
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(6)
@@ -186,6 +187,7 @@ class MailTriageScreen(QWidget):
         subject = message["subject"] or "(без темы)"
         who = message["sender_name"] or message["sender_address"] or "—"
         head = QLabel(f"{score:+d} · {category} — {subject}")
+        head.setTextFormat(Qt.PlainText)  # subject приходит из письма — внешний, недоверенный текст
         head.setWordWrap(True)
         head.setStyleSheet("font-weight: 600;")
         lay.addWidget(head)

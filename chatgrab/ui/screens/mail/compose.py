@@ -13,10 +13,11 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QMessageBox, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...format import human_size
 from ...util import fire, run_blocking
-from ...widgets import FieldRow, button, muted
+from ...widgets import Card, FieldRow, button, muted
 from ....core import mail_compose
 from ....integrations import llm as llm_integration
 
@@ -278,13 +279,18 @@ class SendConfirmDialog(QDialog):
         attachments = ctx.db.list_mail_draft_attachments(draft_id)
 
         outer = QVBoxLayout(self)
-        outer.addWidget(_kv("Кому", ", ".join(to) or "—"))
+
+        summary_card = Card()
+        summary_lay = QVBoxLayout(summary_card)
+        summary_lay.setContentsMargins(14, 12, 14, 12)
+        summary_lay.setSpacing(6)
+        summary_lay.addWidget(_kv("Кому", ", ".join(to) or "—"))
         if cc:
-            outer.addWidget(_kv("Копия", ", ".join(cc)))
-        outer.addWidget(_kv("Тема", draft["subject"] or "(без темы)"))
+            summary_lay.addWidget(_kv("Копия", ", ".join(cc)))
+        summary_lay.addWidget(_kv("Тема", draft["subject"] or "(без темы)"))
         if attachments:
             names = ", ".join(f"{a['filename']} ({human_size(a['size_bytes'])})" for a in attachments)
-            outer.addWidget(_kv("Вложения", names))
+            summary_lay.addWidget(_kv("Вложения", names))
 
         preview = (draft["body_text"] or "").strip().splitlines()
         preview_text = "\n".join(preview[:6])
@@ -292,8 +298,9 @@ class SendConfirmDialog(QDialog):
         preview_label.setTextFormat(Qt.PlainText)
         preview_label.setWordWrap(True)
         preview_label.setProperty("class", "muted")
-        outer.addWidget(muted("Начало письма:"))
-        outer.addWidget(preview_label)
+        summary_lay.addWidget(muted("Начало письма:"))
+        summary_lay.addWidget(preview_label)
+        outer.addWidget(summary_card)
 
         recipients_count = mail_compose.total_recipients(to, cc)
         if recipients_count > mail_compose.MANY_RECIPIENTS_THRESHOLD:
@@ -395,8 +402,12 @@ def _kv(key: str, value: str) -> QWidget:
 
 
 def _warning(text: str) -> QWidget:
+    # Тот же WARN-баннер, что и в connect.py/settings.py (Д5).
     lbl = QLabel(text)
     lbl.setTextFormat(Qt.PlainText)
     lbl.setWordWrap(True)
-    lbl.setStyleSheet("color: #e0a13a;")
+    lbl.setStyleSheet(
+        "background: rgba(240,198,160,.07); border: 1px solid rgba(240,198,160,.22); "
+        f"border-radius: 10px; padding: 8px 10px; color: {theme.WARN_FG}; font-size: 12px;"
+    )
     return lbl
