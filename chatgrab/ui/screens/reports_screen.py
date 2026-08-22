@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from ..context import AppContext
 from ..util import fire, run_blocking
-from ..widgets import button, card, h1, muted
+from ..widgets import Card, button, h1, label, muted
 from ...core import lead_report
 from ...services.export_service import ExportParams
 
@@ -88,35 +88,42 @@ class ReportsScreen(QWidget):
         outer.addSpacing(16)
 
         # ---- sources -----------------------------------------------------
-        outer.addWidget(muted("КОНВЕРСИЯ ПО ИСТОЧНИКАМ — КАКОЙ ЧАТ ДАЛ СКОЛЬКО ЗАЯВОК"))
+        source_card = Card()
+        source_lay = QVBoxLayout(source_card)
+        source_lay.setContentsMargins(16, 14, 16, 14)
+        source_lay.addWidget(label("КОНВЕРСИЯ ПО ИСТОЧНИКАМ — КАКОЙ ЧАТ ДАЛ СКОЛЬКО ЗАЯВОК", "kicker"))
         self.source_table = _report_table(
             ["Чат", "Всего", "Сделки", "Отказы", "В работе", "Конверсия, %"])
-        outer.addWidget(self.source_table)
+        source_lay.addWidget(self.source_table)
+        outer.addWidget(source_card)
         outer.addSpacing(16)
 
         # ---- directions --------------------------------------------------
-        outer.addWidget(muted("КОНВЕРСИЯ ПО НАПРАВЛЕНИЯМ"))
+        direction_card = Card()
+        direction_lay = QVBoxLayout(direction_card)
+        direction_lay.setContentsMargins(16, 14, 16, 14)
+        direction_lay.addWidget(label("КОНВЕРСИЯ ПО НАПРАВЛЕНИЯМ", "kicker"))
         self.direction_table = _report_table(
             ["Направление", "Всего", "Сделки", "Отказы", "В работе", "Конверсия, %"])
-        outer.addWidget(self.direction_table)
+        direction_lay.addWidget(self.direction_table)
+        outer.addWidget(direction_card)
         outer.addSpacing(16)
 
         # ---- avg time to quote + reject reasons ----------------------------
         mid_row = QHBoxLayout()
 
-        avg_card = card()
+        avg_card = Card()
         avg_lay = QVBoxLayout(avg_card)
         avg_lay.setContentsMargins(16, 14, 16, 14)
-        avg_lay.addWidget(muted("СРЕДНИЙ СРОК ОТ ПЕРВОГО КАСАНИЯ ДО КП"))
-        self.avg_days_label = muted("—")
-        self.avg_days_label.setStyleSheet("font-size: 22px; color: #e9e9ed;")
+        avg_lay.addWidget(label("СРЕДНИЙ СРОК ОТ ПЕРВОГО КАСАНИЯ ДО КП", "kicker"))
+        self.avg_days_label = label("—", "metric-tile")
         avg_lay.addWidget(self.avg_days_label)
         mid_row.addWidget(avg_card, 1)
 
-        reasons_card = card()
+        reasons_card = Card()
         reasons_lay = QVBoxLayout(reasons_card)
         reasons_lay.setContentsMargins(16, 14, 16, 14)
-        reasons_lay.addWidget(muted("ПРИЧИНЫ ОТКАЗОВ"))
+        reasons_lay.addWidget(label("ПРИЧИНЫ ОТКАЗОВ", "kicker"))
         self.reasons_table = _report_table(["Причина", "Количество"])
         self.reasons_table.setMaximumHeight(180)
         reasons_lay.addWidget(self.reasons_table)
@@ -198,8 +205,8 @@ class ReportsScreen(QWidget):
         table.setRowCount(len(rows))
         for row_idx, r in enumerate(rows):
             conv = lead_report.conversion(r["total"], r["won"], r["lost"])
-            label = r[label_key] or empty_label
-            table.setItem(row_idx, 0, QTableWidgetItem(label))
+            row_label = r[label_key] or empty_label
+            table.setItem(row_idx, 0, QTableWidgetItem(row_label))
             table.setItem(row_idx, 1, QTableWidgetItem(str(conv["total"])))
             table.setItem(row_idx, 2, QTableWidgetItem(str(conv["won"])))
             table.setItem(row_idx, 3, QTableWidgetItem(str(conv["lost"])))

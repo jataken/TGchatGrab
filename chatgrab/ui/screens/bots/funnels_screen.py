@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
-from ...widgets import button, h1, muted
+from ...widgets import Card, button, h1, label, muted
 from ....core import lead as lead_domain
 
 _KIND_LABELS = {
@@ -56,7 +56,7 @@ class FunnelsScreen(QWidget):
 
         left = QWidget()
         left_lay = QVBoxLayout(left)
-        left_lay.addWidget(muted("ВОРОНКИ"))
+        left_lay.addWidget(label("ВОРОНКИ", "kicker"))
         self.funnel_list = QListWidget()
         self.funnel_list.currentItemChanged.connect(self._on_funnel_selected)
         left_lay.addWidget(self.funnel_list, 1)
@@ -70,8 +70,9 @@ class FunnelsScreen(QWidget):
         left_lay.addLayout(new_funnel_row)
         splitter.addWidget(left)
 
-        right = QWidget()
+        right = Card()
         right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(14, 14, 14, 14)
         self.stages_title = muted("Выберите воронку слева.")
         right_lay.addWidget(self.stages_title)
 
@@ -129,12 +130,21 @@ class FunnelsScreen(QWidget):
             self.funnel_list.addItem(item)
             if funnel["id"] == current:
                 restore_row = i
-        self.funnel_list.blockSignals(False)
+        # setCurrentRow() has to stay inside the blocked-signals window too
+        # — otherwise it fires currentItemChanged, which calls
+        # _refresh_stages() itself, and the explicit call below runs a
+        # second time on the same funnel: two back-to-back
+        # setCellWidget() passes over the same 6 rows left orphaned cell
+        # widgets from the first pass rendered at stale positions (a
+        # dashed pink "отказ" swatch/delete-button ghost floating over
+        # row 0 — reproduced on the pre-session code too, not something
+        # this session's edits introduced).
         if self.funnel_list.count():
             self.funnel_list.setCurrentRow(restore_row)
             self.selected_funnel_id = self.funnel_list.item(restore_row).data(Qt.UserRole)
         else:
             self.selected_funnel_id = None
+        self.funnel_list.blockSignals(False)
         self._refresh_stages()
 
     def _on_funnel_selected(self, current: QListWidgetItem, _previous) -> None:

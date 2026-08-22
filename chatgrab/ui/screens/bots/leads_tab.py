@@ -3,17 +3,18 @@ from __future__ import annotations
 import datetime as dt
 import json
 
-from PySide6.QtCore import QUrl, Qt, QTimer
+from PySide6.QtCore import QUrl, Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QHBoxLayout, QHeaderView, QInputDialog, QMenu,
-    QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QFrame, QHBoxLayout, QInputDialog, QMenu,
+    QMessageBox, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...format import short_dt
 from ...util import fire, run_blocking
-from ...widgets import LeadStatusPill, button, chip, muted
+from ...widgets import LeadStatusPill, button, chip, label, muted
 from ....bots.export import export_leads_xlsx
 from ....core import lead as lead_domain
 from .lead_card import LeadCardDialog
@@ -26,14 +27,146 @@ _DATE_RANGES = [
     ("30d", "30 дней", 30),
 ]
 
+_COL_DATE = 100
+_COL_CONTACT = 190
+_COL_SOURCE = 130
+_COL_STATUS = 150
+_FALLBACK_DOT = "rgba(140,140,150,140)"
 
-def _status_pill(stage) -> QWidget:
-    host = QWidget()
-    lay = QHBoxLayout(host)
-    lay.setContentsMargins(8, 0, 8, 0)
-    lay.addWidget(LeadStatusPill(stage, font_size="11.5px"))
-    lay.addStretch(1)
-    return host
+
+class _StatusCell(QWidget):
+    """The status pill, plus the click target for the row's quick-advance
+    (design-brief.md §4.3's "СБОР"-column click-to-act idea, applied to a
+    lead's own single stage advance instead of a toggle)."""
+
+    clicked = Signal()
+
+    def __init__(self, stage):
+        super().__init__()
+        self.setFixedWidth(_COL_STATUS)
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setAlignment(Qt.AlignCenter)
+        self.pill = LeadStatusPill(stage, font_size="11.5px")
+        lay.addWidget(self.pill)
+
+    def set_stage(self, stage) -> None:
+        self.pill.set_stage(stage)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.clicked.emit()
+        event.accept()
+
+
+class _LeadRow(QFrame):
+    """One row of the "table becomes a card" list (design-brief.md §4.3,
+    same geometry as chats.py's `_ChatRow`) for leads: a 2px left stripe
+    colored by the lead's own funnel-stage `color_dot` — leads have no
+    fixed status enum/color table the way chats do (С10: every funnel
+    defines its own stage colors) — then date/contact/source/content/
+    status columns, no sparkline (nothing per-lead to chart). Single click
+    on the status pill quick-advances the stage; double-click anywhere
+    else opens the full card; right-click opens the context menu."""
+
+    doubleClicked = Signal()
+    statusClicked = Signal()
+    contextRequested = Signal(object)
+
+    def __init__(self, lead_id: int):
+        super().__init__()
+        self.lead_id = lead_id
+        self.setProperty("class", "tablerow")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.contextRequested.emit)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 11, 16, 11)
+        lay.setSpacing(14)
+
+        self.stripe = QWidget()
+        self.stripe.setFixedWidth(2)
+        lay.addWidget(self.stripe)
+        lay.addSpacing(18)
+
+        self.date_label = label("")
+        self.date_label.setFixedWidth(_COL_DATE)
+        self.date_label.setStyleSheet(
+            f"font-family: {theme.FONT_MONO}; font-size: 11px; color: {theme.TEXT_MUTED};"
+        )
+        lay.addWidget(self.date_label)
+
+        contact_col = QVBoxLayout()
+        contact_col.setSpacing(2)
+        self.name_label = label("")
+        self.name_label.setStyleSheet("font-size: 13px;")
+        contact_col.addWidget(self.name_label)
+        self.manager_label = label("")
+        self.manager_label.setStyleSheet(f"font-size: 10.5px; color: {theme.TEXT_FAINT};")
+        contact_col.addWidget(self.manager_label)
+        contact_wrap = QWidget()
+        contact_wrap.setFixedWidth(_COL_CONTACT)
+        contact_wrap.setLayout(contact_col)
+        lay.addWidget(contact_wrap)
+
+        self.source_label = label("")
+        self.source_label.setFixedWidth(_COL_SOURCE)
+        self.source_label.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_MUTED};")
+        lay.addWidget(self.source_label)
+
+        self.content_label = label("")
+        self.content_label.setWordWrap(False)
+        lay.addWidget(self.content_label, 1)
+
+        self.status_cell = _StatusCell(None)
+        self.status_cell.clicked.connect(self.statusClicked)
+        lay.addWidget(self.status_cell)
+
+    def set_data(self, date_text: str, name_text: str, manager_text: str,
+                 source_text: str, content_text: str, stage) -> None:
+        self.date_label.setText(date_text)
+        self.name_label.setText(name_text)
+        self.manager_label.setText(manager_text)
+        self.source_label.setText(source_text)
+        self.content_label.setText(content_text)
+        self.status_cell.set_stage(stage)
+        dot = stage["color_dot"] if stage is not None else _FALLBACK_DOT
+        self.stripe.setStyleSheet(f"background: {dot}; border-radius: 1px;")
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.doubleClicked.emit()
+
+
+class _LeadTableHeader(QWidget):
+    """Кикеры над списком строк — те же колонки, что и у `_LeadRow`."""
+
+    def __init__(self):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(20, 9, 16, 9)
+        lay.setSpacing(14)
+        lay.addSpacing(2 + 18)
+
+        def kicker(text: str):
+            return label(text, "kicker")
+
+        date_k = kicker("ДАТА")
+        date_k.setFixedWidth(_COL_DATE)
+        lay.addWidget(date_k)
+        contact_k = kicker("КОНТАКТ")
+        contact_k.setFixedWidth(_COL_CONTACT)
+        lay.addWidget(contact_k)
+        source_k = kicker("ОТКУДА")
+        source_k.setFixedWidth(_COL_SOURCE)
+        lay.addWidget(source_k)
+        content_k = kicker("СОДЕРЖАНИЕ")
+        lay.addWidget(content_k, 1)
+        status_k = kicker("СТАТУС")
+        status_k.setFixedWidth(_COL_STATUS)
+        status_k.setAlignment(Qt.AlignCenter)
+        lay.addWidget(status_k)
+        self.setStyleSheet(f"QWidget {{ border-bottom: 1px solid {theme.DIVIDER}; }}")
 
 
 class LeadsTab(QWidget):
@@ -91,8 +224,8 @@ class LeadsTab(QWidget):
         # С10: scoped to the *default* funnel's stages — every lead lives
         # there until a second funnel (П9, mail) actually has leads in
         # it, so this keeps matching every lead on screen today exactly.
-        # A per-row lead's own pill (see _status_pill above) still
-        # resolves against *that lead's own* funnel regardless, so a
+        # A per-row lead's own pill (see `_LeadRow`/`_StatusCell` above)
+        # still resolves against *that lead's own* funnel regardless, so a
         # future non-default-funnel lead renders correctly even though
         # it isn't one of these filter chips.
         self._default_stages = self.ctx.db.list_funnel_stages(self.ctx.db.default_funnel_id())
@@ -137,21 +270,28 @@ class LeadsTab(QWidget):
         outer.addLayout(filter_row)
         outer.addSpacing(12)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Дата", "Контакт", "Откуда", "Содержание", "Статус"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setShowGrid(False)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.cellClicked.connect(self._on_cell_clicked)
-        # Double-click anywhere opens the full card — the status column's
-        # single-click quick-advance (see the class docstring) is left
-        # alone, this is purely additive.
-        self.table.cellDoubleClicked.connect(self._on_open_card)
-        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._on_context_menu)
-        outer.addWidget(self.table, 1)
+        # "Таблица становится карточкой" (design-brief.md §4.3, та же
+        # геометрия строки, что у «Чаты» — chats.py's _ChatRow/_TableHeader
+        # — только без спарклайна: у заявки нет своей 30-дневной активности
+        # для графика).
+        self._rows: dict[int, _LeadRow] = {}
+        table_card = QFrame()
+        table_card.setProperty("class", "card")
+        table_lay = QVBoxLayout(table_card)
+        table_lay.setContentsMargins(0, 0, 0, 0)
+        table_lay.setSpacing(0)
+        table_lay.addWidget(_LeadTableHeader())
+
+        self.rows_scroll = QScrollArea()
+        self.rows_scroll.setWidgetResizable(True)
+        self.rows_scroll.setFrameShape(QFrame.NoFrame)
+        rows_host = QWidget()
+        self.rows_lay = QVBoxLayout(rows_host)
+        self.rows_lay.setContentsMargins(0, 0, 0, 0)
+        self.rows_lay.setSpacing(0)
+        self.rows_scroll.setWidget(rows_host)
+        table_lay.addWidget(self.rows_scroll, 1)
+        outer.addWidget(table_card, 1)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -202,9 +342,9 @@ class LeadsTab(QWidget):
         )
         counts = db.leads_status_counts()
         for key, btn in self.status_chips.items():
-            label = "Все" if key == "all" else lead_domain.label_for_stage(self._default_stages, key)
+            chip_label = "Все" if key == "all" else lead_domain.label_for_stage(self._default_stages, key)
             n = len(all_leads) if key == "all" else counts.get(key, 0)
-            btn.setText(f"{label} ({n})" if n else label)
+            btn.setText(f"{chip_label} ({n})" if n else chip_label)
 
         # С10: bucketed per-lead against each lead's own funnel — see
         # today.py's identical comment (list_leads() here has no funnel
@@ -227,59 +367,61 @@ class LeadsTab(QWidget):
         )
         self.undo_btn.setVisible(self._undo is not None)
 
-        self.table.setRowCount(len(leads))
-        for row, lead in enumerate(leads):
-            date_item = QTableWidgetItem(short_dt(lead["created_at"]))
-            date_item.setData(Qt.UserRole, lead["id"])
-            self.table.setItem(row, 0, date_item)
+        seen = set()
+        for lead in leads:
+            lead_id = lead["id"]
+            seen.add(lead_id)
 
             contact = db.get_contact(lead["contact_id"]) if lead["contact_id"] else None
             handle = lead["display_name"] or \
                 (f"@{lead['username']}" if lead["username"] else None) or \
                 (f"@{contact['username']}" if contact and contact["username"] else None) or \
                 (str(contact["telegram_id"]) if contact else "—")
-            manager = lead["manager"] or "не назначена"
-            self.table.setItem(row, 1, QTableWidgetItem(f"{handle}\n{manager}"))
+            manager_text = lead["manager"] or "не назначена"
 
             # Not every lead has a bot behind it any more (С3: manual and
             # message-based creation) — fall back to the source label
             # rather than a bare "бот None".
             bot = db.get_bot(lead["bot_id"]) if lead["bot_id"] else None
             source_text = bot["name"] if bot else lead_domain.label_for_source_type(lead["source_type"])
-            self.table.setItem(row, 2, QTableWidgetItem(source_text))
 
             try:
                 content = json.loads(lead["content"])
                 summary = "; ".join(f"{k}: {v}" for k, v in content.items()) if content else "—"
             except (json.JSONDecodeError, TypeError):
                 summary = "—"
-            self.table.setItem(row, 3, QTableWidgetItem(summary))
 
             stage = lead_domain.stage_for_code(_stages_for(lead["funnel_id"]), lead["status"])
-            self.table.setCellWidget(row, 4, _status_pill(stage))
-            self.table.setRowHeight(row, 44)
 
-        self.table.resizeColumnsToContents()
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        # resizeColumnsToContents measures the item text, not a cell widget,
-        # so the status pills would come out clipped without an explicit
-        # floor; same for the two-line contact cell.
-        header.setSectionResizeMode(4, QHeaderView.Fixed)
-        self.table.setColumnWidth(4, 140)
-        if self.table.columnWidth(1) < 170:
-            self.table.setColumnWidth(1, 170)
+            row = self._rows.get(lead_id)
+            if row is None:
+                row = _LeadRow(lead_id)
+                row.doubleClicked.connect(lambda lid=lead_id: self._open_card(lid))
+                row.statusClicked.connect(lambda lid=lead_id: self._quick_advance(lid))
+                row.contextRequested.connect(lambda pos, lid=lead_id, r=row: self._on_row_context_menu(lid, r, pos))
+                self._rows[lead_id] = row
+            row.set_data(short_dt(lead["created_at"]), handle, manager_text, source_text, summary, stage)
 
-    def _lead_id_at(self, row: int) -> int | None:
-        item = self.table.item(row, 0)
-        return item.data(Qt.UserRole) if item else None
+        for lead_id in list(self._rows):
+            if lead_id not in seen:
+                gone = self._rows.pop(lead_id)
+                gone.setParent(None)
+                gone.deleteLater()
 
-    def _on_cell_clicked(self, row: int, col: int) -> None:
-        if col != 4:  # status column only — see the class docstring
-            return
-        lead_id = self._lead_id_at(row)
-        if lead_id is None:
-            return
+        # Detach every remaining row from the layout (widgets survive —
+        # just get reparented out) so the current filtered/sorted order
+        # can be rebuilt cleanly each tick — same technique as Д6's bot
+        # grid in `list_tab.py`.
+        while self.rows_lay.count():
+            item = self.rows_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        for lead in leads:
+            self.rows_lay.addWidget(self._rows[lead["id"]])
+        self.rows_lay.addStretch(1)
+
+    def _quick_advance(self, lead_id: int) -> None:
         lead = self.ctx.db.get_lead(lead_id)
         if not lead:
             return
@@ -311,24 +453,15 @@ class LeadsTab(QWidget):
                                     "Не удалось восстановить предыдущий статус.")
         self.refresh()
 
-    def _on_context_menu(self, pos) -> None:
-        row = self.table.rowAt(pos.y())
-        lead_id = self._lead_id_at(row) if row >= 0 else None
-        if lead_id is None:
-            return
+    def _on_row_context_menu(self, lead_id: int, row: _LeadRow, pos) -> None:
         menu = QMenu(self)
         open_card = menu.addAction("Открыть карточку")
         reassign = menu.addAction("Переназначить менеджера…")
-        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        chosen = menu.exec(row.mapToGlobal(pos))
         if chosen == open_card:
             self._open_card(lead_id)
         elif chosen == reassign:
             self._reassign(lead_id)
-
-    def _on_open_card(self, row: int, _col: int) -> None:
-        lead_id = self._lead_id_at(row)
-        if lead_id is not None:
-            self._open_card(lead_id)
 
     def _open_card(self, lead_id: int) -> None:
         dialog = LeadCardDialog(self.ctx, lead_id, parent=self)

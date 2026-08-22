@@ -125,7 +125,7 @@ class _StubCtx:
 from chatgrab.ui.screens.bots.leads_tab import LeadsTab
 tab = LeadsTab(_StubCtx(db))
 tab._set_filter("new")
-assert tab.table.rowCount() == len(scoped) == 1, tab.table.rowCount()
+assert len(tab._rows) == len(scoped) == 1, len(tab._rows)
 print("  ok — на экране ровно одна строка на чипе «new», как и должно быть")
 
 

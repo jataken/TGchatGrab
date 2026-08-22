@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
+from ... import theme
 from ...context import AppContext
-from ...widgets import button, card, h1, label, muted
+from ...widgets import Card, button, h1, label, muted
 from .leads_tab import LeadsTab
 
 
@@ -32,14 +33,14 @@ class LeadsScreen(QWidget):
         bridges = QGridLayout()
         bridges.setSpacing(12)
 
-        good = card()
+        good = Card()
         good_lay = QVBoxLayout(good)
         good_lay.setContentsMargins(16, 14, 16, 14)
         good_row = QHBoxLayout()
         good_row.addWidget(label("Найденное в чате — в заявки"))
         good_tag = label("рекомендую")
         good_tag.setStyleSheet(
-            "background: rgba(120,190,150,40); color: #bfe5cd; border-radius: 6px; "
+            f"background: rgba(120,190,150,40); color: {theme.GOOD_FG}; border-radius: 6px; "
             "padding: 2px 9px; font-size: 11px;"
         )
         good_row.addStretch(1)
@@ -57,14 +58,14 @@ class LeadsScreen(QWidget):
         good_lay.addWidget(good_btn)
         bridges.addWidget(good, 0, 0)
 
-        risky = card()
+        risky = Card()
         risky_lay = QVBoxLayout(risky)
         risky_lay.setContentsMargins(16, 14, 16, 14)
         risky_row = QHBoxLayout()
         risky_row.addWidget(label("Написать авторам из собранного"))
         risky_tag = label("риск блокировки")
         risky_tag.setStyleSheet(
-            "background: rgba(180,70,90,40); color: #f0c6cf; border-radius: 6px; "
+            f"background: rgba(180,70,90,40); color: {theme.BAD_FG}; border-radius: 6px; "
             "padding: 2px 9px; font-size: 11px;"
         )
         risky_row.addStretch(1)
