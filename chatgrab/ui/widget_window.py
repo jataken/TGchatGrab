@@ -21,13 +21,13 @@ import datetime as dt
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
 
 from . import theme
 from .context import AppContext
 from .util import fire, run_blocking
-from .widgets import ActivityBars, LiveChart, button, chip, label, muted
+from .widgets import Card, LiveChart, MetricsBar, Sparkline, StatusPill, button, chip, label, muted
 from ..core import lead as lead_domain
 
 _SETTINGS_KEY = "desktop_widget"
@@ -63,18 +63,22 @@ def _load_state(db) -> dict:
     return state
 
 
-class _ClickableFrame(QFrame):
+class _ClickableFrame(Card):
     """A row that opens something on a plain click. A child button (the
     per-row "apply a label" toggle) still gets its own click first —
     Qt routes a press to the topmost widget under the cursor, so a click
     squarely on a QPushButton never reaches this frame's mousePressEvent
-    at all; nothing extra to swallow here."""
+    at all; nothing extra to swallow here.
 
-    def __init__(self, on_click):
-        super().__init__()
+    `Card`, not a bare `QFrame` with `class="card"` — the triage-score
+    stripe used to be a one-off `setStyleSheet(f"border-left: 3px solid
+    ...")`; `Card.set_stripe_color()` (Д2) is the same 2px-stripe
+    component every other card in the app already uses for exactly this."""
+
+    def __init__(self, on_click, stripe_color: str | None = None):
+        super().__init__(stripe_color)
         self._on_click = on_click
         self.setCursor(Qt.PointingHandCursor)
-        self.setProperty("class", "card")
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton and self._on_click:
@@ -209,11 +213,16 @@ class WidgetWindow(QWidget):
         collect_lay = QVBoxLayout(self.collect_section)
         collect_lay.setContentsMargins(0, 0, 0, 0)
         collect_lay.setSpacing(4)
-        collect_lay.addWidget(muted("СБОР"))
+        collect_head = QHBoxLayout()
+        collect_head.addWidget(label("СБОР", "kicker"))
+        collect_head.addStretch(1)
+        self.collect_status_pill = StatusPill("idle")
+        collect_head.addWidget(self.collect_status_pill)
+        collect_lay.addLayout(collect_head)
         self.collect_chart = LiveChart(height=48)
         collect_lay.addWidget(self.collect_chart)
-        self.collect_status_label = muted("")
-        collect_lay.addWidget(self.collect_status_label)
+        self.collect_metrics = MetricsBar()
+        collect_lay.addWidget(self.collect_metrics)
         outer.addWidget(self.collect_section)
 
         # ---- боты ----
@@ -221,11 +230,23 @@ class WidgetWindow(QWidget):
         bots_lay = QVBoxLayout(self.bots_section)
         bots_lay.setContentsMargins(0, 0, 0, 0)
         bots_lay.setSpacing(4)
-        bots_lay.addWidget(muted("БОТЫ"))
-        self.bots_chart = ActivityBars(height=36)
+        bots_head = QHBoxLayout()
+        bots_head.addWidget(label("БОТЫ", "kicker"))
+        bots_head.addStretch(1)
+        self.bots_status_pill = StatusPill("idle")
+        bots_head.addWidget(self.bots_status_pill)
+        bots_lay.addLayout(bots_head)
+        # Sparkline (Д2, §3.6), не ActivityBars — тот самый отложенный с Д2
+        # перевод виджета на неё; `_last_bot_series` ниже следит, чтобы
+        # set_values() не дёргался на каждый тик таймера без реальных
+        # изменений — Sparkline анимирует вход при каждом set_values(),
+        # а брифовое предупреждение против анимации «на каждый рефреш»
+        # относится именно к этому.
+        self.bots_chart = Sparkline(height=36)
+        self._last_bot_series: list[int] | None = None
         bots_lay.addWidget(self.bots_chart)
-        self.bots_status_label = muted("")
-        bots_lay.addWidget(self.bots_status_label)
+        self.bots_metrics = MetricsBar()
+        bots_lay.addWidget(self.bots_metrics)
         outer.addWidget(self.bots_section)
 
         outer.addStretch(1)
@@ -300,10 +321,9 @@ class WidgetWindow(QWidget):
             if self.on_open_thread and thread_id is not None:
                 self.on_open_thread(mailbox_id, thread_id)
 
-        frame = _ClickableFrame(_open)
         score = message["triage_score"]
-        if score is not None and score >= threshold:
-            frame.setStyleSheet(f"QFrame {{ border-left: 3px solid {theme.ACCENT}; }}")
+        important = score is not None and score >= threshold
+        frame = _ClickableFrame(_open, stripe_color=theme.ACCENT if important else None)
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(2)
@@ -380,16 +400,27 @@ class WidgetWindow(QWidget):
         chats = self.ctx.db.list_chats()
         active = [c for c in chats if c["enabled"]]
         errors = [c for c in chats if c["last_error"]]
-        text = f"{len(active)} из {len(chats)} чатов в работе"
+        loading = any(c["status"] == "loading" for c in chats)
         if errors:
-            text += f" · ошибок: {len(errors)}"
-        self.collect_status_label.setText(text)
+            status = "error"
+        elif loading:
+            status = "loading"
+        elif active:
+            status = "listening"
+        else:
+            status = "off"
+        self.collect_status_pill.set_status(status)
+        cells = [("ЧАТЫ", f"{len(active)}/{len(chats)}", "")]
+        if errors:
+            cells.append(("ОШИБОК", str(len(errors)), ""))
+        self.collect_metrics.set_cells(cells)
 
     def _refresh_bots(self) -> None:
         db = self.ctx.db
         bots = db.list_bots()
         leads = db.list_leads()
         running = [b for b in bots if b["status"] == "running"]
+        errors = [b for b in bots if b["status"] == "error"]
         # С10: "новая" is derived per-lead against that lead's own
         # funnel, not a hardcoded status — see today.py's identical
         # comment for why (leads can span more than one funnel).
@@ -402,11 +433,21 @@ class WidgetWindow(QWidget):
 
         new_leads = [lead for lead in leads
                      if lead_domain.bucket_for_stage(_stages_for(lead["funnel_id"]), lead["status"]) == "new"]
-        self.bots_chart.set_values(self._weekly_lead_series(leads))
-        text = f"{len(running)} из {len(bots)} ботов работает"
+        series = self._weekly_lead_series(leads)
+        if series != self._last_bot_series:
+            self._last_bot_series = series
+            self.bots_chart.set_values(series)
+        if errors:
+            status = "error"
+        elif running:
+            status = "running"
+        else:
+            status = "stopped"
+        self.bots_status_pill.set_status(status)
+        cells = [("БОТЫ", f"{len(running)}/{len(bots)}", "")]
         if new_leads:
-            text += f" · новых заявок: {len(new_leads)}"
-        self.bots_status_label.setText(text)
+            cells.append(("НОВЫХ", str(len(new_leads)), ""))
+        self.bots_metrics.set_cells(cells)
 
     def _weekly_lead_series(self, leads) -> list[int]:
         today = dt.date.today()

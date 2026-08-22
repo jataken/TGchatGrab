@@ -343,6 +343,19 @@ def build_qss() -> str:
     QToolTip {{
         background: {SURFACE}; color: {TEXT}; border: 1px solid {DIVIDER}; padding: 4px 8px;
     }}
+
+    /* Д10: трей строит свой контекстное меню (`QMenu()`, tray.py) как
+       обычный QWidget — без явных правил здесь оно рисовалось нативной
+       (обычно светлой) палитрой ОС поверх тёмного приложения. Та же
+       палитра выделения, что и у QAbstractItemView выше. */
+    QMenu {{
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {DIVIDER}; border-radius: {RADIUS_BUTTON}px;
+        padding: 4px;
+    }}
+    QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 5px; }}
+    QMenu::item:selected {{ background: rgba(145,132,217,60); color: {ACCENT_100}; }}
+    QMenu::item:disabled {{ color: {TEXT_FAINT}; }}
+    QMenu::separator {{ height: 1px; background: {DIVIDER}; margin: 4px 8px; }}
     """
 
 

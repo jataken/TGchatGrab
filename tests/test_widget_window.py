@@ -180,7 +180,7 @@ print("  текст строки:", repr(all_text))
 assert "●" in all_text, "письмо не прочитано — должна быть точка"
 assert "irina@client.ru" in all_text or "Запрос" in all_text
 assert "📎" in all_text, "у письма есть вложение — должна быть скрепка"
-assert row_widget.styleSheet(), "балл выше порога — должна быть подсветка рамкой"
+assert row_widget._stripe_color, "балл выше порога — должна быть подсветка полосой (Card.set_stripe_color)"
 print("  ok")
 
 print("\n== ярлык в один клик из виджета: разворачивает плашки, клик применяет к цепочке ==")
@@ -220,9 +220,11 @@ db.add_chat(2002, "Чат Б", "chb", "all", None)
 db.set_chat_field(2002, enabled=0)
 db.set_chat_field(2001, last_error="недоступен")
 widget._refresh_collect_status()
-print("  ", widget.collect_status_label.text())
-assert "1 из 2" in widget.collect_status_label.text()
-assert "ошибок: 1" in widget.collect_status_label.text()
+print("  ", widget.collect_status_pill._text.text(), widget.collect_metrics._value_labels[0].text(),
+      widget.collect_metrics._value_labels[1].text())
+assert widget.collect_status_pill._text.text() == "ошибка"
+assert widget.collect_metrics._value_labels[0].text() == "1/2"
+assert widget.collect_metrics._value_labels[1].text() == "1"
 print("  ok")
 
 print("\n== боты: недельная серия заявок и счётчики ==")
@@ -232,11 +234,12 @@ contact = db.upsert_contact(555, "irina", "Ирина")
 db.add_lead(contact, bot_id, {"company": "Аврора"})
 widget._refresh_bots()
 series = widget.bots_chart._values
-print("  недельная серия:", series, "| статус:", widget.bots_status_label.text())
+print("  недельная серия:", series, "| статус:", widget.bots_status_pill._text.text())
 assert len(series) == 7
 assert sum(series) == 1, "один лид, заведённый только что, должен попасть в сегодняшний бакет"
-assert "1 из 1" in widget.bots_status_label.text()
-assert "новых заявок: 1" in widget.bots_status_label.text()
+assert widget.bots_status_pill._text.text() == "работает"
+assert widget.bots_metrics._value_labels[0].text() == "1/1"
+assert widget.bots_metrics._value_labels[1].text() == "1"
 print("  ok")
 
 print("\n== виджет ничего не опрашивает сам: скорость сбора считается по локальному COUNT(*) ==")
