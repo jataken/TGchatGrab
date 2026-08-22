@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from ...context import AppContext
 from ...format import human_size
-from ...widgets import button, card, h1, label, muted, plural
+from ...widgets import Card, button, h1, label, muted, plural
 from ....core import lead as lead_domain
 from ....core import lead_report
 
@@ -96,31 +96,39 @@ class MailReportsScreen(QWidget):
         outer.addLayout(period_row)
         outer.addSpacing(16)
 
-        outer.addWidget(muted("СВОДНЫЙ ОТЧЁТ ПО КАНАЛАМ"))
+        channel_card = Card()
+        channel_lay = QVBoxLayout(channel_card)
+        channel_lay.setContentsMargins(16, 14, 16, 14)
+        channel_lay.addWidget(label("СВОДНЫЙ ОТЧЁТ ПО КАНАЛАМ", "kicker"))
         self.channel_table = _report_table(
             ["Канал", "Всего", "Сделки", "Отказы", "В работе", "Конверсия, %", "Средний срок, дн."])
-        outer.addWidget(self.channel_table)
+        channel_lay.addWidget(self.channel_table)
+        outer.addWidget(channel_card)
         outer.addSpacing(16)
 
-        outer.addWidget(muted("КАНАЛ × НАПРАВЛЕНИЕ"))
+        cross_card = Card()
+        cross_lay = QVBoxLayout(cross_card)
+        cross_lay.setContentsMargins(16, 14, 16, 14)
+        cross_lay.addWidget(label("КАНАЛ × НАПРАВЛЕНИЕ", "kicker"))
         self.cross_table = _report_table(["Канал", "Направление", "Заявок"])
-        outer.addWidget(self.cross_table)
+        cross_lay.addWidget(self.cross_table)
+        outer.addWidget(cross_card)
         outer.addSpacing(16)
 
         resp_row = QHBoxLayout()
-        by_mailbox_card = card()
+        by_mailbox_card = Card()
         bm_lay = QVBoxLayout(by_mailbox_card)
         bm_lay.setContentsMargins(16, 14, 16, 14)
-        bm_lay.addWidget(muted("СКОРОСТЬ ОТВЕТА ПО ЯЩИКАМ"))
+        bm_lay.addWidget(label("СКОРОСТЬ ОТВЕТА ПО ЯЩИКАМ", "kicker"))
         self.mailbox_resp_table = _report_table(["Ящик", "Среднее, ч", "Худшее, ч", "Писем"])
         self.mailbox_resp_table.setMaximumHeight(180)
         bm_lay.addWidget(self.mailbox_resp_table)
         resp_row.addWidget(by_mailbox_card, 1)
 
-        by_direction_card = card()
+        by_direction_card = Card()
         bd_lay = QVBoxLayout(by_direction_card)
         bd_lay.setContentsMargins(16, 14, 16, 14)
-        bd_lay.addWidget(muted("СКОРОСТЬ ОТВЕТА ПО НАПРАВЛЕНИЯМ"))
+        bd_lay.addWidget(label("СКОРОСТЬ ОТВЕТА ПО НАПРАВЛЕНИЯМ", "kicker"))
         self.direction_resp_table = _report_table(["Направление", "Среднее, ч", "Худшее, ч", "Писем"])
         self.direction_resp_table.setMaximumHeight(180)
         bd_lay.addWidget(self.direction_resp_table)
@@ -203,7 +211,7 @@ class MailReportsScreen(QWidget):
 
     # ---- retention (П10) -------------------------------------------------
     def _build_retention_card(self) -> QWidget:
-        c = card()
+        c = Card()
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.addWidget(label("РЕТЕНШН ПОЧТЫ", "kicker"))

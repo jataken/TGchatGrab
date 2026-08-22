@@ -14,9 +14,10 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...format import human_size, short_dt
-from ...widgets import card, h1, muted
+from ...widgets import Card, button, h1, muted
 
 _EXT_ALL = "Любой тип"
 
@@ -34,26 +35,36 @@ class MailAttachmentsScreen(QWidget):
         outer.addWidget(self.summary_label)
         outer.addSpacing(14)
 
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
+        # «Карточка фильтров» (design-brief.md §4.5): та же геометрия, что у
+        # browse.py — Card() с полями на SURFACE_INPUT, справа счётчик и
+        # «Сбросить».
+        filters_card = Card()
+        filters_lay = QHBoxLayout(filters_card)
+        filters_lay.setContentsMargins(14, 12, 14, 12)
+        filters_lay.setSpacing(8)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Поиск по имени файла…")
+        self.search_input.setStyleSheet(f"background: {theme.SURFACE_INPUT};")
         self.search_input.textChanged.connect(lambda _t: self.refresh())
-        filter_row.addWidget(self.search_input, 1)
+        filters_lay.addWidget(self.search_input, 2)
         self.sender_input = QLineEdit()
         self.sender_input.setPlaceholderText("Отправитель…")
+        self.sender_input.setStyleSheet(f"background: {theme.SURFACE_INPUT};")
         self.sender_input.textChanged.connect(lambda _t: self.refresh())
-        filter_row.addWidget(self.sender_input, 1)
+        filters_lay.addWidget(self.sender_input, 1)
         self.mailbox_combo = QComboBox()
         self.mailbox_combo.currentIndexChanged.connect(lambda _i: self.refresh())
-        filter_row.addWidget(self.mailbox_combo)
+        filters_lay.addWidget(self.mailbox_combo)
         self.ext_combo = QComboBox()
         self.ext_combo.currentIndexChanged.connect(lambda _i: self.refresh())
-        filter_row.addWidget(self.ext_combo)
-        outer.addLayout(filter_row)
+        filters_lay.addWidget(self.ext_combo)
+        clear_btn = button("Сбросить", "secondary")
+        clear_btn.clicked.connect(self._clear_filters)
+        filters_lay.addWidget(clear_btn)
+        outer.addWidget(filters_card)
         outer.addSpacing(10)
 
-        list_card = card()
+        list_card = Card()
         list_lay = QVBoxLayout(list_card)
         list_lay.setContentsMargins(16, 12, 16, 14)
         self.table = QTableWidget(0, 5)
@@ -126,6 +137,12 @@ class MailAttachmentsScreen(QWidget):
         self.table.resizeColumnsToContents()
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(2, QHeaderView.Stretch)
+
+    def _clear_filters(self) -> None:
+        self.search_input.clear()
+        self.sender_input.clear()
+        self.mailbox_combo.setCurrentIndex(0)
+        self.ext_combo.setCurrentIndex(0)
 
     def _on_open(self, row: int, _col: int) -> None:
         item = self.table.item(row, 0)

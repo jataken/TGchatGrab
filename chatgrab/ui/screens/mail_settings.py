@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel,
+    QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel,
     QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from ..context import AppContext
 from ..format import short_dt
 from ..util import fire, run_blocking
-from ..widgets import FieldRow, button, card, h1, muted
+from ..widgets import Card, FieldRow, StatusPill, ToggleSwitch, button, h1, label, muted
 from ...integrations.mail import credentials as mail_credentials
 from ...integrations.mail.imap_client import autodetect
 
@@ -82,13 +82,13 @@ class FolderManagerDialog(QDialog):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(8)
 
-        label = folder["name"]
+        row_label = folder["name"]
         if folder["special_use"]:
-            label += f"  · {_SPECIAL_USE_LABELS.get(folder['special_use'], folder['special_use'])}"
-        rl.addWidget(QLabel(label), 1)
+            row_label += f"  · {_SPECIAL_USE_LABELS.get(folder['special_use'], folder['special_use'])}"
+        rl.addWidget(QLabel(row_label), 1)
 
-        subscribed = QCheckBox("синхронизировать")
-        subscribed.setChecked(bool(folder["enabled"]))
+        rl.addWidget(muted("синхронизировать"))
+        subscribed = ToggleSwitch(bool(folder["enabled"]))
         subscribed.toggled.connect(lambda checked, n=folder["name"]: self._on_toggle_subscribed(n, checked))
         rl.addWidget(subscribed)
 
@@ -182,7 +182,7 @@ class IdentityManagerDialog(QDialog):
             "Личность — это «от кого» и подпись письма. Первая добавленная "
             "становится личностью по умолчанию."))
 
-        form = card()
+        form = Card()
         form_lay = QVBoxLayout(form)
         self.name_field = FieldRow("Имя", placeholder="Иван Иванов")
         form_lay.addWidget(self.name_field)
@@ -291,7 +291,7 @@ class LabelManagerDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
-        form = card()
+        form = Card()
         form_lay = QVBoxLayout(form)
         self.name_field = FieldRow("Название", placeholder="Например, «Заказ»")
         form_lay.addWidget(self.name_field)
@@ -441,9 +441,9 @@ class LabelManagerDialog(QDialog):
         task.add_done_callback(_apply)
 
 
-def _ask_text(parent, title: str, label: str, initial: str) -> tuple[str, bool]:
+def _ask_text(parent, title: str, prompt: str, initial: str) -> tuple[str, bool]:
     from PySide6.QtWidgets import QInputDialog
-    return QInputDialog.getText(parent, title, label, text=initial)
+    return QInputDialog.getText(parent, title, prompt, text=initial)
 
 
 class MailSettingsScreen(QWidget):
@@ -476,11 +476,11 @@ class MailSettingsScreen(QWidget):
 
     # ---- добавление ------------------------------------------------------
     def _build_add_card(self) -> QWidget:
-        c = card()
+        c = Card()
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
-        lay.addWidget(muted("ДОБАВИТЬ ЯЩИК"))
+        lay.addWidget(label("ДОБАВИТЬ ЯЩИК", "kicker"))
         hint = muted(
             "Для Яндекса, Mail.ru, Gmail и Rambler сервер определяется по адресу "
             "автоматически. Для остальных — впишите его вручную ниже."
@@ -624,11 +624,11 @@ class MailSettingsScreen(QWidget):
 
     # ---- список ------------------------------------------------------
     def _build_list_card(self) -> QWidget:
-        c = card()
+        c = Card()
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
-        lay.addWidget(muted("ЯЩИКИ"))
+        lay.addWidget(label("ЯЩИКИ", "kicker"))
         self.list_box = QVBoxLayout()
         self.list_box.setSpacing(6)
         lay.addLayout(self.list_box)
@@ -661,8 +661,7 @@ class MailSettingsScreen(QWidget):
 
         info = QVBoxLayout()
         info.setSpacing(1)
-        title = mb["address"] + ("" if mb["enabled"] else " · выключен")
-        info.addWidget(QLabel(title))
+        info.addWidget(QLabel(mb["address"]))
         count = self.ctx.db.count_mail_messages(mb["id"])
         detail = f"писем: {count}"
         detail += f" · синхронизирован {short_dt(mb['last_sync_at'])}" if mb["last_sync_at"] \
@@ -671,6 +670,19 @@ class MailSettingsScreen(QWidget):
             detail += f" · ошибка: {mb['last_error']}"
         info.addWidget(muted(detail))
         rl.addLayout(info, 1)
+
+        # «Плашка состояния подключения» (design-brief.md §4.2) — та же
+        # StatusPill, что и chats.py/collect.py, на статусах её же словаря
+        # (error/listening/queued/off), а не своя новая палитра.
+        if mb["last_error"]:
+            status = "error"
+        elif not mb["enabled"]:
+            status = "off"
+        elif mb["last_sync_at"]:
+            status = "listening"
+        else:
+            status = "queued"
+        rl.addWidget(StatusPill(status))
 
         folders_btn = button("Папки", "ghost")
         folders_btn.clicked.connect(lambda _c, m=mb["id"], a=mb["address"]: self._on_manage_folders(m, a))

@@ -320,7 +320,7 @@ tg_lead_id = db.add_lead(None, None, {"text": "телеграм-заявка"}, 
 screen = MailLeadsScreen(stub_ctx, lambda *a, **kw: None)
 screen.on_show()
 assert screen._funnel_id == mail_funnel["id"]
-shown_ids = {screen.table.item(r, 0).data(Qt.UserRole) for r in range(screen.table.rowCount())}
+shown_ids = set(screen.rows.keys())
 assert tg_lead_id not in shown_ids, "телеграмная заявка не должна попасть на почтовый экран"
 assert lead_id in shown_ids
 print("  ok —", len(shown_ids), "заявок на экране, телеграмная заявка отфильтрована")

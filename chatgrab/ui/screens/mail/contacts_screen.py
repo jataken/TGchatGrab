@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
-from ...widgets import button, card, h1, muted, plural
+from ...widgets import Card, button, h1, muted, plural
 
 _CSV_FIELDS = ["address", "display_name", "group_name"]
 
@@ -120,7 +120,7 @@ class MailContactsScreen(QWidget):
         outer.addLayout(filter_row)
         outer.addSpacing(10)
 
-        list_card = card()
+        list_card = Card()
         list_lay = QVBoxLayout(list_card)
         list_lay.setContentsMargins(16, 12, 16, 14)
         self.table = QTableWidget(0, 6)

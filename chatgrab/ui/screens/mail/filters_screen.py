@@ -16,14 +16,14 @@ import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QComboBox, QDialog, QFrame, QHBoxLayout, QHeaderView,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...context import AppContext
 from ...format import short_dt
-from ...widgets import button, card, h1, label, muted
+from ...widgets import Card, TabletCheckBox, ToggleSwitch, button, h1, label, muted
 
 _FIELD_LABELS = [
     ("sender", "Отправитель"),
@@ -135,10 +135,10 @@ class FilterDialog(QDialog):
         self.move_input.setPlaceholderText("Переместить в папку (имя папки, необязательно)")
         lay.addWidget(self.move_input)
 
-        self.mark_read_cb = QCheckBox("Пометить прочитанным")
+        self.mark_read_cb = TabletCheckBox("Пометить прочитанным")
         self.mark_read_cb.setChecked(bool(filt["mark_read"]) if filt else False)
         lay.addWidget(self.mark_read_cb)
-        self.no_notify_cb = QCheckBox("Не уведомлять")
+        self.no_notify_cb = TabletCheckBox("Не уведомлять")
         self.no_notify_cb.setChecked(bool(filt["no_notify"]) if filt else False)
         lay.addWidget(self.no_notify_cb)
 
@@ -211,7 +211,7 @@ class MailFiltersScreen(QWidget):
         outer.addWidget(self._build_log_card(), 1)
 
     def _build_list_card(self) -> QWidget:
-        c = card()
+        c = Card()
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         add_row = QHBoxLayout()
@@ -233,7 +233,13 @@ class MailFiltersScreen(QWidget):
         return c
 
     def _build_log_card(self) -> QWidget:
-        c = card()
+        # design-brief.md §3.9 — тёмная лог-панель (LOG_BG), не обычная
+        # карточка: используется тот же QSS-класс "logpanel", что и
+        # collect.py (Д4), собственный список строк (не widgets.LogPanel
+        # — его схема колонок "время|чат|текст" не даёт места под
+        # кнопку «Отменить» на строку, которую требует этот журнал).
+        c = QFrame()
+        c.setProperty("class", "logpanel")
         lay = QVBoxLayout(c)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.addWidget(label("ЖУРНАЛ СРАБАТЫВАНИЙ", "kicker"))
@@ -268,10 +274,9 @@ class MailFiltersScreen(QWidget):
             enabled_holder = QWidget()
             enabled_lay = QHBoxLayout(enabled_holder)
             enabled_lay.setContentsMargins(8, 0, 0, 0)
-            enabled_cb = QCheckBox()
-            enabled_cb.setChecked(bool(row["enabled"]))
-            enabled_cb.toggled.connect(lambda on, fid=row["id"]: self._on_toggle(fid, on))
-            enabled_lay.addWidget(enabled_cb)
+            enabled_sw = ToggleSwitch(bool(row["enabled"]))
+            enabled_sw.toggled.connect(lambda on, fid=row["id"]: self._on_toggle(fid, on))
+            enabled_lay.addWidget(enabled_sw)
             self.table.setCellWidget(i, 3, enabled_holder)
 
             del_btn = button("Удалить", "ghost")

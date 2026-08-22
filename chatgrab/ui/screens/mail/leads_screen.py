@@ -6,25 +6,28 @@ funnel_id (почтовой воронке из migration 020), а не чита
 сторону: там воронка одна на весь экран по умолчанию, здесь — жёстко
 одна и только эта.
 
-Планировка и приёмы (таблица, чипы-фильтры по статусу, клик по колонке
-статуса = один шаг воронки) намеренно скопированы с leads_tab.py, а не
-вынесены в общий модуль — два экрана расходятся ровно настолько, чтобы
-общая база всё ещё была бы лишним слоем ради содержимого в одну функцию.
+Планировка и приёмы (таблица-карточка §4.3, чипы-фильтры по статусу, клик
+по колонке статуса = один шаг воронки) намеренно скопированы с
+leads_tab.py (включая геометрию его Д7-переверстки — `_ChatRow`-стиль
+строк-виджетов), а не вынесены в общий модуль — два экрана расходятся
+ровно настолько, чтобы общая база всё ещё была бы лишним слоем ради
+содержимого в одну функцию.
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QHBoxLayout, QHeaderView,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QFrame, QHBoxLayout, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
+from ... import theme
 from ...context import AppContext
 from ...format import short_dt
-from ...widgets import LeadStatusPill, chip, h1, muted
+from ...widgets import LeadStatusPill, chip, h1, label, muted
 from ....core import lead as lead_domain
 from ..bots.lead_card import LeadCardDialog
 
@@ -35,14 +38,138 @@ _DATE_RANGES = [
     ("30d", "30 дней", 30),
 ]
 
+_COL_DATE = 100
+_COL_CONTACT = 190
+_COL_SUBJECT = 160
+_COL_STATUS = 150
+_FALLBACK_DOT = "rgba(140,140,150,140)"
 
-def _status_pill(stage) -> QWidget:
-    host = QWidget()
-    lay = QHBoxLayout(host)
-    lay.setContentsMargins(8, 0, 8, 0)
-    lay.addWidget(LeadStatusPill(stage, font_size="11.5px"))
-    lay.addStretch(1)
-    return host
+
+class _StatusCell(QWidget):
+    """Тот же клик-квант продвижения по воронке, что и в leads_tab.py's
+    (Д7) одноимённом классе."""
+
+    clicked = Signal()
+
+    def __init__(self, stage):
+        super().__init__()
+        self.setFixedWidth(_COL_STATUS)
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setAlignment(Qt.AlignCenter)
+        self.pill = LeadStatusPill(stage, font_size="11.5px")
+        lay.addWidget(self.pill)
+
+    def set_stage(self, stage) -> None:
+        self.pill.set_stage(stage)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.clicked.emit()
+        event.accept()
+
+
+class _MailLeadRow(QFrame):
+    """Строка списка (design-brief.md §4.3, та же геометрия, что у
+    `_LeadRow` в bots/leads_tab.py, Д7): 2px левая полоса цветом этапа
+    воронки, дата/контакт/тема/содержание/статус. Клик по статусу
+    продвигает этап, двойной клик открывает карточку."""
+
+    doubleClicked = Signal()
+    statusClicked = Signal()
+
+    def __init__(self, lead_id: int):
+        super().__init__()
+        self.lead_id = lead_id
+        self.setProperty("class", "tablerow")
+        self.setCursor(Qt.PointingHandCursor)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 11, 16, 11)
+        lay.setSpacing(14)
+
+        self.stripe = QWidget()
+        self.stripe.setFixedWidth(2)
+        lay.addWidget(self.stripe)
+        lay.addSpacing(18)
+
+        self.date_label = label("")
+        self.date_label.setFixedWidth(_COL_DATE)
+        self.date_label.setStyleSheet(
+            f"font-family: {theme.FONT_MONO}; font-size: 11px; color: {theme.TEXT_MUTED};"
+        )
+        lay.addWidget(self.date_label)
+
+        contact_col = QVBoxLayout()
+        contact_col.setSpacing(2)
+        self.name_label = label("")
+        self.name_label.setStyleSheet("font-size: 13px;")
+        contact_col.addWidget(self.name_label)
+        self.manager_label = label("")
+        self.manager_label.setStyleSheet(f"font-size: 10.5px; color: {theme.TEXT_FAINT};")
+        contact_col.addWidget(self.manager_label)
+        contact_wrap = QWidget()
+        contact_wrap.setFixedWidth(_COL_CONTACT)
+        contact_wrap.setLayout(contact_col)
+        lay.addWidget(contact_wrap)
+
+        self.subject_label = label("")
+        self.subject_label.setFixedWidth(_COL_SUBJECT)
+        self.subject_label.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_MUTED};")
+        lay.addWidget(self.subject_label)
+
+        self.content_label = label("")
+        self.content_label.setWordWrap(False)
+        lay.addWidget(self.content_label, 1)
+
+        self.status_cell = _StatusCell(None)
+        self.status_cell.clicked.connect(self.statusClicked)
+        lay.addWidget(self.status_cell)
+
+    def set_data(self, date_text: str, name_text: str, manager_text: str,
+                 subject_text: str, content_text: str, stage) -> None:
+        self.date_label.setText(date_text)
+        self.name_label.setText(name_text)
+        self.manager_label.setText(manager_text)
+        self.subject_label.setText(subject_text)
+        self.content_label.setText(content_text)
+        self.status_cell.set_stage(stage)
+        dot = stage["color_dot"] if stage is not None else _FALLBACK_DOT
+        self.stripe.setStyleSheet(f"background: {dot}; border-radius: 1px;")
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.doubleClicked.emit()
+
+
+class _MailLeadTableHeader(QWidget):
+    """Кикеры над списком строк — те же колонки, что и у `_MailLeadRow`."""
+
+    def __init__(self):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(20, 9, 16, 9)
+        lay.setSpacing(14)
+        lay.addSpacing(2 + 18)
+
+        def kicker(text: str):
+            return label(text, "kicker")
+
+        date_k = kicker("ДАТА")
+        date_k.setFixedWidth(_COL_DATE)
+        lay.addWidget(date_k)
+        contact_k = kicker("КОНТАКТ")
+        contact_k.setFixedWidth(_COL_CONTACT)
+        lay.addWidget(contact_k)
+        subject_k = kicker("ТЕМА")
+        subject_k.setFixedWidth(_COL_SUBJECT)
+        lay.addWidget(subject_k)
+        content_k = kicker("СОДЕРЖАНИЕ")
+        lay.addWidget(content_k, 1)
+        status_k = kicker("СТАТУС")
+        status_k.setFixedWidth(_COL_STATUS)
+        status_k.setAlignment(Qt.AlignCenter)
+        lay.addWidget(status_k)
+        self.setStyleSheet(f"QWidget {{ border-bottom: 1px solid {theme.DIVIDER}; }}")
 
 
 class MailLeadsScreen(QWidget):
@@ -53,6 +180,7 @@ class MailLeadsScreen(QWidget):
         self.status_filter = "all"
         self._funnel_id: int | None = None
         self._stages: list = []
+        self.rows: dict[int, _MailLeadRow] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(40, 28, 40, 32)
@@ -87,16 +215,25 @@ class MailLeadsScreen(QWidget):
         outer.addLayout(filter_row)
         outer.addSpacing(12)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Дата", "Контакт", "Тема", "Содержание", "Статус"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setShowGrid(False)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.cellClicked.connect(self._on_cell_clicked)
-        self.table.cellDoubleClicked.connect(self._on_open_card)
-        outer.addWidget(self.table, 1)
+        # "Таблица становится карточкой" (design-brief.md §4.3), та же
+        # геометрия, что у bots/leads_tab.py (Д7).
+        table_card = QFrame()
+        table_card.setProperty("class", "card")
+        table_lay = QVBoxLayout(table_card)
+        table_lay.setContentsMargins(0, 0, 0, 0)
+        table_lay.setSpacing(0)
+        table_lay.addWidget(_MailLeadTableHeader())
+
+        self.rows_scroll = QScrollArea()
+        self.rows_scroll.setWidgetResizable(True)
+        self.rows_scroll.setFrameShape(QFrame.NoFrame)
+        rows_host = QWidget()
+        self.rows_lay = QVBoxLayout(rows_host)
+        self.rows_lay.setContentsMargins(0, 0, 0, 0)
+        self.rows_lay.setSpacing(0)
+        self.rows_scroll.setWidget(rows_host)
+        table_lay.addWidget(self.rows_scroll, 1)
+        outer.addWidget(table_card, 1)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -168,7 +305,7 @@ class MailLeadsScreen(QWidget):
             # только на базе, где её кто-то удалил вручную из
             # «Воронки» (С10), что UI не мешает сделать.
             self.summary_label.setText("Почтовая воронка не найдена — создайте её на экране «Воронки».")
-            self.table.setRowCount(0)
+            self._clear_rows()
             return
 
         all_leads = db.list_leads(funnel_id=funnel_id)
@@ -179,9 +316,9 @@ class MailLeadsScreen(QWidget):
         )
         counts = db.leads_status_counts(funnel_id=funnel_id)
         for key, btn in self.status_chips.items():
-            label = "Все" if key == "all" else lead_domain.label_for_stage(self._stages, key)
+            chip_label = "Все" if key == "all" else lead_domain.label_for_stage(self._stages, key)
             n = len(all_leads) if key == "all" else counts.get(key, 0)
-            btn.setText(f"{label} ({n})" if n else label)
+            btn.setText(f"{chip_label} ({n})" if n else chip_label)
 
         n_new = len([l for l in all_leads if lead_domain.bucket_for_stage(self._stages, l["status"]) == "new"])
         n_active = len(
@@ -191,47 +328,57 @@ class MailLeadsScreen(QWidget):
             if all_leads else "заявок из почты пока нет"
         )
 
-        self.table.setRowCount(len(leads))
-        for row, lead in enumerate(leads):
-            date_item = QTableWidgetItem(short_dt(lead["created_at"]))
-            date_item.setData(Qt.UserRole, lead["id"])
-            self.table.setItem(row, 0, date_item)
+        seen = set()
+        for lead in leads:
+            lead_id = lead["id"]
+            seen.add(lead_id)
 
             handle = lead["display_name"] or lead["email"] or f"заявка №{lead['id']}"
-            manager = lead["manager"] or "не назначена"
-            self.table.setItem(row, 1, QTableWidgetItem(f"{handle}\n{manager}"))
-
-            self.table.setItem(row, 2, QTableWidgetItem(lead["product"] or "—"))
+            manager_text = lead["manager"] or "не назначена"
+            subject_text = lead["product"] or "—"
 
             try:
                 content = json.loads(lead["content"])
                 summary = "; ".join(f"{k}: {v}" for k, v in content.items()) if content else "—"
             except (json.JSONDecodeError, TypeError):
                 summary = "—"
-            self.table.setItem(row, 3, QTableWidgetItem(summary))
 
             stage = lead_domain.stage_for_code(self._stages, lead["status"])
-            self.table.setCellWidget(row, 4, _status_pill(stage))
-            self.table.setRowHeight(row, 44)
 
-        self.table.resizeColumnsToContents()
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.Fixed)
-        self.table.setColumnWidth(4, 140)
-        if self.table.columnWidth(1) < 170:
-            self.table.setColumnWidth(1, 170)
+            row = self.rows.get(lead_id)
+            if row is None:
+                row = _MailLeadRow(lead_id)
+                row.doubleClicked.connect(lambda lid=lead_id: self._open_card(lid))
+                row.statusClicked.connect(lambda lid=lead_id: self._quick_advance(lid))
+                self.rows[lead_id] = row
+            row.set_data(short_dt(lead["created_at"]), handle, manager_text, subject_text, summary, stage)
 
-    def _lead_id_at(self, row: int) -> int | None:
-        item = self.table.item(row, 0)
-        return item.data(Qt.UserRole) if item else None
+        self._prune_and_reflow(seen, leads)
 
-    def _on_cell_clicked(self, row: int, col: int) -> None:
-        if col != 4:
-            return
-        lead_id = self._lead_id_at(row)
-        if lead_id is None:
-            return
+    def _clear_rows(self) -> None:
+        self._prune_and_reflow(set(), [])
+
+    def _prune_and_reflow(self, seen: set[int], leads: list) -> None:
+        for lead_id in list(self.rows):
+            if lead_id not in seen:
+                gone = self.rows.pop(lead_id)
+                gone.setParent(None)
+                gone.deleteLater()
+
+        # Detach every remaining row from the layout (widgets survive —
+        # just get reparented out) so the current filtered/sorted order
+        # can be rebuilt cleanly each tick — same technique as Д6's bot
+        # grid and Д7's leads_tab.py.
+        while self.rows_lay.count():
+            item = self.rows_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        for lead in leads:
+            self.rows_lay.addWidget(self.rows[lead["id"]])
+        self.rows_lay.addStretch(1)
+
+    def _quick_advance(self, lead_id: int) -> None:
         lead = self.ctx.db.get_lead(lead_id)
         if not lead:
             return
@@ -240,9 +387,6 @@ class MailLeadsScreen(QWidget):
                                     source=lead_domain.EVENT_SOURCE_MANUAL)
         self.refresh()
 
-    def _on_open_card(self, row: int, _col: int) -> None:
-        lead_id = self._lead_id_at(row)
-        if lead_id is None:
-            return
+    def _open_card(self, lead_id: int) -> None:
         LeadCardDialog(self.ctx, lead_id, parent=self).exec()
         self.refresh()

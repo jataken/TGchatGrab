@@ -9,12 +9,10 @@ table either way — that's the domain both were always allowed to share.
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QVBoxLayout,
-)
+from PySide6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QVBoxLayout
 
 from ...context import AppContext
-from ...widgets import FieldRow, button, muted
+from ...widgets import FieldRow, TabletCheckBox, button, muted
 
 
 class MailLeadDialog(QDialog):
@@ -55,7 +53,7 @@ class MailLeadDialog(QDialog):
         outer.addWidget(self.direction_combo)
 
         self._proposals: dict = {}
-        self._proposal_checks: dict[str, QCheckBox] = {}
+        self._proposal_checks: dict[str, TabletCheckBox] = {}
         self.proposals_box = QVBoxLayout()
         outer.addLayout(self.proposals_box)
 
@@ -105,10 +103,9 @@ class MailLeadDialog(QDialog):
                    "unit": "Единица", "product": "Товар", "deadline": "Срок"}
         for field, value in proposals.items():
             row = QHBoxLayout()
-            cb = QCheckBox()
+            cb = TabletCheckBox(f"{_LABELS.get(field, field)}: {value}")
             cb.setChecked(True)
             row.addWidget(cb)
-            row.addWidget(QLabel(f"{_LABELS.get(field, field)}: {value}"))
             row.addStretch(1)
             self.proposals_box.addLayout(row)
             self._proposal_checks[field] = cb
