@@ -24,14 +24,18 @@ B2C_SCENARIO_STEPS = [
      "field": "contact_method", "validation": "text"},
 ]
 
+# `done` marks the template sent as the closing confirmation once every
+# step is answered — apply_preset wires it to the scenario, so the preset
+# arrives as a complete conversation rather than questions that end in
+# silence.
 B2B_TEMPLATES = [
     {"name": "Приветствие B2B", "text": "Здравствуйте, {name}! Спасибо за обращение — уточним пару деталей, чтобы передать заявку нужному менеджеру.", "variables": ["name"]},
-    {"name": "Заявка принята B2B", "text": "Спасибо! Заявка от {company} передана менеджеру, скоро с вами свяжутся.", "variables": ["company"]},
+    {"name": "Заявка принята B2B", "text": "Спасибо! Заявка от {company} передана менеджеру, скоро с вами свяжутся.", "variables": ["company"], "done": True},
 ]
 
 B2C_TEMPLATES = [
     {"name": "Приветствие B2C", "text": "Привет! Чем можем помочь?", "variables": []},
-    {"name": "Заявка принята B2C", "text": "Спасибо за обращение! Мы скоро ответим.", "variables": []},
+    {"name": "Заявка принята B2C", "text": "Спасибо за обращение! Мы скоро ответим.", "variables": [], "done": True},
 ]
 
 PRESETS = {
@@ -50,7 +54,9 @@ def apply_preset(db: Database, bot_id: int, preset_name: str) -> None:
 
     scenario_id = db.add_scenario(bot_id, preset["scenario_name"], preset["steps"])
     for tpl in preset["templates"]:
-        db.add_template(bot_id, tpl["name"], tpl["text"], tpl["variables"])
+        template_id = db.add_template(bot_id, tpl["name"], tpl["text"], tpl["variables"])
+        if tpl.get("done") and preset["steps"]:
+            db.update_scenario(scenario_id, done_template_id=template_id)
 
     trigger_id = db.add_trigger(bot_id, "incoming_dm", {})
     if preset["steps"]:

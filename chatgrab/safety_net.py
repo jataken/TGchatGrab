@@ -14,20 +14,37 @@ import asyncio
 import logging
 import sys
 import traceback
+from logging.handlers import RotatingFileHandler
 
+from . import diagnostics
 from .paths import Paths
 
 _logger = logging.getLogger("chatgrab")
 
 
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 3
+
+
 def install(paths: Paths) -> None:
     paths.ensure()
-    logging.basicConfig(
-        filename=str(paths.log_path),
-        level=logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    # Rotating, not a plain FileHandler: this file is appended to for the
+    # life of the installation, and an app that runs for days at a time
+    # would otherwise grow it without limit.
+    handler = RotatingFileHandler(
+        str(paths.log_path), maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
         encoding="utf-8",
     )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.WARNING)
+    # Idempotent: a second install() (tests, a re-entered bootstrap) must
+    # not stack handlers and write every line several times over.
+    for existing in list(root.handlers):
+        if isinstance(existing, RotatingFileHandler):
+            root.removeHandler(existing)
+            existing.close()
+    root.addHandler(handler)
     sys.excepthook = _make_excepthook(paths)
 
 
@@ -53,6 +70,8 @@ def _show_dialog(title: str, text: str) -> None:
 def _make_excepthook(paths: Paths):
     def excepthook(exc_type, exc, tb):
         _logger.error("Необработанная ошибка", exc_info=(exc_type, exc, tb))
+        if isinstance(exc, BaseException):
+            diagnostics.failure("необработанное исключение", exc)
         from .telegram.errors import humanize_error
         message = humanize_error(exc) if isinstance(exc, Exception) else str(exc)
         _show_dialog(
@@ -73,6 +92,7 @@ def _make_loop_handler(paths: Paths):
                 "Необработанная ошибка в фоновой задаче: %s\n%s",
                 message, "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             )
+            diagnostics.failure(f"фоновая задача ({message})", exc)
             from .telegram.errors import humanize_error
             _show_dialog("Что-то пошло не так", humanize_error(exc))
         else:

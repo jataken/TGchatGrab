@@ -16,8 +16,11 @@ from ..security import SecurityService
 from ..telegram.service import TelegramService
 from .bot_api_runner import BotApiRunner
 from .crypto import decrypt_token, encrypt_token
+from .outbox import Outbox
+from . import preset_library
 from .presets import apply_preset
 from .rules_engine import RulesEngine
+from .scheduler import TriggerScheduler
 from .userbot_runner import UserbotRunner
 
 _logger = logging.getLogger("chatgrab")
@@ -33,10 +36,18 @@ class BotManager(QObject):
         self.tg = tg
         self.security = security
         self.rules = RulesEngine(db)
-        self.userbot_runner = UserbotRunner(tg, db, self.rules, self._on_log, self._on_status)
+        # Constructed before either runner — both take it, so every send
+        # either one hands to RulesEngine is already outbox-wrapped at the
+        # one place each runner builds a send_dm, rather than each runner
+        # needing to know about limits/drafts/blacklist itself.
+        self.outbox = Outbox(db, self._on_log)
+        self.userbot_runner = UserbotRunner(tg, db, self.rules, self._on_log, self._on_status, self.outbox)
         self._bot_api_runners: dict[int, BotApiRunner] = {}
         self.log_entries: list[dict] = []
         self._running = False
+        # Evaluates the trigger types that no incoming message can match —
+        # inactivity reminders and schedules. See bots/scheduler.py.
+        self.scheduler = TriggerScheduler(db, self.rules, self._send_for_bot, self._on_log)
         # One lock per bot_id — serializes start_bot()/stop_bot() for that
         # bot so a rapid double-click (or any other concurrent caller)
         # can't create two BotApiRunner instances polling the same token
@@ -65,6 +76,40 @@ class BotManager(QObject):
         self.db.set_bot_field(bot_id, status=status, last_error=error)
         self.bots_changed.emit()
 
+    def _raw_send_for_bot(self, bot_id: int):
+        """The runner's own send callable, whichever type owns this bot —
+        not yet outbox-wrapped. Only two callers should ever touch this:
+        _send_for_bot below (wraps it for the scheduler) and send_draft
+        (wraps it fresh per call, since a draft can outlive the runner
+        instance that originally tried to send it)."""
+        runner = self._bot_api_runners.get(bot_id)
+        if runner is not None:
+            return runner.send_dm
+        return self.userbot_runner.make_send(bot_id)
+
+    def _send_for_bot(self, bot_id: int):
+        """The scheduler's send path — schedule/inactivity triggers are
+        proactive by definition (nothing from the contact prompted them),
+        so this is where a cold first message becomes a draft instead of
+        going out."""
+        return self.outbox.wrap(bot_id, self._raw_send_for_bot(bot_id), reactive=False)
+
+    # ---- outbox: drafts / blacklist ---------------------------------------
+    async def send_draft(self, draft_id: int) -> None:
+        """A human clicked "send" on a draft — that's the click invariant 6
+        asks for, so this goes out through the *reactive* wrap: still
+        blacklist/dry-run/hour-day-checked, just not re-drafted for being
+        a first message, since resolving exactly that is the point."""
+        draft = self.db.get_draft(draft_id)
+        if draft is None or draft["sent_at"] or draft["dismissed_at"]:
+            return
+        send = self.outbox.wrap(draft["bot_id"], self._raw_send_for_bot(draft["bot_id"]), reactive=True)
+        await send(draft["target"], draft["text"])
+        self.db.mark_draft_sent(draft_id)
+
+    def dismiss_draft(self, draft_id: int) -> None:
+        self.db.dismiss_draft(draft_id)
+
     # ---- lifecycle -------------------------------------------------------
     async def start(self) -> None:
         """Called once the Telegram session is authorized — mirrors
@@ -81,6 +126,19 @@ class BotManager(QObject):
         if self._running:
             return
         self._running = True
+        # Аккаунты юзерботов, отличные от основного, подключаются здесь —
+        # иначе бот, оставшийся в статусе «работает» с прошлого запуска,
+        # молча не слушал бы ничего до первого ручного «Запустить».
+        for bot in self.db.list_bots():
+            if bot["type"] != "userbot" or bot["status"] != "running":
+                continue
+            service = self.userbot_runner.service_for_bot(bot)
+            if service is self.tg:
+                continue
+            try:
+                await service.connect()
+            except Exception:
+                _logger.warning("не удалось подключить аккаунт бота %s", bot["id"], exc_info=True)
         try:
             self.userbot_runner.register()
         except Exception:
@@ -92,9 +150,11 @@ class BotManager(QObject):
                 except Exception as e:
                     _logger.warning("bot %s failed to start", bot["id"], exc_info=True)
                     self._on_status(bot["id"], "error", str(e))
+        self.scheduler.start()
         self.bots_changed.emit()
 
     async def stop(self) -> None:
+        self.scheduler.stop()
         self.userbot_runner.unregister()
         for runner in list(self._bot_api_runners.values()):
             await runner.stop()
@@ -103,10 +163,18 @@ class BotManager(QObject):
 
     # ---- creation / deletion ---------------------------------------------
     def create_bot(self, name: str, type_: str, token_plain: str | None, preset: str,
-                    manager_chat_id: str | None) -> int:
+                    manager_chat_id: str | None, preset_answers: dict | None = None) -> int:
+        """preset_answers, if given, means `preset` names a JSON library
+        preset (С5) rather than the original b2b/b2c/custom seed — those
+        three stay on the simple, variable-free path they always used
+        (bots/presets.py) since nothing about them needed one."""
         token_enc = encrypt_token(self.security, token_plain) if token_plain else None
         bot_id = self.db.add_bot(name, type_, token_enc, preset=preset, manager_chat_id=manager_chat_id)
-        apply_preset(self.db, bot_id, preset)
+        spec = preset_library.find_spec(preset) if preset_answers is not None else None
+        if spec is not None:
+            preset_library.install(self.db, bot_id, spec, preset_answers)
+        else:
+            apply_preset(self.db, bot_id, preset)
         self.bots_changed.emit()
         return bot_id
 
@@ -122,6 +190,23 @@ class BotManager(QObject):
             if not bot:
                 return
             if bot["type"] == "userbot":
+                service = self.userbot_runner.service_for_bot(bot)
+                try:
+                    # Свой аккаунт у бота может быть ещё не подключён:
+                    # реестр создаёт клиентов лениво.
+                    await service.connect()
+                    if not await service.is_authorized():
+                        self.db.set_bot_field(
+                            bot_id, status="error",
+                            last_error="Аккаунт бота не авторизован — войдите на экране «Аккаунты».")
+                        self._on_log(bot_id, "аккаунт бота не авторизован", "warn")
+                        self.bots_changed.emit()
+                        return
+                except Exception as e:
+                    self.db.set_bot_field(bot_id, status="error", last_error=str(e))
+                    self._on_log(bot_id, f"не удалось подключить аккаунт бота: {e}", "warn")
+                    self.bots_changed.emit()
+                    return
                 self.userbot_runner.register()
                 self.db.set_bot_field(bot_id, status="running", last_error=None)
                 self._on_log(bot_id, "правила юзербота включены", "ok")
@@ -148,7 +233,8 @@ class BotManager(QObject):
             self.bots_changed.emit()
 
     async def _start_bot_api(self, bot_row) -> None:
-        runner = BotApiRunner(self.db, self.security, self.rules, bot_row, self._on_log, self._on_status)
+        runner = BotApiRunner(self.db, self.security, self.rules, bot_row, self._on_log,
+                               self._on_status, self.outbox)
         self._bot_api_runners[bot_row["id"]] = runner
         await runner.start()
 

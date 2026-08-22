@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..core import lead as lead_domain
 from ..db.database import Database, now_iso
 from ..paths import Paths
 from ..services.xlsx_safety import excel_safe
-
-_STATUS_LABELS = {"new": "новая", "in_progress": "в работе", "closed": "закрыта"}
 
 
 def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
@@ -28,11 +27,27 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         cell.font = Font(bold=True)
 
     wrap = Alignment(vertical="top", wrap_text=True)
+    # С10: a status label now depends on the lead's own funnel — cached
+    # by funnel_id since every lead in one export very likely shares one.
+    stages_cache: dict[int | None, list] = {}
+
+    def _stages_for(funnel_id):
+        if funnel_id not in stages_cache:
+            stages_cache[funnel_id] = db.list_funnel_stages(funnel_id) if funnel_id else []
+        return stages_cache[funnel_id]
+
     for lead in sorted(leads, key=lambda r: r["created_at"]):
-        contact = db.get_contact(lead["contact_id"])
-        bot = db.get_bot(lead["bot_id"])
-        handle = f"@{contact['username']}" if contact and contact["username"] else ""
-        telegram_id = contact["telegram_id"] if contact else ""
+        # Not every lead has a bot or a contact behind it any more (С3:
+        # manual and message-based creation) — the lead's own identity
+        # fields (С2) are what's authoritative, the joined rows are only
+        # a fallback for older, bot-sourced leads that never got them.
+        contact = db.get_contact(lead["contact_id"]) if lead["contact_id"] else None
+        bot = db.get_bot(lead["bot_id"]) if lead["bot_id"] else None
+        handle = lead["display_name"] or \
+            (f"@{lead['username']}" if lead["username"] else None) or \
+            (f"@{contact['username']}" if contact and contact["username"] else "")
+        telegram_id = lead["tg_user_id"] or (contact["telegram_id"] if contact else "")
+        source_text = bot["name"] if bot else lead_domain.label_for_source_type(lead["source_type"])
         try:
             content = json.loads(lead["content"])
             # Each value comes straight from a Telegram message (scenario
@@ -44,9 +59,10 @@ def export_leads_xlsx(db: Database, paths: Paths, bot_id: int | None = None,
         except (json.JSONDecodeError, TypeError):
             summary = ""
         ws.append([
-            lead["created_at"], excel_safe(bot["name"]) if bot else f"бот {lead['bot_id']}",
+            lead["created_at"], excel_safe(source_text),
             excel_safe(handle), telegram_id,
-            _STATUS_LABELS.get(lead["status"], lead["status"]), excel_safe(lead["manager"] or ""), summary,
+            lead_domain.label_for_stage(_stages_for(lead["funnel_id"]), lead["status"]),
+            excel_safe(lead["manager"] or ""), summary,
         ])
         row_idx = ws.max_row
         for col in range(1, len(headers) + 1):

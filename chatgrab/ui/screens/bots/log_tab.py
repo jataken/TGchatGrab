@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QHBoxLayout, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
+from ... import theme
 from ...context import AppContext
 from ...widgets import muted
 
@@ -27,7 +28,8 @@ class LogTab(QWidget):
 
         self.log_list = QListWidget()
         self.log_list.setStyleSheet(
-            "QListWidget { border: none; background: transparent; font-family: Consolas, monospace; font-size: 12px; }"
+            f"QListWidget {{ border: none; background: transparent; "
+            f"font-family: {theme.FONT_MONO}; font-size: 12px; }}"
             "QListWidget::item { padding: 4px 12px; }"
         )
         outer.addWidget(self.log_list, 1)
@@ -50,7 +52,7 @@ class LogTab(QWidget):
         self.count_label.setText(f"{len(self.ctx.bot_manager.log_entries)} записей")
 
     def _add_item(self, entry: dict, prepend: bool = False) -> None:
-        color = {"warn": "#f0c6a0", "ok": "#bfe5cd"}.get(entry.get("tone"), "#d6d6db")
+        color = {"warn": theme.WARN, "ok": theme.GOOD_FG}.get(entry.get("tone"), theme.TEXT_LOG)
         text = f"{entry['time']}   {entry['bot']}   —   {entry['text']}"
         item = QListWidgetItem(text)
         item.setForeground(QColor(color))

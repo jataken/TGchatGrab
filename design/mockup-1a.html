@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><style>
+body{margin:0;background:#0e0f18;font-family:"Segoe UI","Inter",system-ui,sans-serif}
+.tg-scroll::-webkit-scrollbar{width:10px}
+.tg-scroll::-webkit-scrollbar-thumb{background:#3f424d;border-radius:5px}
+.tg-scroll::-webkit-scrollbar-track{background:transparent}
+a{color:#9184d9;text-decoration:none}a:hover{color:#b5abfc}
+@keyframes tgPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}
+@keyframes tgHalo{0%{box-shadow:0 0 0 0 rgba(145,132,217,.45)}100%{box-shadow:0 0 0 9px rgba(145,132,217,0)}}
+@keyframes tgSweep{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
+@keyframes tgUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes tgGrow{from{transform:scaleY(.15)}to{transform:scaleY(1)}}
+@keyframes tgSlide{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+</style></helmet>
+
+<div style="padding:26px 30px 34px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:baseline;gap:10px">
+  <span style="font:600 10px ui-monospace,Consolas,monospace;padding:3px 7px;background:#9184d9;color:#12141d;border-radius:4px">1a</span>
+  <span style="font:600 13px/1.2 system-ui,sans-serif;color:#e9e9ed">Плотный рефреш — все восемь разделов</span>
+  <span style="font:400 12px/1.2 system-ui,sans-serif;color:#6c6c78">кликайте по сайдбару; палитра и структура из кода</span>
+</div>
+
+<div style="width:1320px;height:860px;display:flex;background:#161826;background-image:linear-gradient(rgba(145,132,217,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(145,132,217,.035) 1px,transparent 1px);background-size:32px 32px;color:#e9e9ed;border-radius:6px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.45)">
+
+  <div style="width:232px;flex:none;background:#13151f;border-right:1px solid rgba(51,53,74,.7);display:flex;flex-direction:column;padding:16px 10px 12px;gap:1px">
+    <div style="display:flex;align-items:center;gap:8px;padding:0 8px 14px">
+      <div style="width:22px;height:22px;border-radius:6px;background:linear-gradient(150deg,#9184d9,#5d5294);display:flex;align-items:center;justify-content:center;font:700 10px ui-monospace,Consolas,monospace;color:#f5f4ff">CG</div>
+      <div style="font-size:12.5px;font-weight:600;letter-spacing:.02em">ChatGrab</div>
+    </div>
+    <div style="color:#6c6c78;font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.14em;padding:0 8px 6px">РАЗДЕЛЫ</div>
+
+    <div onClick="{{ goOverview }}" style="{{ nav.overview }}">
+      <div style="{{ navBar.overview }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><rect x="2" y="2" width="5" height="5" rx="1"></rect><rect x="9" y="2" width="5" height="5" rx="1"></rect><rect x="2" y="9" width="5" height="5" rx="1"></rect><rect x="9" y="9" width="5" height="5" rx="1"></rect></svg>
+      Обзор
+    </div>
+    <div onClick="{{ goConnect }}" style="{{ nav.connect }}">
+      <div style="{{ navBar.connect }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><path d="M6.5 9.5 9.5 6.5"></path><path d="M4.8 11.2a2.4 2.4 0 0 1 0-3.4l1.4-1.4"></path><path d="M11.2 4.8a2.4 2.4 0 0 1 0 3.4l-1.4 1.4"></path></svg>
+      Подключение
+      <div style="flex:1"></div>
+      <span style="width:6px;height:6px;border-radius:4px;background:#7fc79b;flex:none"></span>
+    </div>
+    <div onClick="{{ goChats }}" style="{{ nav.chats }}">
+      <div style="{{ navBar.chats }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><path d="M2.5 7.2c0-2.3 2.5-4 5.5-4s5.5 1.7 5.5 4-2.5 4-5.5 4c-.7 0-1.3-.1-1.9-.2L3.4 12.6l.5-2.1c-.9-.7-1.4-1.7-1.4-3.3Z"></path></svg>
+      Чаты
+      <div style="flex:1"></div>
+      <span style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">5</span>
+    </div>
+    <div onClick="{{ goCollect }}" style="{{ nav.collect }}">
+      <div style="{{ navBar.collect }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><path d="M8 2.5v7"></path><path d="M5 7l3 3 3-3"></path><path d="M3 12.5h10"></path></svg>
+      Сбор данных
+      <div style="flex:1"></div>
+      <span style="width:6px;height:6px;border-radius:4px;background:#b5abfc;flex:none;animation:tgPulse 1.8s ease-in-out infinite"></span>
+    </div>
+    <div onClick="{{ goBrowse }}" style="{{ nav.browse }}">
+      <div style="{{ navBar.browse }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><circle cx="7" cy="7" r="4"></circle><path d="M10.2 10.2 13.5 13.5"></path></svg>
+      Поиск в собранном
+    </div>
+    <div onClick="{{ goExport }}" style="{{ nav.export }}">
+      <div style="{{ navBar.export }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><path d="M8 11V3.5"></path><path d="M5 6.5 8 3.5l3 3"></path><path d="M3 10.5v2a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"></path></svg>
+      Экспорт
+    </div>
+    <div onClick="{{ goBots }}" style="{{ nav.bots }}">
+      <div style="{{ navBar.bots }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><rect x="3" y="6" width="10" height="7" rx="2"></rect><path d="M8 3.5V6"></path><circle cx="6.2" cy="9.5" r=".7" fill="currentColor" stroke="none"></circle><circle cx="9.8" cy="9.5" r=".7" fill="currentColor" stroke="none"></circle></svg>
+      Боты
+      <div style="flex:1"></div>
+      <span style="font:400 10.5px ui-monospace,Consolas,monospace;color:#bfe5cd">1</span>
+    </div>
+    <div onClick="{{ goSettings }}" style="{{ nav.settings }}">
+      <div style="{{ navBar.settings }}"></div>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="flex:none"><path d="M2.5 5h11"></path><path d="M2.5 11h11"></path><circle cx="6" cy="5" r="1.6"></circle><circle cx="10.5" cy="11" r="1.6"></circle></svg>
+      Настройки
+    </div>
+
+    <div style="flex:1"></div>
+
+    <div style="background:rgba(145,132,217,.09);border:1px solid rgba(145,132,217,.22);border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:7px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+      <div style="display:flex;justify-content:space-between;font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#9a9aa3"><span>ОЧЕРЕДЬ</span><span style="color:#d2cefd">1 / 3</span></div>
+      <div style="font-size:11.5px;line-height:1.4;color:#c9c9d1">Грузится «Сырьё для косметики»</div>
+      <div style="height:4px;border-radius:3px;background:rgba(233,233,237,.08);position:relative;overflow:hidden">
+        <div style="position:absolute;inset:0;width:68%;border-radius:3px;background:linear-gradient(90deg,#796cbf,#b5abfc)"></div>
+        <div style="position:absolute;top:0;bottom:0;width:28%;background:linear-gradient(90deg,transparent,rgba(245,244,255,.5),transparent);animation:tgSweep 2.4s linear infinite"></div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:7px;padding:9px 4px 2px;font-size:11.5px;color:#9a9aa3">
+      <span style="width:6px;height:6px;border-radius:4px;background:#7fc79b;animation:tgHalo 2.2s ease-out infinite"></span>
+      Аккаунт подключён · @cosmo_ops
+    </div>
+  </div>
+
+  <div class="tg-scroll" style="flex:1;min-width:0;overflow-y:auto">
+
+    <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:24px 32px 28px">
+        <div style="display:flex;align-items:flex-start;gap:16px">
+          <div style="flex:1">
+            <div style="font-size:20px;font-weight:600;letter-spacing:-.01em">Обзор сбора</div>
+            <div style="display:flex;align-items:center;gap:7px;margin-top:5px;color:#9a9aa3;font-size:12px">
+              <span style="width:5px;height:5px;border-radius:3px;background:#b5abfc;animation:tgPulse 1.6s ease-in-out infinite"></span>
+              Грузится «Сырьё для косметики — B2B», остальные ждут в очереди — лимит Telegram общий на аккаунт
+            </div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <div style="border:1px solid #33354a;color:#e9e9ed;border-radius:8px;padding:6px 13px;font-size:12.5px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Приостановить всё</div>
+            <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:500;cursor:pointer;box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 6px 16px rgba(122,107,208,.3)" style-hover="background:#8878e0">＋ Добавить чат</div>
+          </div>
+        </div>
+        <div style="height:16px"></div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);background:#232532;border:1px solid #33354a;border-radius:11px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">СООБЩЕНИЙ В БАЗЕ</div><div style="font:400 19px ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;margin-top:4px">184 962</div></div>
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">МЕДИАФАЙЛОВ</div><div style="font:400 19px ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;margin-top:4px">12 408</div></div>
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ЧАТОВ В РАБОТЕ</div><div style="font:400 19px ui-monospace,Consolas,monospace;margin-top:4px">4<span style="color:#6c6c78"> / 5</span></div></div>
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">РАЗМЕР БАЗЫ</div><div style="font:400 19px ui-monospace,Consolas,monospace;margin-top:4px">613.4<span style="font-size:12px;color:#6c6c78"> МБ</span></div></div>
+          <div style="padding:11px 14px"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ПРОШЛАЯ ВЫГРУЗКА</div><div style="font:400 19px ui-monospace,Consolas,monospace;margin-top:4px">19.08 <span style="color:#6c6c78">14:02</span></div></div>
+        </div>
+        <div style="height:18px"></div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px">
+          <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.14em;color:#6c6c78">ЧАТЫ В РАБОТЕ</div>
+          <div style="flex:1;height:1px;background:linear-gradient(90deg,#33354a,transparent)"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+          <sc-for list="{{ tiles }}" as="c" hint-placeholder-count="5">
+            <div onMouseEnter="{{ c.enter }}" onMouseLeave="{{ c.leave }}" onClick="{{ c.open }}" style="{{ c.cardCss }}">
+              <div style="{{ c.stripeCss }}"></div>
+              <div style="padding:12px 14px 0;display:flex;align-items:flex-start;gap:8px">
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:13.5px;line-height:1.3">{{ c.title }}</div>
+                  <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78;margin-top:3px">@{{ c.username }}</div>
+                </div>
+                <div style="{{ c.pillCss }}"><span style="{{ c.dotCss }}"></span>{{ c.statusLabel }}</div>
+              </div>
+              <div style="padding:10px 14px 0;display:flex;align-items:baseline;gap:8px">
+                <div style="font:400 21px ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;letter-spacing:-.02em">{{ c.count }}</div>
+                <div style="font-size:11px;color:#6c6c78">≈{{ c.perDay }}/сутки</div>
+                <div style="flex:1"></div>
+                <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">{{ c.lastFull }}</div>
+              </div>
+              <div style="{{ c.warnCss }}">{{ c.warn }}</div>
+              <div style="{{ c.progressWrapCss }}">
+                <div style="display:flex;justify-content:space-between;font:400 10px ui-monospace,Consolas,monospace;color:#9a9aa3;padding:0 14px 4px"><span>история</span><span style="color:#d2cefd">{{ c.progressPct }}</span></div>
+                <div style="margin:0 14px;height:3px;border-radius:2px;background:rgba(233,233,237,.08);position:relative;overflow:hidden">
+                  <div style="{{ c.progressFillCss }}"></div>
+                  <div style="{{ c.progressSweepCss }}"></div>
+                </div>
+              </div>
+              <div style="padding:10px 0 0;display:flex;align-items:flex-end;gap:2px;height:40px">
+                <sc-for list="{{ c.bars }}" as="b" hint-placeholder-count="30">
+                  <div style="{{ b.css }}"></div>
+                </sc-for>
+              </div>
+              <div style="{{ c.actionsCss }}">
+                <div style="background:rgba(18,20,29,.86);border:1px solid #3f424d;border-radius:7px;padding:4px 9px;font-size:11px;cursor:pointer" style-hover="border-color:#9184d9;color:#d2cefd">{{ c.primaryAction }}</div>
+                <div style="background:rgba(18,20,29,.86);border:1px solid #3f424d;border-radius:7px;padding:4px 9px;font-size:11px;cursor:pointer" style-hover="border-color:#9184d9;color:#d2cefd">Поиск</div>
+                <div style="background:rgba(18,20,29,.86);border:1px solid #3f424d;border-radius:7px;padding:4px 9px;font-size:11px;cursor:pointer" style-hover="border-color:#9184d9;color:#d2cefd">Экспорт</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isConnect }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:26px 32px 28px;max-width:900px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.14em;color:#9184d9">ВХОД В TELEGRAM</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:6px">
+            <span style="width:16px;height:3px;border-radius:2px;background:#9184d9"></span>
+            <span style="width:16px;height:3px;border-radius:2px;background:#9184d9"></span>
+            <span style="width:16px;height:3px;border-radius:2px;background:#9184d9"></span>
+            <span style="font:400 10px ui-monospace,Consolas,monospace;color:#6c6c78;margin-left:4px">ШАГ 3 ИЗ 3 · ГОТОВО</span>
+          </div>
+        </div>
+        <div style="font-size:20px;font-weight:600;margin-top:8px">Аккаунт подключён</div>
+        <div style="color:#9a9aa3;font-size:12px;margin-top:5px;max-width:520px;line-height:1.5">Один вход на всё приложение. Приложение работает от вашего аккаунта и читает только те чаты, которые вы добавите в список.</div>
+
+        <div style="height:18px"></div>
+        <div style="max-width:560px;background:#232532;border:1px solid #33354a;border-radius:12px;padding:16px;display:flex;align-items:center;gap:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);position:relative;overflow:hidden">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#7fc79b"></div>
+          <div style="width:44px;height:44px;border-radius:24px;background:linear-gradient(150deg,#5d5294,#423a6a);color:#f5f4ff;display:flex;align-items:center;justify-content:center;font-size:14px;flex:none">СБ</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:14px">Светлана Б.</div>
+            <div style="font:400 11px ui-monospace,Consolas,monospace;color:#9a9aa3;margin-top:3px">+7 921 000 00 00 · вход выполнен 21.08.2026, 09:41</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;color:#bfe5cd;background:rgba(120,190,150,.14);border-radius:6px;padding:3px 9px;font-size:11px"><span style="width:5px;height:5px;border-radius:3px;background:#7fc79b;animation:tgPulse 2s ease-in-out infinite"></span>сессия активна</div>
+          <div style="border:1px solid #33354a;border-radius:8px;padding:6px 13px;font-size:12.5px;cursor:pointer;flex:none" style-hover="background:rgba(233,233,237,.06)">Сменить аккаунт</div>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="max-width:560px;display:flex;gap:10px;background:rgba(240,198,160,.07);border:1px solid rgba(240,198,160,.22);border-radius:10px;padding:12px 14px">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#f0c6a0" stroke-width="1.4" style="flex:none;margin-top:1px"><path d="M8 2.8 14 13H2L8 2.8Z"></path><path d="M8 6.6v3"></path><circle cx="8" cy="11.3" r=".6" fill="#f0c6a0" stroke="none"></circle></svg>
+          <div style="font-size:12px;line-height:1.5;color:#e2c9b4">Файл входа хранится только на этом компьютере и никогда не попадает в выгружаемые файлы. Для сбора лучше использовать отдельный номер, не основной личный.</div>
+        </div>
+
+        <div style="height:22px"></div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+          <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.14em;color:#6c6c78">ЕСЛИ ПОНАДОБИТСЯ ВОЙТИ ЗАНОВО</div>
+          <div style="flex:1;height:1px;background:linear-gradient(90deg,#33354a,transparent)"></div>
+        </div>
+        <div style="display:flex;gap:12px">
+          <div style="flex:1;background:#232532;border:1px solid #33354a;border-radius:11px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ШАГ 1 · НОМЕР</div>
+            <div style="color:#9a9aa3;font-size:11.5px;margin-top:8px">Номер телефона</div>
+            <div style="margin-top:5px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 12.5px ui-monospace,Consolas,monospace;color:#6c6c78">+7 921 000 00 00</div>
+            <div style="margin-top:10px;display:inline-block;background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 14px;font-size:12.5px;cursor:pointer" style-hover="background:#8878e0">Получить код</div>
+          </div>
+          <div style="flex:1;background:#232532;border:1px solid #33354a;border-radius:11px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ШАГ 2 · КОД</div>
+            <div style="color:#9a9aa3;font-size:11.5px;margin-top:8px">Код из сообщения Telegram</div>
+            <div style="display:flex;gap:6px;margin-top:5px">
+              <div style="width:34px;height:36px;border-radius:8px;border:1px solid #3f424d;background:#1c1e2c;display:flex;align-items:center;justify-content:center;font:400 15px ui-monospace,Consolas,monospace">4</div>
+              <div style="width:34px;height:36px;border-radius:8px;border:1px solid #3f424d;background:#1c1e2c;display:flex;align-items:center;justify-content:center;font:400 15px ui-monospace,Consolas,monospace">1</div>
+              <div style="width:34px;height:36px;border-radius:8px;border:1px solid #9184d9;background:rgba(145,132,217,.12);display:flex;align-items:center;justify-content:center;font:400 15px ui-monospace,Consolas,monospace;color:#d2cefd">7</div>
+              <div style="width:34px;height:36px;border-radius:8px;border:1px solid #33354a;background:#1c1e2c"></div>
+              <div style="width:34px;height:36px;border-radius:8px;border:1px solid #33354a;background:#1c1e2c"></div>
+            </div>
+            <div style="font:400 11px ui-monospace,Consolas,monospace;color:#6c6c78;margin-top:9px">код живёт ~2 минуты · прислать новый</div>
+          </div>
+          <div style="flex:1;background:#232532;border:1px solid #33354a;border-radius:11px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ШАГ 3 · ПАРОЛЬ 2FA</div>
+            <div style="color:#9a9aa3;font-size:11.5px;margin-top:8px">Пароль двухэтапной проверки</div>
+            <div style="margin-top:5px;display:flex;gap:6px">
+              <div style="flex:1;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 12.5px ui-monospace,Consolas,monospace;color:#6c6c78">••••••••</div>
+              <div style="border:1px solid #33354a;border-radius:8px;padding:6px 11px;font-size:12px;color:#9a9aa3;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Показать</div>
+            </div>
+            <div style="font-size:11.5px;color:#6c6c78;margin-top:9px;line-height:1.45">Тот пароль, который вы задали в самом Telegram. Приложение его не сохраняет.</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isChats }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:24px 32px 26px;min-height:808px;box-sizing:border-box;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:flex-start;gap:16px">
+          <div style="flex:1">
+            <div style="font-size:20px;font-weight:600">Отслеживаемые чаты</div>
+            <div style="color:#9a9aa3;font-size:12px;margin-top:5px">4 из 5 в работе · <span style="font-family:ui-monospace,Consolas,monospace">184 962</span> сообщений в базе · <span style="font-family:ui-monospace,Consolas,monospace">12 408</span> медиафайлов</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:6px 10px;width:210px">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#6c6c78" stroke-width="1.5"><circle cx="7" cy="7" r="4"></circle><path d="M10.2 10.2 13.5 13.5"></path></svg>
+            <span style="font-size:12px;color:#6c6c78">Фильтр по названию</span>
+          </div>
+          <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:500;cursor:pointer;box-shadow:0 6px 16px rgba(122,107,208,.3)" style-hover="background:#8878e0">＋ Добавить чат</div>
+        </div>
+        <div style="height:16px"></div>
+        <div style="background:#232532;border:1px solid #33354a;border-radius:12px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+          <div style="display:grid;grid-template-columns:1fr 190px 130px 110px 150px 90px;padding:9px 16px 9px 20px;border-bottom:1px solid #33354a;font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">
+            <div>ЧАТ</div><div>АКТИВНОСТЬ · 30 СУТОК</div><div style="text-align:right">СОБРАНО</div><div style="text-align:right">ПОСЛЕДНЕЕ</div><div style="text-align:center">СОСТОЯНИЕ</div><div style="text-align:right">СБОР</div>
+          </div>
+          <sc-for list="{{ rows }}" as="r" hint-placeholder-count="5">
+            <div style="{{ r.rowCss }}">
+              <div style="{{ r.stripeCss }}"></div>
+              <div style="min-width:0"><div style="font-size:13px">{{ r.title }}</div><div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78;margin-top:2px">@{{ r.username }}</div></div>
+              <div style="display:flex;align-items:flex-end;gap:1.5px;height:26px">
+                <sc-for list="{{ r.bars }}" as="b" hint-placeholder-count="30">
+                  <div style="{{ b.css }}"></div>
+                </sc-for>
+              </div>
+              <div style="font:400 15px ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;text-align:right">{{ r.count }}</div>
+              <div style="font:400 11px ui-monospace,Consolas,monospace;color:#9a9aa3;text-align:right">{{ r.lastFull }}</div>
+              <div style="display:flex;justify-content:center"><div style="{{ r.pillCss }}"><span style="{{ r.dotCss }}"></span>{{ r.statusLabel }}</div></div>
+              <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px">
+                <div onClick="{{ r.toggle }}" style="{{ r.toggleCss }}"><div style="{{ r.knobCss }}"></div></div>
+                <div style="width:24px;height:24px;border-radius:7px;color:#6c6c78;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px" style-hover="background:rgba(200,90,110,.16);color:#e9b3bf">✕</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:14px;color:#6c6c78;font-size:11.5px">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 7.2v3.4"></path><circle cx="8" cy="5.3" r=".6" fill="currentColor" stroke="none"></circle></svg>
+          Выключенный сбор не удаляет уже собранное — данные чата остаются в базе. Двойной клик по строке открывает «Сбор данных».
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isCollect }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:24px 32px 22px;height:860px;box-sizing:border-box;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div>
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.14em;color:#6c6c78">ВЫБРАННЫЙ ЧАТ</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:5px">
+              <div style="font-size:20px;font-weight:600">{{ selTitle }}</div>
+              <div style="{{ selPillCss }}"><span style="{{ selDotCss }}"></span>{{ selStatusLabel }}</div>
+            </div>
+          </div>
+          <div style="flex:1"></div>
+          <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:500;cursor:pointer;box-shadow:0 6px 16px rgba(122,107,208,.3)" style-hover="background:#8878e0">{{ selPrimary }}</div>
+          <div style="border:1px solid #33354a;border-radius:8px;padding:6px 13px;font-size:12.5px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">{{ selSecondary }}</div>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <sc-for list="{{ chips }}" as="c" hint-placeholder-count="5">
+            <div onClick="{{ c.select }}" style="{{ c.css }}"><span style="{{ c.dotCss }}"></span>{{ c.title }}</div>
+          </sc-for>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);background:#232532;border:1px solid #33354a;border-radius:11px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">СОБРАНО</div><div style="font:400 19px ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;margin-top:4px">{{ selCount }}</div></div>
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">МЕДИАФАЙЛОВ НА ДИСКЕ</div><div style="font:400 19px ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;margin-top:4px">{{ selMedia }}</div></div>
+          <div style="padding:11px 14px;border-right:1px solid #2c2e3d"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ПОСЛЕДНЕЕ СООБЩЕНИЕ</div><div style="font:400 19px ui-monospace,Consolas,monospace;margin-top:4px">{{ selLastFull }}</div></div>
+          <div style="padding:11px 14px"><div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ГЛУБИНА ИСТОРИИ</div><div style="font-size:14px;margin-top:7px">{{ selDepth }}</div></div>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="background:#232532;border:1px solid #33354a;border-radius:11px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <div style="font:400 11px ui-monospace,Consolas,monospace;color:#9a9aa3">{{ selProgressLabel }}</div>
+            <div style="font:400 13px ui-monospace,Consolas,monospace;color:#d2cefd">{{ selPct }}</div>
+          </div>
+          <div style="height:8px;border-radius:5px;background:rgba(233,233,237,.08);margin-top:8px;position:relative;overflow:hidden">
+            <div style="{{ selFillCss }}"></div>
+            <div style="{{ selSweepCss }}"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font:400 11px ui-monospace,Consolas,monospace;color:#6c6c78;margin-top:10px">
+            <div>запросов за час: 412 · пауз сегодня: 3 · время в паузах: 96 с</div>
+            <div>текущая пауза: 1.4 с</div>
+          </div>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="flex:1;min-height:0;background:#12141d;border:1px solid #33354a;border-radius:12px;display:flex;flex-direction:column;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid rgba(51,53,74,.6)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">ОБЩИЙ ЖУРНАЛ СОБЫТИЙ</div>
+            <div style="flex:1"></div>
+            <div style="display:flex;gap:6px">
+              <div style="border:1px solid #3f424d;border-radius:6px;padding:2px 8px;font:400 10.5px ui-monospace,Consolas,monospace;color:#d2cefd;background:rgba(145,132,217,.12);cursor:pointer">всё</div>
+              <div style="border:1px solid #33354a;border-radius:6px;padding:2px 8px;font:400 10.5px ui-monospace,Consolas,monospace;color:#9a9aa3;cursor:pointer" style-hover="border-color:#3f424d">паузы</div>
+              <div style="border:1px solid #33354a;border-radius:6px;padding:2px 8px;font:400 10.5px ui-monospace,Consolas,monospace;color:#9a9aa3;cursor:pointer" style-hover="border-color:#3f424d">ошибки</div>
+            </div>
+            <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">по всем чатам · 1 284 записей</div>
+          </div>
+          <div class="tg-scroll" style="flex:1;overflow-y:auto;font-family:Consolas,ui-monospace,monospace;font-size:11.5px;padding:6px 0">
+            <sc-for list="{{ log }}" as="l" hint-placeholder-count="12">
+              <div style="{{ l.css }}"><span style="color:#6c6c78">{{ l.time }}</span><span style="{{ l.chatCss }}">{{ l.chat }}</span><span>{{ l.text }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isBrowse }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:24px 32px 22px;height:860px;box-sizing:border-box;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:flex-start;gap:16px">
+          <div style="flex:1">
+            <div style="font-size:20px;font-weight:600">Поиск в собранном</div>
+            <div style="color:#9a9aa3;font-size:12px;margin-top:5px">Поиск идёт по тексту в базе — быстрее, чем открывать чаты в Telegram</div>
+          </div>
+          <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:500;cursor:pointer;box-shadow:0 6px 16px rgba(122,107,208,.3)" style-hover="background:#8878e0">Выгрузить найденное (1 284)</div>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:12px 14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+          <div style="display:flex;gap:8px">
+            <div style="flex:2;display:flex;align-items:center;gap:8px;background:#1c1e2c;border:1px solid #9184d9;border-radius:8px;padding:7px 10px">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#9184d9" stroke-width="1.5"><circle cx="7" cy="7" r="4"></circle><path d="M10.2 10.2 13.5 13.5"></path></svg>
+              <span style="font-size:12.5px">глицерин</span>
+              <div style="flex:1"></div>
+              <span style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">по тексту</span>
+            </div>
+            <div style="flex:1;display:flex;align-items:center;gap:8px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px">
+              <span style="font-size:12.5px;color:#6c6c78">автор: имя или @ник</span>
+            </div>
+            <div style="flex:1;display:flex;align-items:center;justify-content:space-between;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font-size:12.5px">Все чаты<span style="color:#6c6c78">▾</span></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font-size:12.5px;width:150px">Сначала новые<span style="color:#6c6c78">▾</span></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+            <sc-for list="{{ filters }}" as="f" hint-placeholder-count="3">
+              <div onClick="{{ f.toggle }}" style="{{ f.css }}"><span style="{{ f.boxCss }}">{{ f.mark }}</span>{{ f.label }}</div>
+            </sc-for>
+            <div style="flex:1"></div>
+            <div style="font:400 11px ui-monospace,Consolas,monospace;color:#9a9aa3">{{ foundLabel }}</div>
+            <div style="border:1px solid #33354a;border-radius:8px;padding:5px 11px;font-size:12px;color:#9a9aa3;cursor:pointer" style-hover="background:rgba(233,233,237,.06);color:#e9e9ed">Сбросить</div>
+          </div>
+        </div>
+
+        <div style="height:12px"></div>
+        <div class="tg-scroll" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:4px">
+          <sc-for list="{{ results }}" as="m" hint-placeholder-count="6">
+            <div style="{{ m.cardCss }}">
+              <div style="{{ m.stripeCss }}"></div>
+              <div style="display:flex;align-items:baseline;gap:8px">
+                <div style="font-size:13px;font-weight:600">{{ m.author }}</div>
+                <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">@{{ m.handle }}</div>
+                <div style="font-size:11.5px;color:#b5abfc">{{ m.chat }}</div>
+                <div style="flex:1"></div>
+                <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">{{ m.date }}</div>
+              </div>
+              <div style="font-size:13.5px;line-height:1.5;margin-top:7px;text-wrap:pretty">{{ m.text }}</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:9px">
+                <div style="{{ m.mediaCss }}">{{ m.media }}</div>
+                <div style="{{ m.metaCss }}">{{ m.meta }}</div>
+                <div style="flex:1"></div>
+                <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#796cbf;cursor:pointer" style-hover="color:#b5abfc">{{ m.link }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:10px;padding-top:12px">
+          <div style="border:1px solid #33354a;border-radius:8px;padding:6px 12px;font-size:12.5px;color:#6c6c78">← Раньше</div>
+          <div style="font:400 11.5px ui-monospace,Consolas,monospace;color:#9a9aa3">1–100 из 1 284</div>
+          <div style="border:1px solid #33354a;border-radius:8px;padding:6px 12px;font-size:12.5px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Позже →</div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isExport }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:24px 32px 28px">
+        <div style="font-size:20px;font-weight:600">Выгрузка в файл</div>
+        <div style="color:#9a9aa3;font-size:12px;margin-top:5px;max-width:640px;line-height:1.5">Готовый файл открывается в Claude для разбора запросов, объёмов и цен. Медиафайлы остаются рядом с базой — в выгрузке будет путь к файлу.</div>
+        <div style="height:16px"></div>
+
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="flex:11;display:flex;flex-direction:column;gap:16px">
+            <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">КАКИЕ ЧАТЫ ВЫГРУЗИТЬ</div>
+                <div style="flex:1"></div>
+                <div style="font-size:11.5px;color:#796cbf;cursor:pointer" style-hover="color:#b5abfc">Выбрать все</div>
+                <div style="font-size:11.5px;color:#796cbf;cursor:pointer" style-hover="color:#b5abfc">Снять выбор</div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:10px">
+                <sc-for list="{{ exportChats }}" as="c" hint-placeholder-count="5">
+                  <div onClick="{{ c.toggle }}" style="{{ c.css }}"><span style="{{ c.boxCss }}">{{ c.mark }}</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.title }}</span><span style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">{{ c.count }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+              <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">ФОРМАТ</div>
+              <div style="display:flex;gap:8px;margin-top:10px">
+                <sc-for list="{{ formats }}" as="f" hint-placeholder-count="3">
+                  <div onClick="{{ f.select }}" style="{{ f.css }}"><div style="font-size:13px">{{ f.label }}</div><div style="font-size:11px;color:#6c6c78;margin-top:3px">{{ f.hint }}</div></div>
+                </sc-for>
+              </div>
+
+              <div style="height:14px"></div>
+              <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">КАК ДЕЛИТЬ ФАЙЛЫ</div>
+              <div style="display:flex;gap:8px;margin-top:10px">
+                <sc-for list="{{ splits }}" as="s" hint-placeholder-count="3">
+                  <div onClick="{{ s.select }}" style="{{ s.css }}"><div style="font-size:13px">{{ s.label }}</div><div style="font-size:11px;color:#6c6c78;margin-top:3px">{{ s.hint }}</div></div>
+                </sc-for>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+                <div style="font-size:12px;color:#9a9aa3">Лимит токенов на файл</div>
+                <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:5px 10px;font:400 12.5px ui-monospace,Consolas,monospace">120 000</div>
+                <div style="display:flex;flex-direction:column;gap:2px">
+                  <div style="width:18px;height:13px;border:1px solid #33354a;border-radius:4px;color:#9a9aa3;font-size:8px;display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="border-color:#9184d9;color:#d2cefd">▲</div>
+                  <div style="width:18px;height:13px;border:1px solid #33354a;border-radius:4px;color:#9a9aa3;font-size:8px;display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="border-color:#9184d9;color:#d2cefd">▼</div>
+                </div>
+              </div>
+            </div>
+
+            <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+              <div style="display:flex;gap:12px">
+                <div style="flex:1"><div style="font-size:11.5px;color:#9a9aa3">Период — с</div><div style="margin-top:5px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 12.5px ui-monospace,Consolas,monospace;color:#e9e9ed">2026-01-01</div></div>
+                <div style="flex:1"><div style="font-size:11.5px;color:#9a9aa3">Период — по</div><div style="margin-top:5px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 12.5px ui-monospace,Consolas,monospace;color:#6c6c78">ГГГГ-ММ-ДД</div></div>
+                <div style="flex:1.4"><div style="font-size:11.5px;color:#9a9aa3">Папка сохранения</div>
+                  <div style="display:flex;gap:6px;margin-top:5px">
+                    <div style="flex:1;min-width:0;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 11.5px ui-monospace,Consolas,monospace;color:#9a9aa3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">C:\ChatGrab\exports</div>
+                    <div style="border:1px solid #33354a;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Обзор…</div>
+                  </div>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:12px">
+                <sc-for list="{{ exportToggles }}" as="t" hint-placeholder-count="4">
+                  <div onClick="{{ t.toggle }}" style="{{ t.css }}"><span style="{{ t.boxCss }}">{{ t.mark }}</span>{{ t.label }}</div>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="background:#7a6bd0;color:#f7f6ff;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:500;cursor:pointer;box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 8px 20px rgba(122,107,208,.32)" style-hover="background:#8878e0">Экспортировать</div>
+              <div style="font:400 11.5px ui-monospace,Consolas,monospace;color:#9a9aa3">{{ estimateLine }}</div>
+              <div style="flex:1"></div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">ПРЕСЕТ</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:6px 10px;font-size:12px;width:170px">Недельный для Claude<span style="color:#6c6c78">▾</span></div>
+                <div style="border:1px solid #33354a;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Сохранить как…</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:9;display:flex;flex-direction:column;gap:14px">
+            <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);position:relative;overflow:hidden">
+              <div style="position:absolute;right:-30px;top:-30px;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(145,132,217,.16),transparent 70%)"></div>
+              <div style="font:400 10px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#9184d9">ЧТО ПОЛУЧИТСЯ</div>
+              <div style="font-size:15px;margin-top:8px">{{ previewLine }}</div>
+              <div style="display:flex;flex-direction:column;gap:4px;margin-top:12px">
+                <sc-for list="{{ previewFiles }}" as="f" hint-placeholder-count="5">
+                  <div style="{{ f.css }}"><span style="color:#6c6c78">▸ </span>{{ f.name }}<span style="flex:1"></span><span style="color:#6c6c78">{{ f.size }}</span></div>
+                </sc-for>
+              </div>
+              <div style="font-size:11.5px;line-height:1.5;color:#9a9aa3;margin-top:12px">Медиафайлы не встраиваются в файл: в каждой записи будет путь вида photos|videos|voice|documents/&lt;чат&gt;/&lt;номер&gt;, а сами файлы остаются рядом с базой.</div>
+            </div>
+
+            <div style="background:#12141d;border:1px solid #33354a;border-radius:12px;overflow:hidden">
+              <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(51,53,74,.6);font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78"><span>ЖУРНАЛ ВЫГРУЗОК</span><span>20 последних</span></div>
+              <div style="display:flex;flex-direction:column">
+                <sc-for list="{{ exportLog }}" as="e" hint-placeholder-count="6">
+                  <div style="{{ e.css }}"><span style="color:#9a9aa3">{{ e.when }}</span><span style="color:#d2cefd">{{ e.format }}</span><span style="color:#6c6c78">{{ e.split }}</span><span style="flex:1"></span><span style="color:#6c6c78">{{ e.rows }}</span></div>
+                </sc-for>
+              </div>
+              <div style="padding:9px 14px;font-size:11px;color:#6c6c78;border-top:1px solid rgba(51,53,74,.6)">Двойной клик по записи — повторить ту же выгрузку.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isBots }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:24px 32px 22px;height:860px;box-sizing:border-box;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:flex-start;gap:16px">
+          <div style="flex:1">
+            <div style="font-size:20px;font-weight:600">Конструктор ботов</div>
+            <div style="color:#9a9aa3;font-size:12px;margin-top:5px">Все боты этого инстанса — каждый со своим типом, правилами и данными</div>
+          </div>
+          <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:500;cursor:pointer;box-shadow:0 6px 16px rgba(122,107,208,.3)" style-hover="background:#8878e0">＋ Новый бот</div>
+        </div>
+
+        <div style="height:14px"></div>
+        <div style="display:flex;gap:2px;border-bottom:1px solid #33354a">
+          <sc-for list="{{ botTabs }}" as="t" hint-placeholder-count="8">
+            <div onClick="{{ t.select }}" style="{{ t.css }}">{{ t.label }}<div style="{{ t.underlineCss }}"></div></div>
+          </sc-for>
+        </div>
+
+        <div style="height:16px"></div>
+        <sc-if value="{{ botsListTab }}" hint-placeholder-val="{{ true }}">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+            <sc-for list="{{ bots }}" as="b" hint-placeholder-count="2">
+              <div style="{{ b.cardCss }}">
+                <div style="{{ b.stripeCss }}"></div>
+                <div style="display:flex;align-items:flex-start;gap:8px">
+                  <div style="flex:1;font-size:14px;font-weight:600">{{ b.name }}</div>
+                  <div style="{{ b.pillCss }}"><span style="{{ b.dotCss }}"></span>{{ b.statusLabel }}</div>
+                </div>
+                <div style="font-size:11.5px;color:#9a9aa3;margin-top:7px;line-height:1.45">{{ b.meta }}</div>
+                <div style="{{ b.errorCss }}">{{ b.error }}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:11px;padding-top:11px;border-top:1px solid #2c2e3d">
+                  <div><div style="font:400 9px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#6c6c78">ПРАВИЛ</div><div style="font:400 15px ui-monospace,Consolas,monospace;margin-top:2px">{{ b.rules }}</div></div>
+                  <div><div style="font:400 9px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#6c6c78">ЗАЯВОК</div><div style="font:400 15px ui-monospace,Consolas,monospace;margin-top:2px">{{ b.leads }}</div></div>
+                  <div><div style="font:400 9px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#6c6c78">ОТВЕТОВ 24Ч</div><div style="font:400 15px ui-monospace,Consolas,monospace;margin-top:2px">{{ b.replies }}</div></div>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                  <div style="{{ b.primaryCss }}">{{ b.primary }}</div>
+                  <div style="border:1px solid #33354a;border-radius:8px;padding:5px 12px;font-size:12px;color:#9a9aa3;cursor:pointer" style-hover="background:rgba(233,233,237,.06);color:#e9e9ed">Правила</div>
+                  <div style="flex:1"></div>
+                  <div style="border-radius:8px;padding:5px 11px;font-size:12px;color:#9a9aa3;cursor:pointer" style-hover="background:rgba(200,90,110,.16);color:#e9b3bf">Удалить</div>
+                </div>
+              </div>
+            </sc-for>
+            <div style="border:1px dashed #3f424d;border-radius:11px;min-height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;cursor:pointer;color:#6c6c78" style-hover="border-color:#9184d9;color:#d2cefd">
+              <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="6" width="10" height="7" rx="2"></rect><path d="M8 3.5V6"></path></svg>
+              <div style="font-size:12.5px">Новый бот из пресета B2B / B2C</div>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ botsOtherTab }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;min-height:0;display:flex;gap:12px">
+            <div style="width:280px;flex:none;background:#232532;border:1px solid #33354a;border-radius:12px;padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);display:flex;flex-direction:column;gap:4px">
+              <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78;padding:2px 4px 8px">{{ botTabListTitle }}</div>
+              <sc-for list="{{ botTabItems }}" as="i" hint-placeholder-count="5">
+                <div style="{{ i.css }}"><span style="{{ i.dotCss }}"></span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ i.label }}</span><span style="font:400 10px ui-monospace,Consolas,monospace;color:#6c6c78">{{ i.meta }}</span></div>
+              </sc-for>
+              <div style="flex:1"></div>
+              <div style="border:1px dashed #3f424d;border-radius:8px;padding:7px;text-align:center;font-size:12px;color:#9a9aa3;cursor:pointer" style-hover="border-color:#9184d9;color:#d2cefd">＋ {{ botTabAddLabel }}</div>
+            </div>
+            <div style="flex:1;min-width:0;background:#232532;border:1px solid #33354a;border-radius:12px;padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);display:flex;flex-direction:column">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="font-size:15px;font-weight:600">{{ botTabDetailTitle }}</div>
+                <div style="{{ botTabDetailPillCss }}">{{ botTabDetailPill }}</div>
+                <div style="flex:1"></div>
+                <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:5px 13px;font-size:12px;cursor:pointer" style-hover="background:#8878e0">Сохранить</div>
+              </div>
+              <div style="font-size:12px;color:#9a9aa3;margin-top:8px;line-height:1.5;max-width:620px">{{ botTabDetailHint }}</div>
+              <div style="height:14px"></div>
+              <div style="flex:1;min-height:0;background:#12141d;border:1px solid #33354a;border-radius:10px;padding:12px 14px;font-family:Consolas,ui-monospace,monospace;font-size:11.5px;overflow:hidden;display:flex;flex-direction:column;gap:5px">
+                <sc-for list="{{ botTabBody }}" as="r" hint-placeholder-count="8">
+                  <div style="{{ r.css }}">{{ r.text }}</div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:24px 32px 30px">
+        <div style="display:flex;align-items:flex-start;gap:16px">
+          <div style="flex:1">
+            <div style="font-size:20px;font-weight:600">Настройки</div>
+            <div style="color:#9a9aa3;font-size:12px;margin-top:5px">Доступ, скорость сбора, медиа, безопасность и обслуживание базы</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:7px;font:400 11px ui-monospace,Consolas,monospace;color:#bfe5cd;background:rgba(120,190,150,.12);border-radius:7px;padding:5px 10px"><span style="width:5px;height:5px;border-radius:3px;background:#7fc79b"></span>всё сохранено</div>
+        </div>
+        <div style="height:16px"></div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+          <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">ДОСТУП К TELEGRAM</div>
+            <div style="display:flex;gap:12px;margin-top:11px">
+              <div style="flex:1"><div style="font-size:11.5px;color:#9a9aa3">Ключ приложения (api_id)</div><div style="margin-top:5px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 12.5px ui-monospace,Consolas,monospace">2 048 117</div></div>
+              <div style="flex:1.4"><div style="font-size:11.5px;color:#9a9aa3">Секрет приложения (api_hash)</div>
+                <div style="display:flex;gap:6px;margin-top:5px">
+                  <div style="flex:1;min-width:0;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 12.5px ui-monospace,Consolas,monospace;color:#6c6c78">••••••••••••••••</div>
+                  <div style="border:1px solid #33354a;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Показать</div>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top:11px"><div style="font-size:11.5px;color:#9a9aa3">Файл входа в аккаунт</div>
+              <div style="display:flex;gap:6px;margin-top:5px">
+                <div style="flex:1;min-width:0;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 11.5px ui-monospace,Consolas,monospace;color:#9a9aa3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">C:\ChatGrab\session\cosmo_ops.session</div>
+                <div style="border:1px solid #33354a;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Обзор…</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:9px;margin-top:11px;background:rgba(240,198,160,.07);border:1px solid rgba(240,198,160,.2);border-radius:9px;padding:10px 12px">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#f0c6a0" stroke-width="1.4" style="flex:none;margin-top:1px"><path d="M8 2.8 14 13H2L8 2.8Z"></path><path d="M8 6.6v3"></path><circle cx="8" cy="11.3" r=".6" fill="#f0c6a0" stroke="none"></circle></svg>
+              <div style="font-size:11.5px;line-height:1.5;color:#e2c9b4">Этот файл даёт полный доступ к аккаунту. Не пересылайте его и не кладите в выгрузки.</div>
+            </div>
+          </div>
+
+          <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">СКОРОСТЬ ЗАГРУЗКИ ИСТОРИИ</div>
+            <div style="display:flex;align-items:baseline;gap:10px;margin-top:12px">
+              <div style="font:400 30px ui-monospace,Consolas,monospace;letter-spacing:-.02em">1.4</div>
+              <div style="font-size:12px;color:#9a9aa3">с пауза между запросами</div>
+              <div style="flex:1"></div>
+              <div style="font:400 11px ui-monospace,Consolas,monospace;color:#6c6c78">от 0.8 до 4.0</div>
+            </div>
+            <div style="height:6px;border-radius:4px;background:rgba(233,233,237,.08);margin-top:10px;position:relative">
+              <div style="position:absolute;left:0;top:0;bottom:0;width:22%;border-radius:4px;background:linear-gradient(90deg,#796cbf,#b5abfc)"></div>
+              <div style="position:absolute;left:22%;top:-4px;width:14px;height:14px;border-radius:9px;background:#f5f4ff;box-shadow:0 2px 6px rgba(0,0,0,.4)"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font:400 10px ui-monospace,Consolas,monospace;color:#6c6c78;margin-top:8px"><span>быстрее · чаще остановки</span><span>медленнее · надёжнее</span></div>
+            <div style="font-size:11.5px;line-height:1.5;color:#9a9aa3;margin-top:11px">Больше пауза — реже остановки со стороны Telegram, но история собирается дольше. Приложение само увеличивает паузу после FloodWait.</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #2c2e3d">
+              <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.11em;color:#6c6c78">РАСПИСАНИЕ</div>
+              <div onClick="{{ schedToggle }}" style="{{ schedCss }}"><div style="{{ schedKnobCss }}"></div></div>
+              <div style="font-size:12px;color:#9a9aa3">грузить историю только с</div>
+              <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:7px;padding:4px 9px;font:400 12px ui-monospace,Consolas,monospace">23:00</div>
+              <div style="font-size:12px;color:#9a9aa3">до</div>
+              <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:7px;padding:4px 9px;font:400 12px ui-monospace,Consolas,monospace">07:00</div>
+            </div>
+          </div>
+
+          <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">КАКИЕ МЕДИАФАЙЛЫ СКАЧИВАТЬ</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:11px">
+              <sc-for list="{{ mediaToggles }}" as="m" hint-placeholder-count="4">
+                <div onClick="{{ m.toggle }}" style="{{ m.css }}"><span style="{{ m.boxCss }}">{{ m.mark }}</span><span style="flex:1">{{ m.label }}</span><span style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">{{ m.count }}</span></div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+              <div style="font-size:12px;color:#9a9aa3">Максимальный размер файла (кроме фото)</div>
+              <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:5px 10px;font:400 12.5px ui-monospace,Consolas,monospace">25 МБ</div>
+            </div>
+            <div style="margin-top:11px"><div style="font-size:11.5px;color:#9a9aa3">Папка для фотографий</div>
+              <div style="display:flex;gap:6px;margin-top:5px">
+                <div style="flex:1;min-width:0;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:7px 10px;font:400 11.5px ui-monospace,Consolas,monospace;color:#9a9aa3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">C:\ChatGrab\media\photos</div>
+                <div style="border:1px solid #33354a;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Обзор…</div>
+              </div>
+            </div>
+            <div style="font-size:11.5px;color:#6c6c78;margin-top:9px">Видео, голосовые и документы сохраняются рядом, в подпапках videos / voice / documents.</div>
+          </div>
+
+          <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">БАЗА ДАННЫХ И РЕЗЕРВНЫЕ КОПИИ</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:11px">
+              <div><div style="font:400 9px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#6c6c78">РАЗМЕР</div><div style="font:400 17px ui-monospace,Consolas,monospace;margin-top:3px">613.4 МБ</div></div>
+              <div><div style="font:400 9px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#6c6c78">МЕДИА</div><div style="font:400 17px ui-monospace,Consolas,monospace;margin-top:3px">4.1 ГБ</div></div>
+              <div><div style="font:400 9px ui-monospace,Consolas,monospace;letter-spacing:.1em;color:#6c6c78">ПОСЛЕДНИЙ БЭКАП</div><div style="font:400 17px ui-monospace,Consolas,monospace;margin-top:3px">06:00</div></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap">
+              <div onClick="{{ backupToggle }}" style="{{ backupCss }}"><div style="{{ backupKnobCss }}"></div></div>
+              <div style="font-size:12px;color:#9a9aa3">копия каждые</div>
+              <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:7px;padding:4px 9px;font:400 12px ui-monospace,Consolas,monospace">12</div>
+              <div style="font-size:12px;color:#9a9aa3">ч · хранить</div>
+              <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:7px;padding:4px 9px;font:400 12px ui-monospace,Consolas,monospace">5</div>
+              <div style="font-size:12px;color:#9a9aa3">копий</div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+              <div style="border:1px solid #33354a;border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Сделать бэкап сейчас</div>
+              <div style="border:1px solid #33354a;border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Сжать базу (VACUUM)</div>
+              <div style="border:1px solid #33354a;border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Открыть в проводнике</div>
+            </div>
+          </div>
+
+          <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">ПРАВИЛА ИГНОРА</div>
+              <div style="flex:1"></div>
+              <div style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">скрыто 2 481 записей</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:5px;margin-top:11px">
+              <sc-for list="{{ ignoreRules }}" as="r" hint-placeholder-count="4">
+                <div style="{{ r.css }}"><span style="{{ r.kindCss }}">{{ r.kind }}</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:Consolas,ui-monospace,monospace">{{ r.value }}</span><span style="font:400 10.5px ui-monospace,Consolas,monospace;color:#6c6c78">{{ r.hits }}</span><span style="color:#6c6c78;cursor:pointer;font-size:11px" style-hover="color:#e9b3bf">✕</span></div>
+              </sc-for>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:11px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:6px 10px;font-size:12px;width:120px">автор<span style="color:#6c6c78">▾</span></div>
+              <div style="flex:1;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:6px 10px;font-size:12px;color:#6c6c78">значение или маска</div>
+              <div style="background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:6px 13px;font-size:12px;cursor:pointer" style-hover="background:#8878e0">Добавить</div>
+            </div>
+            <div style="font-size:11.5px;color:#796cbf;margin-top:9px;cursor:pointer" style-hover="color:#b5abfc">Применить к уже собранным →</div>
+          </div>
+
+          <div style="background:#232532;border:1px solid #33354a;border-radius:12px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+            <div style="font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.13em;color:#6c6c78">ЗАЩИТА И ПРОЧЕЕ</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:11px">
+              <div onClick="{{ masterToggle }}" style="{{ masterCss }}"><div style="{{ masterKnobCss }}"></div></div>
+              <div style="flex:1"><div style="font-size:12.5px">Защита мастер-паролем</div><div style="font-size:11px;color:#6c6c78;margin-top:2px">запрос пароля при запуске приложения</div></div>
+              <div style="border:1px solid #33354a;border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer" style-hover="background:rgba(233,233,237,.06)">Сменить</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid #2c2e3d">
+              <div style="flex:1;font-size:12.5px;line-height:1.4">Предупреждать, если по чату нет новых сообщений дольше</div>
+              <div style="background:#1c1e2c;border:1px solid #33354a;border-radius:7px;padding:4px 9px;font:400 12px ui-monospace,Consolas,monospace">7</div>
+              <div style="font-size:12px;color:#9a9aa3">суток</div>
+            </div>
+            <div style="margin-top:12px"><div style="font-size:11.5px;color:#9a9aa3">Шапка Markdown-дайджеста</div>
+              <div style="margin-top:5px;background:#1c1e2c;border:1px solid #33354a;border-radius:8px;padding:8px 10px;font:400 11.5px/1.5 Consolas,ui-monospace,monospace;color:#9a9aa3;min-height:46px"># Закупки сырья · дайджест<br>Источник: ChatGrab</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1400,&quot;height&quot;:980}}">
+const STATUS = {
+  loading:{label:"грузит историю",bg:"rgba(145,132,217,.18)",fg:"#d2cefd",dot:"#b5abfc",stripe:"#9184d9",pulse:true},
+  queued:{label:"в очереди",bg:"rgba(145,132,217,.10)",fg:"#b5afe8",dot:"#5d5294",stripe:"#5d5294"},
+  listening:{label:"слушает новые",bg:"rgba(120,190,150,.14)",fg:"#bfe5cd",dot:"#7fc79b",stripe:"#7fc79b",pulse:true},
+  off:{label:"сбор выключен",bg:"rgba(233,233,237,.05)",fg:"#6c6c78",dot:"#3f424d",stripe:"#3f424d"},
+  error:{label:"ошибка",bg:"rgba(200,90,110,.16)",fg:"#e9b3bf",dot:"#c85a6e",stripe:"#c98a9a",pulse:true},
+  running:{label:"работает",bg:"rgba(120,190,150,.14)",fg:"#bfe5cd",dot:"#7fc79b",stripe:"#7fc79b",pulse:true},
+  stopped:{label:"остановлен",bg:"rgba(233,233,237,.05)",fg:"#6c6c78",dot:"#3f424d",stripe:"#3f424d"},
+};
+
+const CHATS = [
+  {id:1,title:"Сырьё для косметики — B2B",username:"cosmo_raw_b2b",status:"loading",count:96431,media:7812,lastFull:"21.08 11:24",depth:"вся история",enabled:1,warn:"",pct:68,
+   bars:[6,9,7,14,11,8,12,17,13,9,15,19,12,22,18,26,14,20,25,31,17,23,28,35,21,27,33,29,38,42]},
+  {id:2,title:"Флаконы и упаковка RU",username:"flacon_ru",status:"listening",count:41207,media:3104,lastFull:"21.08 10:58",depth:"вся история · собрана",enabled:1,warn:"",pct:100,
+   bars:[4,7,5,9,6,11,8,7,12,10,9,13,11,14,12,16,10,13,15,12,14,11,16,13,15,12,17,14,16,18]},
+  {id:3,title:"Ароматика · закупки",username:"aroma_zakupki",status:"queued",count:28104,media:912,lastFull:"20.08 19:12",depth:"с 2026-01-01",enabled:1,warn:"Ждёт своей очереди на историю",pct:0,
+   bars:[3,5,4,6,5,8,6,5,9,7,6,8,7,9,8,10,6,8,7,9,8,10,7,9,8,11,9,10,8,12]},
+  {id:4,title:"Поставщики масел (опт)",username:"oils_opt",status:"off",count:15903,media:508,lastFull:"11.08 08:40",depth:"вся история · собрана",enabled:0,warn:"Сбор выключен — новые сообщения не пишутся",pct:100,
+   bars:[8,6,7,5,6,4,5,3,4,2,3,2,1,1,0,0,1,0,1,0,0,1,0,0,1,0,0,0,1,0]},
+  {id:5,title:"Барахолка косметистов",username:"baraholka_cosm",status:"error",count:3317,media:72,lastFull:"21.08 09:03",depth:"вся история",enabled:1,warn:"Чат стал недоступен: нет прав на чтение",pct:41,
+   bars:[1,2,1,3,2,4,3,2,5,3,4,3,5,4,6,5,3,4,6,5,4,6,5,7,6,4,5,7,6,8]},
+];
+
+const LOG = [
+  ["11:24:07","Сырьё для косметики — B2B","загружено 500 сообщений (96 431 всего)",""],
+  ["11:23:41","Флаконы и упаковка RU","новое сообщение сохранено","ok"],
+  ["11:23:12","Сырьё для косметики — B2B","загружено 500 сообщений (95 931 всего)",""],
+  ["11:22:38","—","пауза 1.4 с между запросами",""],
+  ["11:21:55","Сырьё для косметики — B2B","FloodWait 24 с — ждём и продолжаем","warn"],
+  ["11:21:31","Барахолка косметистов","нет прав на чтение — сбор приостановлен","warn"],
+  ["11:20:46","Сырьё для косметики — B2B","загружено 500 сообщений (95 431 всего)",""],
+  ["11:20:02","Ароматика · закупки","поставлен в очередь на историю",""],
+  ["11:19:38","Флаконы и упаковка RU","скачано фото 214 КБ",""],
+  ["11:18:59","Сырьё для косметики — B2B","загружено 500 сообщений (94 931 всего)",""],
+  ["11:18:12","Поставщики масел (опт)","сбор выключен пользователем","warn"],
+  ["11:17:40","Флаконы и упаковка RU","новое сообщение сохранено","ok"],
+  ["11:16:55","Сырьё для косметики — B2B","загружено 500 сообщений (94 431 всего)",""],
+  ["11:16:10","Ароматика · закупки","обновлён список участников",""],
+];
+
+const RESULTS = [
+  {author:"Марина Ковалёва",handle:"kovaleva_supply",chat:"Сырьё для косметики — B2B",date:"21.08 11:02",
+   text:"Есть глицерин 99.5% USP, канистра 25 кг — 2 340 ₽ за канистру от 10 шт. Отгрузка со склада в Подольске, самовывоз или ТК за счёт покупателя.",
+   media:"▣ фото приложено",meta:"",link:"t.me/cosmo_raw_b2b/48120"},
+  {author:"Игорь П.",handle:"",chat:"Сырьё для косметики — B2B",date:"21.08 10:47",
+   text:"Ищу глицерин пищевой мелким оптом, 5–8 канистр в месяц, нужен паспорт качества на каждую партию.",
+   media:"",meta:"ответ на 48118",link:"t.me/cosmo_raw_b2b/48119"},
+  {author:"Флаконы RU",handle:"flacon_manager",chat:"Флаконы и упаковка RU",date:"21.08 09:58",
+   text:"Прайс на август: флакон 250 мл ПЭТ с помпой — 41 ₽, от 5 000 шт — 36 ₽. Крышки в наличии, этикетку печатаем сами.",
+   media:"▣ документ приложен",meta:"переслано от Упаковка Опт",link:"t.me/flacon_ru/9814"},
+  {author:"Анна Т.",handle:"anna_cosm",chat:"Барахолка косметистов",date:"20.08 21:14",
+   text:"Отдам остатки: глицерин 1 л, масло жожоба 500 мл, эмульгатор Olivem 1000 — 200 г. Забрать в Химках.",
+   media:"▣ фото приложено",meta:"",link:"t.me/baraholka_cosm/2210"},
+  {author:"Дмитрий Ш.",handle:"oils_dm",chat:"Поставщики масел (опт)",date:"19.08 16:30",
+   text:"Кокосовое масло рафинированное, бочка 190 кг — под заказ 14 дней. Глицерин не возим, только базовые масла.",
+   media:"",meta:"",link:"t.me/oils_opt/5521"},
+  {author:"Марина Ковалёва",handle:"kovaleva_supply",chat:"Сырьё для косметики — B2B",date:"19.08 12:05",
+   text:"Обновила остатки: глицерин 25 кг — 12 канистр, ниацинамид 1 кг — 4 шт, аллантоин 500 г — 9 шт.",
+   media:"▣ фото приложено",meta:"",link:"t.me/cosmo_raw_b2b/47903"},
+];
+
+const BOTS = [
+  {id:1,name:"B2B ассистент закупок",status:"running",type:"Бот-ассистент (Bot API)",preset:"B2B",manager:"@cosmo_ops",rules:12,leads:34,replies:87,error:""},
+  {id:2,name:"Юзербот-триггеры",status:"stopped",type:"Юзербот-триггеры",preset:"Кастом",manager:"не задан",rules:5,leads:0,replies:0,error:"Последняя ошибка: не задан чат менеджера — заявки некуда отправлять"},
+];
+
+const BOT_TABS = [
+  ["list","Боты"],["leads","Заявки"],["rules","Правила"],["scenarios","Сценарии"],
+  ["templates","Шаблоны"],["test","Тест"],["log","Журнал"],["analytics","Аналитика"],
+];
+
+const BOT_TAB_DATA = {
+  leads:{listTitle:"ФИЛЬТР ПО СТАТУСУ",add:"Выгрузить в Excel",detail:"Заявка №34 · Марина Ковалёва",pill:"новая",
+    hint:"Заявка собрана из переписки: контакт, что нужно, объём и срок. Переназначьте менеджера или выгрузите пачку в Excel.",
+    items:[["новые","12"],["в работе","9"],["закрыты","11"],["отклонены","2"]],
+    body:[["контакт","@kovaleva_supply · +7 921 000 00 00"],["запрос","глицерин 99.5% USP, 10 канистр"],["бюджет","23 400 ₽"],["срок","до 28.08"],["менеджер","@cosmo_ops"],["источник","Сырьё для косметики — B2B / 48120"]]},
+  rules:{listTitle:"ТРИГГЕРЫ",add:"Новый триггер",detail:"Триггер «цена/прайс»",pill:"включён",
+    hint:"Триггер срабатывает по словам в сообщении. Действия выполняются по порядку — можно ответить шаблоном и сразу создать заявку.",
+    items:[["цена/прайс","24"],["наличие","18"],["доставка","11"],["опт от 10","6"],["стоп-слова","—"]],
+    body:[["тип","содержит любое из слов"],["слова","цена, прайс, сколько стоит, по чём"],["действие 1","ответить шаблоном «Прайс август»"],["действие 2","создать заявку со статусом «новая»"],["действие 3","уведомить @cosmo_ops"],["антиспам","не чаще 1 раза в 6 ч на контакт"]]},
+  scenarios:{listTitle:"СЦЕНАРИИ",add:"Новый сценарий",detail:"Сценарий «квалификация опта»",pill:"4 шага",
+    hint:"Сценарий ведёт диалог по шагам и складывает ответы в поля заявки.",
+    items:[["квалификация опта","4 шага"],["сбор контакта","2 шага"],["отказ вежливо","1 шаг"]],
+    body:[["шаг 1","Спросить объём: «Сколько канистр в месяц?» → поле volume"],["шаг 2","Спросить город доставки → поле city"],["шаг 3","Спросить срок → поле deadline"],["шаг 4","Создать заявку и отправить менеджеру"]]},
+  templates:{listTitle:"ШАБЛОНЫ",add:"Новый шаблон",detail:"Шаблон «Прайс август»",pill:"используется в 3 правилах",
+    hint:"Переменные вида {name}, {company} подставляются из карточки контакта.",
+    items:[["Прайс август","3"],["Нет в наличии","1"],["Приветствие","2"],["Реквизиты","1"]],
+    body:[["текст","{name}, добрый день! Отправляю прайс на август."],["","Глицерин 99.5% USP, канистра 25 кг — 2 340 ₽ (от 10 шт — 2 190 ₽)."],["","Флакон 250 мл с помпой — 41 ₽, от 5 000 шт — 36 ₽."],["","Отгрузка со склада в Подольске, самовывоз или ТК."],["вложение","price_08_2026.pdf"]]},
+  test:{listTitle:"ЧТО ПРОВЕРЯЕМ",add:"Прогнать ещё раз",detail:"Тестовый прогон правил",pill:"без отправки",
+    hint:"Введите сообщение так, как его написал бы контакт — покажем, какие триггеры сработали и что бот ответил бы. Реальные сообщения не отправляются.",
+    items:[["правила","12"],["сценарии","3"],["шаблоны","4"]],
+    body:[["ввод","«Здравствуйте, а какая цена на глицерин от 10 канистр?»"],["сработал","триггер «цена/прайс» (слово: цена)"],["действие 1","ответ шаблоном «Прайс август»"],["действие 2","заявка создана: объём 10 канистр"],["не сработал","«наличие» — нет слов из списка"],["итог","1 ответ, 1 заявка, 0 ошибок"]]},
+  log:{listTitle:"ФИЛЬТР",add:"Выгрузить журнал",detail:"События ботов",pill:"за сегодня",
+    hint:"Сработавшие триггеры, отправленные сообщения и ошибки — по всем ботам инстанса.",
+    items:[["всё","218"],["ответы","87"],["заявки","34"],["ошибки","3"]],
+    body:[["11:24","триггер «цена/прайс» → ответ шаблоном @kovaleva_supply"],["11:19","заявка №34 создана и отправлена @cosmo_ops"],["10:58","сценарий «квалификация опта» шаг 2 из 4"],["10:41","триггер «доставка» → ответ шаблоном"],["09:32","ошибка: не задан чат менеджера (Юзербот-триггеры)"],["09:10","бот B2B ассистент запущен"]]},
+  analytics:{listTitle:"РЕЙТИНГ КОНТАКТОВ",add:"Выгрузить рейтинг",detail:"Марина Ковалёва · @kovaleva_supply",pill:"активный контакт",
+    hint:"Рейтинг контактов по активности (частота + давность). Справа — история выбранного контакта.",
+    items:[["Марина Ковалёва","94"],["Флаконы RU","81"],["Игорь П.","67"],["Дмитрий Ш.","44"],["Анна Т.","21"]],
+    body:[["сообщений","218 за 90 суток"],["заявок","7 · 5 закрыто"],["средний чек","23 400 ₽"],["последний контакт","21.08 11:02"],["темы","глицерин, ниацинамид, аллантоин"],["ответы бота","31 · без жалоб"]]},
+};
+
+const num = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+const toneColor = t => t === "warn" ? "#f0c6a0" : t === "ok" ? "#bfe5cd" : "#d6d6db";
+const dot = (s, size) => `width:${size}px;height:${size}px;border-radius:${size}px;flex:none;background:${s.dot};${s.pulse ? "animation:tgPulse 1.7s ease-in-out infinite" : ""}`;
+const pill = s => `display:inline-flex;align-items:center;gap:6px;color:${s.fg};background:${s.bg};border-radius:6px;padding:3px 9px;font-size:11px;white-space:nowrap`;
+
+function bars(list, h, animate) {
+  const vmax = Math.max(...list) || 1;
+  const n = list.length;
+  return list.map((v, i) => {
+    const hot = i >= n - 4;
+    return { css: `flex:1;min-width:1px;border-radius:1px 1px 0 0;transform-origin:bottom;height:${
+      Math.max(2, (v / vmax) * h)}px;background:${hot ? "rgba(181,171,252,.92)" : "rgba(145,132,217,.5)"};${
+      animate ? `animation:tgGrow .5s cubic-bezier(.2,.7,.3,1) ${i * 16}ms both` : ""}` };
+  });
+}
+
+const check = on => ({
+  css: `display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:8px;font-size:12.5px;cursor:pointer;background:${
+    on ? "rgba(145,132,217,.12)" : "rgba(233,233,237,.03)"};border:1px solid ${on ? "rgba(145,132,217,.4)" : "#2c2e3d"};color:${on ? "#e9e9ed" : "#9a9aa3"}`,
+  boxCss: `width:15px;height:15px;border-radius:5px;flex:none;display:flex;align-items:center;justify-content:center;font-size:10px;color:#f5f4ff;background:${
+    on ? "#7a6bd0" : "transparent"};border:1px solid ${on ? "#7a6bd0" : "#3f424d"}`,
+  mark: on ? "✓" : "",
+});
+
+const toggleCss = on => `width:34px;height:19px;border-radius:9px;flex:none;position:relative;cursor:pointer;transition:background .18s;background:${on ? "#5d5294" : "rgba(255,255,255,.086)"}`;
+const knobCss = on => `position:absolute;top:2px;left:${on ? 17 : 2}px;width:15px;height:15px;border-radius:8px;transition:left .18s cubic-bezier(.2,.7,.3,1);background:${on ? "#f5f4ff" : "#75798c"}`;
+
+class Component extends DCLogic {
+  state = {
+    screen: "overview", hovered: null, collectChat: 1, botTab: "list",
+    enabled: { 1: true, 2: true, 3: true, 4: false, 5: true },
+    filters: { photos: false, forwards: false, replies: false },
+    exportSel: { 1: true, 2: true, 3: true, 4: false, 5: false },
+    exportFormat: "xlsx", exportSplit: "tokens",
+    exportOpts: { merge: false, incremental: true, zip: true, hidden: false },
+    media: { photos: true, videos: true, voice: false, documents: true },
+    sched: true, backup: true, master: false,
+  };
+
+  navCss(key) {
+    const active = this.state.screen === key;
+    return `position:relative;display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:8px;font-size:13px;cursor:pointer;transition:background .15s;${
+      active ? "color:#d2cefd;background:rgba(145,132,217,.16);box-shadow:inset 0 1px 0 rgba(255,255,255,.05)" : "color:rgba(233,233,237,.66)"}`;
+  }
+  navBarCss(key) {
+    return `position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;background:#b5abfc;opacity:${this.state.screen === key ? 1 : 0};transition:opacity .15s`;
+  }
+  go(key) { return () => this.setState({ screen: key }); }
+
+  renderVals() {
+    const st = this.state;
+    const screen = st.screen;
+    const sel = CHATS.find(c => c.id === st.collectChat) || CHATS[0];
+    const selS = STATUS[sel.status];
+    const tab = st.botTab;
+    const tabData = BOT_TAB_DATA[tab];
+
+    const nav = {}, navBar = {};
+    ["overview","connect","chats","collect","browse","export","bots","settings"].forEach(k => {
+      nav[k] = this.navCss(k); navBar[k] = this.navBarCss(k);
+    });
+
+    const foundBase = 1284;
+    const activeFilters = Object.values(st.filters).filter(Boolean).length;
+    const found = activeFilters ? Math.round(foundBase / (1 + activeFilters * 1.6)) : foundBase;
+    const visibleResults = activeFilters
+      ? RESULTS.filter(r => (!st.filters.photos || r.media.includes("фото")) &&
+                            (!st.filters.forwards || r.meta.includes("переслано")) &&
+                            (!st.filters.replies || r.meta.includes("ответ")))
+      : RESULTS;
+
+    const selectedExport = Object.keys(st.exportSel).filter(k => st.exportSel[k]).map(Number);
+    const exportRows = selectedExport.reduce((a, id) => a + (CHATS.find(c => c.id === id)?.count || 0), 0);
+    const tokens = Math.round(exportRows * 0.042);
+    const files = st.exportSplit === "none" ? 1 : st.exportSplit === "month" ? 8 : Math.max(1, Math.ceil(tokens / 120));
+    const ext = st.exportFormat === "xlsx" ? "xlsx" : st.exportFormat === "jsonl" ? "jsonl" : "md";
+
+    return {
+      nav, navBar,
+      goOverview: this.go("overview"), goConnect: this.go("connect"), goChats: this.go("chats"),
+      goCollect: this.go("collect"), goBrowse: this.go("browse"), goExport: this.go("export"),
+      goBots: this.go("bots"), goSettings: this.go("settings"),
+      isOverview: screen === "overview", isConnect: screen === "connect", isChats: screen === "chats",
+      isCollect: screen === "collect", isBrowse: screen === "browse", isExport: screen === "export",
+      isBots: screen === "bots", isSettings: screen === "settings",
+
+      tiles: CHATS.map(c => {
+        const s = STATUS[c.status];
+        const hot = st.hovered === c.id;
+        const loading = c.status === "loading";
+        return {
+          title: c.title, username: c.username, count: num(c.count), lastFull: c.lastFull, warn: c.warn,
+          perDay: Math.round(c.bars.reduce((a, b) => a + b, 0) / c.bars.length),
+          statusLabel: s.label, pillCss: pill(s), dotCss: dot(s, 5),
+          enter: () => this.setState({ hovered: c.id }),
+          leave: () => this.setState({ hovered: null }),
+          open: () => this.setState({ screen: "collect", collectChat: c.id }),
+          cardCss: `position:relative;overflow:hidden;background:#232532;border:1px solid ${hot ? "rgba(145,132,217,.55)" : "#33354a"};border-radius:11px;display:flex;flex-direction:column;cursor:pointer;transition:border-color .18s,transform .18s,box-shadow .18s;transform:translateY(${hot ? "-2px" : "0"});box-shadow:inset 0 1px 0 rgba(255,255,255,.04)${hot ? ",0 10px 26px rgba(0,0,0,.35)" : ""}`,
+          stripeCss: `position:absolute;left:0;top:0;bottom:0;width:2px;background:${s.stripe};opacity:${loading ? 1 : .75}`,
+          warnCss: `padding:${c.warn ? "8px 14px 0" : "0"};font-size:11px;line-height:1.35;color:${c.status === "error" ? "#e9b3bf" : "#f0c6a0"}`,
+          progressWrapCss: `padding-top:${loading ? "10px" : "0"};height:${loading ? "auto" : "0"};overflow:hidden`,
+          progressPct: c.pct + "%",
+          progressFillCss: `position:absolute;inset:0;width:${c.pct}%;border-radius:2px;background:linear-gradient(90deg,#796cbf,#b5abfc)`,
+          progressSweepCss: "position:absolute;top:0;bottom:0;width:30%;background:linear-gradient(90deg,transparent,rgba(245,244,255,.5),transparent);animation:tgSweep 2.4s linear infinite",
+          bars: bars(c.bars, 34, true),
+          primaryAction: c.status === "loading" ? "Пауза" : c.status === "off" ? "Включить" : "Догрузить",
+          actionsCss: `position:absolute;right:10px;bottom:10px;display:flex;gap:6px;transition:opacity .18s,transform .18s;opacity:${hot ? 1 : 0};transform:translateY(${hot ? "0" : "4px"});pointer-events:${hot ? "auto" : "none"}`,
+        };
+      }),
+
+      rows: CHATS.map(c => {
+        const on = st.enabled[c.id];
+        const s = STATUS[on ? c.status : "off"];
+        return {
+          title: c.title, username: c.username, count: num(c.count), lastFull: c.lastFull,
+          statusLabel: s.label, pillCss: pill(s), dotCss: dot(s, 5),
+          rowCss: "position:relative;display:grid;grid-template-columns:1fr 190px 130px 110px 150px 90px;align-items:center;gap:14px;padding:11px 16px 11px 20px;border-bottom:1px solid rgba(51,53,74,.55);cursor:pointer;transition:background .15s",
+          stripeCss: `position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;background:${s.stripe};opacity:.85`,
+          bars: bars(c.bars, 24, false),
+          toggle: () => this.setState({ enabled: { ...st.enabled, [c.id]: !on } }),
+          toggleCss: toggleCss(on), knobCss: knobCss(on),
+        };
+      }),
+
+      chips: CHATS.map(c => {
+        const s = STATUS[c.status];
+        const active = c.id === sel.id;
+        return {
+          title: c.title, dotCss: dot(s, 5),
+          select: () => this.setState({ collectChat: c.id }),
+          css: `display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:8px;font-size:12px;cursor:pointer;transition:background .15s;border:1px solid ${
+            active ? "#9184d9" : "#2c2e3d"};background:${active ? "rgba(145,132,217,.14)" : "rgba(233,233,237,.03)"};color:${active ? "#d2cefd" : "#9a9aa3"}`,
+        };
+      }),
+      selTitle: sel.title, selStatusLabel: selS.label, selPillCss: pill(selS), selDotCss: dot(selS, 6),
+      selCount: num(sel.count), selMedia: num(sel.media), selLastFull: sel.lastFull, selDepth: sel.depth,
+      selPrimary: sel.status === "loading" ? "Приостановить загрузку" : sel.pct === 100 ? "Догрузить историю" : "Загрузить историю",
+      selSecondary: st.enabled[sel.id] ? "Не слушать новые" : "Слушать новые сообщения",
+      selPct: sel.pct + "%",
+      selProgressLabel: sel.status === "loading" ? "Загрузка истории · пауза между запросами 1.4 с"
+        : sel.pct === 100 ? "История собрана полностью" : "Загрузка не запущена",
+      selFillCss: `position:absolute;inset:0;width:${sel.pct}%;border-radius:5px;background:linear-gradient(90deg,#796cbf,#b5abfc);transition:width .3s`,
+      selSweepCss: `position:absolute;top:0;bottom:0;width:24%;background:linear-gradient(90deg,transparent,rgba(245,244,255,.45),transparent);animation:tgSweep 2.6s linear infinite;opacity:${sel.status === "loading" ? 1 : 0}`,
+
+      log: LOG.map(([time, chat, text, tone], i) => ({
+        time, chat, text,
+        chatCss: `color:${chat === "—" ? "#6c6c78" : "#b5abfc"};display:inline-block;width:230px;padding:0 10px`,
+        css: `padding:4px 14px;display:flex;color:${toneColor(tone)};animation:tgSlide .38s ease ${i * 35}ms both`,
+      })),
+
+      filters: [
+        { key: "photos", label: "Только с фото" },
+        { key: "forwards", label: "Только пересланные" },
+        { key: "replies", label: "Только ответы" },
+      ].map(f => {
+        const on = st.filters[f.key];
+        return { label: f.label, ...check(on), toggle: () => this.setState({ filters: { ...st.filters, [f.key]: !on } }) };
+      }),
+      foundLabel: found ? `${num(found)} сообщений найдено` : "Ничего не найдено",
+      results: visibleResults.map((m, i) => ({
+        author: m.author, handle: m.handle || "—", chat: m.chat, date: m.date, text: m.text,
+        media: m.media, meta: m.meta, link: m.link,
+        cardCss: `position:relative;background:#232532;border:1px solid #33354a;border-radius:11px;padding:12px 14px 12px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);animation:tgUp .35s ease ${i * 45}ms both`,
+        stripeCss: "position:absolute;left:0;top:10px;bottom:10px;width:2px;border-radius:2px;background:#5d5294",
+        mediaCss: `display:${m.media ? "inline-flex" : "none"};align-items:center;background:rgba(145,132,217,.16);color:#d2cefd;border-radius:6px;padding:3px 9px;font-size:11px;cursor:pointer`,
+        metaCss: `display:${m.meta ? "inline-flex" : "none"};align-items:center;color:#6c6c78;font-size:11px`,
+      })),
+
+      exportChats: CHATS.map(c => {
+        const on = !!st.exportSel[c.id];
+        return { title: c.title, count: num(c.count), ...check(on),
+          toggle: () => this.setState({ exportSel: { ...st.exportSel, [c.id]: !on } }) };
+      }),
+      formats: [["xlsx","Excel (.xlsx)","таблица по колонкам"],["jsonl","JSONL","по записи в строке"],["markdown","Markdown","дайджест по дням"]].map(([k,label,hint]) => {
+        const on = st.exportFormat === k;
+        return { label, hint, select: () => this.setState({ exportFormat: k }),
+          css: `flex:1;text-align:left;padding:10px 13px;border-radius:9px;cursor:pointer;transition:background .15s;background:${
+            on ? "rgba(145,132,217,.14)" : "rgba(233,233,237,.03)"};border:1px solid ${on ? "#9184d9" : "rgba(233,233,237,.08)"};color:${on ? "#d2cefd" : "#e9e9ed"}` };
+      }),
+      splits: [["tokens","По размеру для Claude","части ≤ лимита токенов"],["month","По месяцам","отдельный файл на месяц"],["none","Одним куском","весь период в файле"]].map(([k,label,hint]) => {
+        const on = st.exportSplit === k;
+        return { label, hint, select: () => this.setState({ exportSplit: k }),
+          css: `flex:1;text-align:left;padding:10px 13px;border-radius:9px;cursor:pointer;transition:background .15s;background:${
+            on ? "rgba(145,132,217,.14)" : "rgba(233,233,237,.03)"};border:1px solid ${on ? "#9184d9" : "rgba(233,233,237,.08)"};color:${on ? "#d2cefd" : "#e9e9ed"}` };
+      }),
+      exportToggles: [
+        ["merge","Объединить выбранные чаты в один файл"],
+        ["incremental","Только новое с прошлой выгрузки"],
+        ["zip","Приложить папку с медиафайлами (zip)"],
+        ["hidden","Включить скрытые правилами игнора записи"],
+      ].map(([k,label]) => {
+        const on = st.exportOpts[k];
+        return { label, ...check(on), toggle: () => this.setState({ exportOpts: { ...st.exportOpts, [k]: !on } }) };
+      }),
+      estimateLine: selectedExport.length ? `${num(exportRows)} сообщений · ${files} файл(ов)` : "Ничего не выбрано",
+      previewLine: selectedExport.length ? `≈${tokens}k токенов · ${files} файл(ов) под контекст Claude` : "—",
+      previewFiles: (selectedExport.length ? [
+        [`chatgrab_2026-08_part1.${ext}`, "4.2 МБ"],
+        [`chatgrab_2026-08_part2.${ext}`, "4.1 МБ"],
+        [`chatgrab_2026-08_part3.${ext}`, "3.8 МБ"],
+        [`media_2026-08.zip`, st.exportOpts.zip ? "612 МБ" : "не включён"],
+      ] : [["—", ""]]).map(([name, size]) => ({
+        name, size, css: "display:flex;font-family:Consolas,ui-monospace,monospace;font-size:12px;color:#d6d6db",
+      })),
+      exportLog: [
+        ["19.08 14:02","xlsx","по размеру","96 431"],
+        ["12.08 09:40","xlsx","по месяцам","88 210"],
+        ["05.08 18:22","jsonl","одним куском","74 903"],
+        ["29.07 11:15","markdown","по месяцам","70 118"],
+        ["22.07 10:04","xlsx","по размеру","61 540"],
+      ].map(([when, format, split, rows], i) => ({
+        when, format, split, rows,
+        css: `display:flex;gap:10px;align-items:center;padding:7px 14px;font-family:Consolas,ui-monospace,monospace;font-size:11.5px;cursor:pointer;border-bottom:1px solid rgba(51,53,74,.4);animation:tgUp .3s ease ${i * 40}ms both`,
+      })),
+
+      botTabs: BOT_TABS.map(([k, label]) => {
+        const on = tab === k;
+        return { label, select: () => this.setState({ botTab: k }),
+          css: `position:relative;padding:8px 14px;font-size:12.5px;cursor:pointer;transition:color .15s;color:${on ? "#d2cefd" : "#9a9aa3"}`,
+          underlineCss: `position:absolute;left:8px;right:8px;bottom:-1px;height:2px;border-radius:2px;background:#9184d9;opacity:${on ? 1 : 0};transition:opacity .15s` };
+      }),
+      botsListTab: tab === "list",
+      botsOtherTab: tab !== "list",
+      bots: BOTS.map(b => {
+        const s = STATUS[b.status];
+        return {
+          name: b.name, statusLabel: s.label, pillCss: pill(s), dotCss: dot(s, 5),
+          meta: `${b.type} · пресет ${b.preset} · менеджер: ${b.manager}`,
+          rules: b.rules, leads: b.leads, replies: b.replies, error: b.error,
+          cardCss: "position:relative;overflow:hidden;background:#232532;border:1px solid #33354a;border-radius:11px;padding:14px 16px 14px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)",
+          stripeCss: `position:absolute;left:0;top:0;bottom:0;width:2px;background:${s.stripe}`,
+          errorCss: `display:${b.error ? "block" : "none"};margin-top:9px;background:rgba(200,90,110,.12);border:1px solid rgba(200,90,110,.25);border-radius:8px;padding:8px 10px;font-size:11.5px;line-height:1.45;color:#e9b3bf`,
+          primary: b.status === "running" ? "Остановить" : "Запустить",
+          primaryCss: b.status === "running"
+            ? "border:1px solid #33354a;border-radius:8px;padding:5px 13px;font-size:12px;cursor:pointer;color:#e9e9ed"
+            : "background:#7a6bd0;color:#f7f6ff;border-radius:8px;padding:5px 13px;font-size:12px;cursor:pointer;box-shadow:0 4px 12px rgba(122,107,208,.28)",
+        };
+      }),
+      botTabListTitle: tabData ? tabData.listTitle : "",
+      botTabAddLabel: tabData ? tabData.add : "",
+      botTabDetailTitle: tabData ? tabData.detail : "",
+      botTabDetailPill: tabData ? tabData.pill : "",
+      botTabDetailPillCss: "display:inline-flex;align-items:center;color:#d2cefd;background:rgba(145,132,217,.16);border-radius:6px;padding:3px 9px;font-size:11px",
+      botTabDetailHint: tabData ? tabData.hint : "",
+      botTabItems: (tabData ? tabData.items : []).map(([label, meta], i) => ({
+        label, meta, dotCss: `width:5px;height:5px;border-radius:3px;flex:none;background:${i === 0 ? "#b5abfc" : "#3f424d"}`,
+        css: `display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;font-size:12.5px;cursor:pointer;background:${
+          i === 0 ? "rgba(145,132,217,.14)" : "transparent"};color:${i === 0 ? "#d2cefd" : "#9a9aa3"}`,
+      })),
+      botTabBody: (tabData ? tabData.body : []).map(([k, v], i) => ({
+        text: k ? `${k}   —   ${v}` : `        ${v}`,
+        css: `color:${i === 0 ? "#e9e9ed" : "#9a9aa3"};line-height:1.6;animation:tgSlide .34s ease ${i * 40}ms both`,
+      })),
+
+      mediaToggles: [["photos","Фотографии","7 812"],["videos","Видео","412"],["voice","Голосовые","0"],["documents","Документы","1 184"]].map(([k,label,count]) => {
+        const on = st.media[k];
+        return { label, count, ...check(on), toggle: () => this.setState({ media: { ...st.media, [k]: !on } }) };
+      }),
+      ignoreRules: [
+        ["автор","@spam_bot_2024","412"],
+        ["слово","бесплатный курс","1 208"],
+        ["слово","подпишись","703"],
+        ["ссылка","t.me/joinchat","158"],
+      ].map(([kind, value, hits]) => ({
+        kind, value, hits,
+        kindCss: "font:400 9.5px ui-monospace,Consolas,monospace;letter-spacing:.08em;color:#b5abfc;background:rgba(145,132,217,.14);border-radius:5px;padding:2px 7px;flex:none;text-transform:uppercase",
+        css: "display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;background:rgba(233,233,237,.03);border:1px solid #2c2e3d;font-size:12px",
+      })),
+      schedToggle: () => this.setState({ sched: !st.sched }), schedCss: toggleCss(st.sched), schedKnobCss: knobCss(st.sched),
+      backupToggle: () => this.setState({ backup: !st.backup }), backupCss: toggleCss(st.backup), backupKnobCss: knobCss(st.backup),
+      masterToggle: () => this.setState({ master: !st.master }), masterCss: toggleCss(st.master), masterKnobCss: knobCss(st.master),
+    };
+  }
+}
+</script>
+</body>
+</html>

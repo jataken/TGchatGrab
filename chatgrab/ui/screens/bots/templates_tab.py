@@ -10,8 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
-from ...widgets import button, card, muted
-from .common import populate_bot_picker
+from ...widgets import Card, button, dashed_button, label, muted, plural as _plural
 
 _VAR_RE = re.compile(r"\{(\w+)\}")
 
@@ -25,17 +24,10 @@ class TemplatesTab(QWidget):
         self.ctx = ctx
         self.selected_bot_id: int | None = None
         self.selected_template_id: int | None = None
+        ctx.bot_selection.changed.connect(self._on_bot_changed)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 16, 0, 16)
-
-        top_row = QHBoxLayout()
-        top_row.addWidget(muted("Бот"))
-        self.bot_picker = QComboBox()
-        self.bot_picker.currentIndexChanged.connect(self._on_bot_changed)
-        top_row.addWidget(self.bot_picker, 1)
-        outer.addLayout(top_row)
-        outer.addSpacing(10)
 
         split = QSplitter()
         outer.addWidget(split, 1)
@@ -43,25 +35,32 @@ class TemplatesTab(QWidget):
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 8, 0)
-        left_lay.addWidget(muted("Шаблоны"))
+        left_lay.addWidget(label("ШАБЛОНЫ", "kicker"))
         self.tpl_list = QListWidget()
         self.tpl_list.currentItemChanged.connect(self._on_selected)
         left_lay.addWidget(self.tpl_list, 1)
-        add_btn = button("＋ Новый шаблон", "secondary")
+        add_btn = dashed_button("＋ Новый шаблон")
         add_btn.clicked.connect(self._on_add)
         left_lay.addWidget(add_btn)
         split.addWidget(left)
 
-        right = card()
+        right = Card()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(14, 14, 14, 14)
         right_lay.addWidget(muted("Название"))
         self.name_input = QLineEdit()
         right_lay.addWidget(self.name_input)
-        right_lay.addWidget(muted("Текст — переменные вида {name}, {company}"))
+        right_lay.addWidget(muted("Текст"))
         self.text_input = QPlainTextEdit()
         self.text_input.setMinimumHeight(140)
         right_lay.addWidget(self.text_input, 1)
+        vars_hint = muted(
+            "Подставляются: {имя}, {ник}, {бот}, {менеджер}, {текст} — а также "
+            "любое поле из сценария под тем именем, которое вы ему дали "
+            "(например {объём}). Незнакомое имя останется в тексте как есть."
+        )
+        vars_hint.setWordWrap(True)
+        right_lay.addWidget(vars_hint)
         self.vars_label = muted("")
         right_lay.addWidget(self.vars_label)
 
@@ -80,12 +79,11 @@ class TemplatesTab(QWidget):
         self.text_input.textChanged.connect(self._update_vars_label)
 
     def on_show(self) -> None:
-        populate_bot_picker(self.ctx, self.bot_picker)
-        self.selected_bot_id = self.bot_picker.currentData()
+        self.selected_bot_id = self.ctx.bot_selection.current
         self._reload()
 
-    def _on_bot_changed(self, _index: int) -> None:
-        self.selected_bot_id = self.bot_picker.currentData()
+    def _on_bot_changed(self, bot_id) -> None:
+        self.selected_bot_id = bot_id
         self._reload()
 
     def _reload(self) -> None:
@@ -138,6 +136,25 @@ class TemplatesTab(QWidget):
 
     def _on_delete(self) -> None:
         if self.selected_template_id is None:
+            return
+        tpl = self.ctx.db.get_template(self.selected_template_id)
+        usage = self.ctx.db.template_usage(self.selected_template_id)
+        parts = []
+        if usage["actions"]:
+            parts.append(f"{usage['actions']} " + _plural(
+                usage["actions"], "действие в правилах", "действия в правилах", "действий в правилах"))
+        if usage["scenarios"]:
+            parts.append(f"{usage['scenarios']} " + _plural(
+                usage["scenarios"], "сценарий", "сценария", "сценариев") + " (как сообщение о завершении)")
+
+        name = tpl["name"] if tpl else "шаблон"
+        if parts:
+            text = (f"На «{name}» ссылается " + " и ".join(parts) +
+                     ".\n\nПосле удаления эти места перестанут отправлять сообщение — "
+                     "они будут помечены как проблемные в «Правилах». Удалить?")
+        else:
+            text = f"Удалить «{name}»? На него никто не ссылается."
+        if QMessageBox.question(self, "Удалить шаблон", text) != QMessageBox.Yes:
             return
         self.ctx.db.delete_template(self.selected_template_id)
         self._reload()

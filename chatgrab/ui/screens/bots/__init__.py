@@ -1,56 +1,55 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from ...context import AppContext
-from ...widgets import h1
+from ...widgets import label
 from .analytics_tab import AnalyticsTab
-from .leads_tab import LeadsTab
+from .drafts_tab import DraftsPanel
 from .list_tab import BotsListTab
-from .log_tab import LogTab
-from .rules_tab import RulesTab
-from .scenarios_tab import ScenariosTab
-from .templates_tab import TemplatesTab
-from .test_tab import TestModeTab
 
 
 class BotsScreen(QWidget):
+    """Боты — the block's landing screen: every bot in this instance, each
+    with its own type, rules and data (мастер создания — «Правила»,
+    «Сценарий» — reached from here or from the sidebar). Contact ranking
+    stays visible below the list rather than living behind its own nav
+    item, since it's read-only context for the same bots, not a separate
+    task."""
+
     def __init__(self, ctx: AppContext, navigate):
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(40, 28, 40, 18)
-        outer.setSpacing(0)
-        outer.addWidget(h1("Конструктор ботов"))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        scroll.setWidget(container)
+        wrap = QVBoxLayout(self)
+        wrap.setContentsMargins(0, 0, 0, 0)
+        wrap.addWidget(scroll)
 
-        self.tabs = QTabWidget()
-        self.list_tab = BotsListTab(ctx)
-        self.leads_tab = LeadsTab(ctx)
-        self.rules_tab = RulesTab(ctx)
-        self.scenarios_tab = ScenariosTab(ctx)
-        self.templates_tab = TemplatesTab(ctx)
-        self.test_tab = TestModeTab(ctx)
-        self.log_tab = LogTab(ctx)
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(40, 28, 40, 30)
+
+        self.list_tab = BotsListTab(ctx, navigate)
+        outer.addWidget(self.list_tab)
+
+        outer.addSpacing(18)
+        outer.addWidget(label("ЧЕРНОВИКИ", "kicker"))
+        outer.addSpacing(8)
+        self.drafts_panel = DraftsPanel(ctx)
+        outer.addWidget(self.drafts_panel)
+
+        outer.addSpacing(18)
+        outer.addWidget(label("АНАЛИТИКА ПО КОНТАКТАМ", "kicker"))
+        outer.addSpacing(8)
         self.analytics_tab = AnalyticsTab(ctx)
-
-        self.tabs.addTab(self.list_tab, "Боты")
-        self.tabs.addTab(self.leads_tab, "Заявки")
-        self.tabs.addTab(self.rules_tab, "Правила")
-        self.tabs.addTab(self.scenarios_tab, "Сценарии")
-        self.tabs.addTab(self.templates_tab, "Шаблоны")
-        self.tabs.addTab(self.test_tab, "Тест")
-        self.tabs.addTab(self.log_tab, "Журнал")
-        self.tabs.addTab(self.analytics_tab, "Аналитика")
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        outer.addWidget(self.tabs, 1)
+        self.analytics_tab.setMinimumHeight(360)
+        outer.addWidget(self.analytics_tab)
 
     def on_show(self, **kwargs) -> None:
-        self._on_tab_changed(self.tabs.currentIndex())
-
-    def _on_tab_changed(self, index: int) -> None:
-        widget = self.tabs.widget(index)
-        on_show = getattr(widget, "on_show", None)
-        if on_show:
-            on_show()
+        self.list_tab.on_show()
+        self.drafts_panel.on_show()
+        self.analytics_tab.on_show()

@@ -1,0 +1,36 @@
+{
+  "key": "follow_up",
+  "version": 1,
+  "label": "Реанимация молчащих",
+  "description": "Контакт замолчал -> касания на 3/7/14/30 день. Останавливается сразу, как только он ответит.",
+  "variables": [
+    {"name": "manager_name", "type": "text", "label": "Имя менеджера", "default": "менеджер"}
+  ],
+  "templates": [
+    {"key": "touch_3", "name": "Напоминание (3 дня)",
+     "text": "Добрый день! Уточняем — ваш запрос ещё актуален?", "variables": []},
+    {"key": "touch_7", "name": "Напоминание (7 дней)",
+     "text": "Здравствуйте! Если запрос ещё в силе — {{manager_name}} готов(а) продолжить, напишите пару слов.",
+     "variables": []},
+    {"key": "touch_14", "name": "Напоминание (14 дней)",
+     "text": "Добрый день! Если условия изменились или вопрос закрылся — дайте знать, чтобы не писать зря.",
+     "variables": []},
+    {"key": "touch_30", "name": "Напоминание (30 дней)",
+     "text": "Здравствуйте! Последнее напоминание с нашей стороны — если станет актуально, просто напишите.",
+     "variables": []}
+  ],
+  "triggers": [
+    {"type": "inactivity", "config": {"days": 3}, "actions": [
+      {"type": "send_dm", "config": {"template": "touch_3"}}
+    ]},
+    {"type": "inactivity", "config": {"days": 7}, "actions": [
+      {"type": "send_dm", "config": {"template": "touch_7"}}
+    ]},
+    {"type": "inactivity", "config": {"days": 14}, "actions": [
+      {"type": "send_dm", "config": {"template": "touch_14"}}
+    ]},
+    {"type": "inactivity", "config": {"days": 30}, "actions": [
+      {"type": "send_dm", "config": {"template": "touch_30"}}
+    ]}
+  ]
+}

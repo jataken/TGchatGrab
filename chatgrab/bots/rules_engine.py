@@ -7,13 +7,16 @@ tag, log, run scenario, notify manager) is identical.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from ..core import lead as lead_domain
 from ..db.database import Database
 from .scenario_engine import ScenarioEngine
+from .templating import context_for, render, resolve_action_text
 
 _logger = logging.getLogger("chatgrab")
 
@@ -41,17 +44,46 @@ def _cfg(trigger_row) -> dict:
         return {}
 
 
+def _parse_hhmm(value: str, default: dt.time) -> dt.time:
+    # Duplicated from bots/scheduler.py rather than imported — scheduler.py
+    # imports this module (RulesEngine), so the reverse import would be
+    # circular. Four lines each; not worth a shared module for.
+    try:
+        hh, mm = value.split(":")
+        return dt.time(int(hh), int(mm))
+    except (ValueError, AttributeError):
+        return default
+
+
+def _within_time_window(cfg: dict, now: dt.datetime) -> bool:
+    """Optional gate on a message-driven trigger — С5's after_hours preset
+    needs "only outside work hours" and the existing schedule/inactivity
+    triggers have no equivalent for a message-triggered rule. Absent
+    "time_window" in config, every trigger matches at any time, same as
+    before this existed."""
+    window = cfg.get("time_window")
+    if not window:
+        return True
+    start = _parse_hhmm(str(window.get("start", "00:00")), dt.time(0, 0))
+    end = _parse_hhmm(str(window.get("end", "23:59")), dt.time(23, 59))
+    t = now.time()
+    inside = start <= t <= end if start <= end else (t >= start or t <= end)
+    return not inside if window.get("outside") else inside
+
+
 class RulesEngine:
     def __init__(self, db: Database):
         self.db = db
         self.scenarios = ScenarioEngine(db)
 
     # ---- matching --------------------------------------------------------
-    def matches(self, trigger_row, event: IncomingEvent) -> bool:
+    def matches(self, trigger_row, event: IncomingEvent, now: dt.datetime | None = None) -> bool:
         if not trigger_row["enabled"]:
             return False
         ttype = trigger_row["type"]
         cfg = _cfg(trigger_row)
+        if not _within_time_window(cfg, now or dt.datetime.now()):
+            return False
         if ttype == "incoming_dm":
             return event.chat_type in (None, "dm")
         if ttype == "command":
@@ -61,7 +93,9 @@ class RulesEngine:
             if not words:
                 return False
             text_l = event.text.lower()
-            return any(w in text_l for w in words)
+            if not any(w in text_l for w in words):
+                return False
+            return not self._has_stop_word(cfg, text_l)
         if ttype == "chat_message":
             if event.chat_type not in ("group", "channel"):
                 return False
@@ -69,16 +103,25 @@ class RulesEngine:
             if wanted_chat is not None and event.chat_id != wanted_chat:
                 return False
             words = [w.strip().lower() for w in cfg.get("keywords", []) if w.strip()]
-            if not words:
-                return True
             text_l = event.text.lower()
-            return any(w in text_l for w in words)
+            if words and not any(w in text_l for w in words):
+                return False
+            return not self._has_stop_word(cfg, text_l)
         # schedule / inactivity triggers aren't message-driven — they're
         # evaluated by their own background tick, not this per-message path.
         return False
 
-    def triggers_for(self, bot_id: int, event: IncomingEvent) -> list:
-        return [t for t in self.db.list_triggers(bot_id) if self.matches(t, event)]
+    @staticmethod
+    def _has_stop_word(cfg: dict, text_l: str) -> bool:
+        """"глицерин продам" не должно читаться как "ищу глицерин" — a
+        stop word skips a match even when a keyword also hit. Used by
+        chat_hunter (С5), which draws both lists from a direction's own
+        keywords/stop_words rather than typing them into the rule twice."""
+        stop_words = [w.strip().lower() for w in cfg.get("stop_words", []) if w.strip()]
+        return any(w in text_l for w in stop_words)
+
+    def triggers_for(self, bot_id: int, event: IncomingEvent, now: dt.datetime | None = None) -> list:
+        return [t for t in self.db.list_triggers(bot_id) if self.matches(t, event, now)]
 
     # ---- execution ---------------------------------------------------
     async def fire(self, bot_id: int, trigger_row, event: IncomingEvent, send_dm: SendFn,
@@ -98,7 +141,10 @@ class RulesEngine:
         atype = action_row["type"]
 
         if atype == "send_dm":
-            text = cfg.get("text", "")
+            text = resolve_action_text(self.db, cfg, bot_id, self._values(bot_id, contact_id, event))
+            if not text:
+                log("действие «отправить сообщение» пропущено — пустой текст и не выбран шаблон", "warn")
+                return
             await send_dm(event.contact_telegram_id, text)
             log(f"отправлено личное сообщение контакту {event.contact_telegram_id}", "ok")
 
@@ -110,12 +156,17 @@ class RulesEngine:
             if result.question:
                 await send_dm(event.contact_telegram_id, result.question)
             elif result.done and result.answers is not None:
-                self._save_lead_from_answers(bot_id, contact_id, result.answers)
+                self._save_lead_from_answers(bot_id, contact_id, result.answers, event, scenario_id)
             log("сценарий запущен", "ok")
 
         elif atype == "save_lead":
             content = {"text": event.text} if event.text else {}
-            self.db.add_lead(contact_id, bot_id, content, status="new")
+            self.db.add_lead(
+                contact_id, bot_id, content, status="new",
+                source_chat_id=event.chat_id,
+                source_type=lead_domain.source_type_from_chat_type(event.chat_type),
+                event_source=lead_domain.EVENT_SOURCE_RULE,
+            )
             log("заявка сохранена", "ok")
 
         elif atype == "forward_lead" or atype == "notify_manager":
@@ -139,16 +190,45 @@ class RulesEngine:
                 log(f"контакту проставлен тег «{tag}»", "ok")
 
         elif atype == "notify":
-            # Generic manager notification with a fixed template, distinct
-            # from notify_manager's auto-built "new inquiry" message.
-            text = cfg.get("text", "")
+            # Generic manager notification with the user's own wording,
+            # distinct from notify_manager's auto-built "new inquiry" text.
+            text = resolve_action_text(self.db, cfg, bot_id, self._values(bot_id, contact_id, event))
             bot = self.db.get_bot(bot_id)
             manager = bot["manager_chat_id"] if bot else None
             if manager and text:
                 await send_dm(manager, text)
+                log("менеджер уведомлён", "ok")
+            elif not manager:
+                log("у бота не задан менеджер — уведомление пропущено", "warn")
 
-    def _save_lead_from_answers(self, bot_id: int, contact_id: int, answers: dict) -> None:
-        self.db.add_lead(contact_id, bot_id, answers, status="new")
+    def _values(self, bot_id: int, contact_id: int, event: IncomingEvent,
+                 answers: dict | None = None) -> dict:
+        """What `{variables}` in this bot's templates can refer to right now."""
+        return context_for(self.db, bot_id, self.db.get_contact(contact_id),
+                           answers=answers, event_text=event.text)
+
+    def _save_lead_from_answers(self, bot_id: int, contact_id: int, answers: dict,
+                                event: IncomingEvent, scenario_id: int | None = None) -> None:
+        """Content always gets the raw answers dict, same as before —
+        `mapped` on top of it is additive, not a replacement: a step whose
+        author never set "→ поле лида" (scenario_screen.py) still lands
+        safely in content instead of silently vanishing."""
+        mapped = {}
+        if scenario_id is not None:
+            scenario = self.db.get_scenario(scenario_id)
+            steps = json.loads(scenario["steps"]) if scenario else []
+            for step in steps:
+                lead_field = step.get("lead_field")
+                field = step.get("field")
+                if lead_field in lead_domain.SCENARIO_LEAD_FIELDS and field in answers:
+                    mapped[lead_field] = answers[field]
+        self.db.add_lead(
+            contact_id, bot_id, answers, status="new",
+            source_chat_id=event.chat_id,
+            source_type=lead_domain.source_type_from_chat_type(event.chat_type),
+            event_source=lead_domain.EVENT_SOURCE_SCENARIO,
+            **mapped,
+        )
 
     # ---- scenario continuation (a contact already mid-dialog) -----------
     def has_active_scenario(self, bot_id: int, contact_telegram_id: int) -> bool:
@@ -156,6 +236,10 @@ class RulesEngine:
 
     async def continue_scenario(self, bot_id: int, event: IncomingEvent, send_dm: SendFn, log) -> None:
         contact_id = self.db.upsert_contact(event.contact_telegram_id, event.username)
+        # Captured before submit_answer can mark the session 'done' — once
+        # it does, get_active_scenario_session no longer finds it.
+        session = self.db.get_active_scenario_session(bot_id, event.contact_telegram_id)
+        scenario_id = session["scenario_id"] if session else None
         result = self.scenarios.submit_answer(bot_id, event.contact_telegram_id, event.text)
         if result.error:
             await send_dm(event.contact_telegram_id, result.error)
@@ -164,7 +248,14 @@ class RulesEngine:
             await send_dm(event.contact_telegram_id, result.question)
             return
         if result.done and result.answers is not None:
-            self._save_lead_from_answers(bot_id, contact_id, result.answers)
+            self._save_lead_from_answers(bot_id, contact_id, result.answers, event, scenario_id)
+
+            # Confirm to the contact first — they're the one waiting on a
+            # reply — then hand the summary to the manager.
+            await self._send_scenario_confirmation(
+                bot_id, contact_id, event, result, send_dm, log,
+            )
+
             bot = self.db.get_bot(bot_id)
             manager = bot["manager_chat_id"] if bot else None
             if manager:
@@ -173,3 +264,19 @@ class RulesEngine:
                 summary = "; ".join(f"{k}: {v}" for k, v in result.answers.items())
                 await send_dm(manager, f"Новая заявка от {handle}\n{summary}")
             log("сценарий завершён, заявка сохранена", "ok")
+
+    async def _send_scenario_confirmation(self, bot_id: int, contact_id: int, event: IncomingEvent,
+                                           result, send_dm: SendFn, log) -> None:
+        session = self.db.last_finished_session(bot_id, event.contact_telegram_id)
+        scenario = self.db.get_scenario(session["scenario_id"]) if session else None
+        template_id = scenario["done_template_id"] if scenario else None
+        if template_id is None:
+            return
+        template = self.db.get_template(template_id)
+        if template is None:
+            log("сценарий завершён, но выбранный шаблон подтверждения удалён", "warn")
+            return
+        values = self._values(bot_id, contact_id, event, answers=result.answers)
+        text = render(template["text"], values)
+        if text:
+            await send_dm(event.contact_telegram_id, text)

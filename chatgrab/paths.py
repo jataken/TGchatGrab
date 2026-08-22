@@ -39,13 +39,29 @@ class Paths:
         self.session_dir = self.data_dir / "session"
         self.session_path = self.session_dir / "worker.session"
         self.backups_dir = self.data_dir / "backups"
+        self.archives_dir = self.data_dir / "archives"
         self.config_path = self.root / "config.json"
         self.log_path = self.data_dir / "chatgrab.log"
+        # П1: HTML bodies and attachments live here, one subfolder per
+        # mailbox — only the plain-text part and file paths go into the
+        # database itself, same reasoning as photos_dir for Telegram media.
+        self.mail_dir = self.data_dir / "mail"
 
     def ensure(self) -> None:
         for d in (self.data_dir, self.photos_dir, self.videos_dir, self.voice_dir,
-                  self.documents_dir, self.exports_dir, self.session_dir, self.backups_dir):
+                  self.documents_dir, self.exports_dir, self.session_dir,
+                  self.backups_dir, self.archives_dir, self.mail_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+    def mail_message_dir(self, mailbox_id: int, uid: int) -> Path:
+        return self.mail_dir / str(mailbox_id) / str(uid)
+
+    def mail_draft_dir(self, draft_id: int) -> Path:
+        """П5: files attached to an outgoing draft are copied here — not
+        referenced at their original path — so a draft an app restart
+        finds again isn't broken by the user having since moved or
+        deleted the source file."""
+        return self.mail_dir / "drafts" / str(draft_id)
 
     def photo_path(self, chat_id: int, message_id: int) -> Path:
         return self.photos_dir / str(chat_id) / f"{message_id}.jpg"

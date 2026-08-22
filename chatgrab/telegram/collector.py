@@ -93,8 +93,16 @@ class Collector(QObject):
         self._paused_chats: set[int] = set()
         self._current_chat_id: int | None = None
         self._tasks: list[asyncio.Task] = []
-        self._entity_cache: dict[int, object] = {}
+        # Ключ — (аккаунт, чат): см. _get_entity.
+        self._entity_cache: dict[tuple, object] = {}
         self._running = False
+        # Реестр аккаунтов; None = приложение работает на одном аккаунте
+        # (так же, как до появления accounts.py, и так же в тестах).
+        self.accounts = None
+        self._listening_clients: set[int] = set()
+        # Set by the app once the UI can show notifications; None keeps
+        # the collector usable on its own (tests, headless runs).
+        self.watch_service = None
 
     # ---- lifecycle -------------------------------------------------
     async def start(self) -> None:
@@ -161,29 +169,66 @@ class Collector(QObject):
         self.refresh_listen_filter()
         self.chats_changed.emit()
 
-    async def _get_entity(self, chat_id: int):
-        if chat_id in self._entity_cache:
-            return self._entity_cache[chat_id]
-        entity = await self.tg.client.get_entity(chat_id)
-        self._entity_cache[chat_id] = entity
+    # ---- accounts -----------------------------------------------------
+    def service_for(self, chat) -> TelegramService:
+        """Аккаунт, с которого читается этот чат. Пока аккаунт один — тот
+        же самый сервис, что и всегда."""
+        if self.accounts is None or chat is None:
+            return self.tg
+        return self.accounts.for_chat(chat)
+
+    def client_for(self, chat):
+        return self.service_for(chat).client
+
+    async def _get_entity(self, chat):
+        return await self._entity_via(self.service_for(chat), chat["chat_id"])
+
+    async def _entity_via(self, service: TelegramService, peer_id: int):
+        """Сущность глазами конкретного аккаунта.
+
+        Кэш ключуется аккаунтом не ради скорости: внутри entity лежит
+        access_hash, выданный именно тому аккаунту, который её получил.
+        Отдать её чужому клиенту — получить не ошибку доступа, а пустую
+        выдачу, что выглядело бы как «чат вдруг опустел».
+        """
+        key = (id(service), peer_id)
+        if key in self._entity_cache:
+            return self._entity_cache[key]
+        await service.connect()
+        entity = await service.client.get_entity(peer_id)
+        self._entity_cache[key] = entity
         return entity
 
     async def add_chat_by_link(self, link_or_username: str, depth_mode: str = "all",
-                                depth_from_date: str | None = None) -> int:
-        entity = await self.tg.resolve_chat(link_or_username)
-        return await self._add_resolved(entity, depth_mode, depth_from_date)
+                                depth_from_date: str | None = None,
+                                account_id: int | None = None) -> int:
+        service = self._service_by_account(account_id)
+        entity = await service.resolve_chat(link_or_username)
+        return await self._add_resolved(entity, depth_mode, depth_from_date, account_id, service)
 
     async def add_chat_from_dialog(self, dialog: DialogInfo, depth_mode: str = "all",
-                                    depth_from_date: str | None = None) -> int:
-        entity = await self.tg.client.get_entity(dialog.chat_id)
-        return await self._add_resolved(entity, depth_mode, depth_from_date)
+                                    depth_from_date: str | None = None,
+                                    account_id: int | None = None) -> int:
+        service = self._service_by_account(account_id)
+        await service.connect()
+        entity = await service.client.get_entity(dialog.chat_id)
+        return await self._add_resolved(entity, depth_mode, depth_from_date, account_id, service)
 
-    async def _add_resolved(self, entity, depth_mode: str, depth_from_date: str | None) -> int:
+    def _service_by_account(self, account_id: int | None) -> TelegramService:
+        if self.accounts is None:
+            return self.tg
+        return self.accounts.service_for(account_id)
+
+    async def _add_resolved(self, entity, depth_mode: str, depth_from_date: str | None,
+                            account_id: int | None = None,
+                            service: TelegramService | None = None) -> int:
         chat_id = get_peer_id(entity)
         title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(chat_id)
         username = getattr(entity, "username", None)
-        self._entity_cache[chat_id] = entity
+        self._entity_cache[(id(service or self.tg), chat_id)] = entity
         self.db.add_chat(chat_id, title, username, depth_mode, depth_from_date)
+        if account_id is not None:
+            self.db.set_chat_field(chat_id, account_id=account_id)
         self.refresh_listen_filter()
         self._log(title, "чат добавлен · поставлен в очередь на загрузку истории", "ok")
         self.chats_changed.emit()
@@ -248,8 +293,34 @@ class Collector(QObject):
     # ---- realtime listener ------------------------------------------
     def _register_realtime_handler(self) -> None:
         self.refresh_listen_filter()
-        self.tg.client.add_event_handler(self._on_new_message, events.NewMessage())
-        self.tg.client.add_event_handler(self._on_edit_message, events.MessageEdited())
+        self._listen_on(self.tg)
+        for service in self._collecting_services():
+            self._listen_on(service)
+
+    def _listen_on(self, service: TelegramService) -> None:
+        """Подписка ровно один раз на клиента.
+
+        Аккаунты подключаются по мере надобности, поэтому сюда заходят и
+        повторно; без отметки один и тот же обработчик навесился бы
+        дважды и каждое сообщение писалось бы дважды.
+        """
+        if service.client is None or id(service.client) in self._listening_clients:
+            return
+        service.client.add_event_handler(self._on_new_message, events.NewMessage())
+        service.client.add_event_handler(self._on_edit_message, events.MessageEdited())
+        self._listening_clients.add(id(service.client))
+
+    def _collecting_services(self) -> list[TelegramService]:
+        """Сервисы, за которыми закреплён хотя бы один включённый чат."""
+        if self.accounts is None:
+            return [self.tg]
+        seen: dict[int, TelegramService] = {}
+        for chat in self.db.list_chats():
+            if not chat["enabled"]:
+                continue
+            service = self.accounts.for_chat(chat)
+            seen[id(service)] = service
+        return list(seen.values()) or [self.tg]
 
     async def _on_new_message(self, event) -> None:
         chat_id = event.chat_id
@@ -258,7 +329,7 @@ class Collector(QObject):
         chat = self.db.get_chat(chat_id)
         if not chat:
             return
-        await self._store_message(event.message, chat)
+        await self._store_message(event.message, chat, live=True)
         chat = self.db.get_chat(chat_id)
         self.db.set_chat_field(chat_id, newest_loaded_id=max(chat["newest_loaded_id"] or 0, event.message.id))
         self._log(chat["title"], f"новое сообщение записано (id {event.message.id})", "ok")
@@ -296,7 +367,7 @@ class Collector(QObject):
         elif message.media:
             media_type = "media"
         media_path = await self._download_media(message, chat, media_type)
-        forwarded_from = await self._forward_label(message)
+        forwarded_from = await self._forward_label(message, chat)
         is_hidden = self.ignore_service.matches(chat_id, sender_username, _display_name(sender), text)
         return {
             "chat_id": chat_id,
@@ -318,15 +389,18 @@ class Collector(QObject):
             "link": build_link(chat["username"], chat_id, message.id),
         }
 
-    async def _forward_label(self, message) -> str | None:
+    async def _forward_label(self, message, chat) -> str | None:
         fwd = message.forward
         if not fwd:
             return None
         if fwd.from_name:
             return fwd.from_name
+        # Автора пересылки надо спрашивать у того же аккаунта, который
+        # прочитал сообщение: чужой access_hash здесь бесполезен.
+        service = self.service_for(chat)
         if fwd.sender_id:
             try:
-                entity = fwd.sender or await self._get_entity(fwd.sender_id)
+                entity = fwd.sender or await self._entity_via(service, fwd.sender_id)
                 return f"@{entity.username}" if getattr(entity, "username", None) else _display_name(entity)
             except Exception:
                 return f"id{fwd.sender_id}"
@@ -335,7 +409,7 @@ class Collector(QObject):
         # never existed on this class and always raised AttributeError).
         if fwd.chat_id:
             try:
-                entity = fwd.chat or await self._get_entity(fwd.chat_id)
+                entity = fwd.chat or await self._entity_via(service, fwd.chat_id)
                 return f"@{entity.username}" if getattr(entity, "username", None) else _display_name(entity)
             except Exception:
                 return f"канал id{fwd.chat_id}"
@@ -399,9 +473,19 @@ class Collector(QObject):
                 return None
         return None
 
-    async def _store_message(self, message, chat) -> bool:
+    async def _store_message(self, message, chat, live: bool = False) -> bool:
         record = await self._message_to_record(message, chat)
-        return self.db.upsert_message(record)
+        is_new = self.db.upsert_message(record)
+        if is_new and self.watch_service is not None:
+            # Only alert for messages arriving now. A backfill re-reading
+            # months of history would otherwise fire a notification per
+            # match, which is how a useful alert becomes one people mute.
+            try:
+                self.watch_service.check(record, notify=live)
+            except Exception:
+                _logger.warning("не удалось проверить сообщение по списку наблюдения",
+                                exc_info=True)
+        return is_new
 
     # ---- history backfill --------------------------------------------
     async def _history_worker(self) -> None:
@@ -445,9 +529,12 @@ class Collector(QObject):
 
     async def _backfill_chat(self, chat: dict) -> None:
         chat_id = chat["chat_id"]
-        entity = await self._get_entity(chat_id)
+        entity = await self._get_entity(chat)
+        # Новый аккаунт мог появиться после старта — подписываем его на
+        # события здесь, когда до его чатов дошла очередь.
+        self._listen_on(self.service_for(chat))
         try:
-            total = await self.tg.client.get_messages(entity, limit=0)
+            total = await self.client_for(chat).get_messages(entity, limit=0)
             self.db.set_chat_field(chat_id, approx_total=total.total)
         except Exception:
             pass
@@ -515,7 +602,7 @@ class Collector(QObject):
             kwargs["offset_id"] = offset_id
         if min_id:
             kwargs["min_id"] = min_id
-        it = self.tg.client.iter_messages(entity, **kwargs)
+        it = self.client_for(chat).iter_messages(entity, **kwargs)
         while True:
             try:
                 message = await it.__anext__()
@@ -537,7 +624,7 @@ class Collector(QObject):
         chat = self.db.get_chat(chat_id)
         if not chat:
             return 0
-        entity = await self._get_entity(chat_id)
+        entity = await self._get_entity(chat)
         gaps = self.db.find_gaps(chat_id)
         patched = 0
         for start, end in gaps:
@@ -564,22 +651,29 @@ class Collector(QObject):
         while True:
             await asyncio.sleep(15)
             try:
-                if self.tg.client and not self.tg.client.is_connected():
-                    self._log("все чаты", "соединение потеряно — пробую переподключиться", "warn")
-                    await self.tg.client.connect()
-                    if self.tg.client.is_connected():
-                        self._log("все чаты", "соединение восстановлено, докачиваю пропущенное", "ok")
-                        backoff = 2
-                        for chat in self.db.list_chats():
-                            if chat["enabled"] and chat["newest_loaded_id"]:
-                                try:
-                                    entity = await self._get_entity(chat["chat_id"])
-                                    await self._collect_direction(entity, chat, reverse=True,
-                                                                   min_id=chat["newest_loaded_id"])
-                                except Exception:
-                                    pass
-                    else:
-                        backoff = min(60, backoff * 2)
-                        await asyncio.sleep(backoff)
+                # Каждый собирающий аккаунт отваливается сам по себе, и
+                # молчащий второй аккаунт снаружи неотличим от «в чате
+                # ничего не пишут» — поэтому проверяются все.
+                dropped = [s for s in self._collecting_services()
+                           if s.client and not s.client.is_connected()]
+                if not dropped:
+                    continue
+                self._log("все чаты", "соединение потеряно — пробую переподключиться", "warn")
+                for service in dropped:
+                    await service.client.connect()
+                if all(s.client.is_connected() for s in dropped):
+                    self._log("все чаты", "соединение восстановлено, докачиваю пропущенное", "ok")
+                    backoff = 2
+                    for chat in self.db.list_chats():
+                        if chat["enabled"] and chat["newest_loaded_id"]:
+                            try:
+                                entity = await self._get_entity(chat)
+                                await self._collect_direction(entity, chat, reverse=True,
+                                                               min_id=chat["newest_loaded_id"])
+                            except Exception:
+                                pass
+                else:
+                    backoff = min(60, backoff * 2)
+                    await asyncio.sleep(backoff)
             except Exception:
                 backoff = min(60, backoff * 2)

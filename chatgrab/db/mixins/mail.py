@@ -1,0 +1,877 @@
+"""П1: mailboxes, per-folder sync state, messages, and attachments.
+
+Deliberately no join, no foreign key, and no shared identifier with any
+Telegram table here — see PLAN.md's П-2 invariant ("Почта и Telegram не
+смешиваются"). This mixin's only relationship to the rest of the schema
+is that it lives in the same file as everything else, same as every other
+mixin composed onto Database.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from typing import Any
+
+from ..timeutil import now_iso
+from .search import _fts_query
+
+# Header fields an upsert refreshes on every sync. Deliberately not
+# body_text/body_html_path/has_attachments/body_fetched/is_read: those are
+# set once, on demand, by set_mail_message_body() — re-upserting a
+# message's headers (e.g. a defensive re-fetch) must not silently wipe an
+# already-downloaded body back to NULL.
+_MESSAGE_HEADER_COLUMNS = [
+    "thread_id", "message_id", "in_reply_to", "refs", "subject",
+    "sender_name", "sender_address", "to_addresses", "date", "is_outgoing",
+    # П7: parsed once from the same header bytes as everything else above
+    # — see imap_client.parse_headers()'s docstring for what each means.
+    "has_list_unsubscribe", "is_bulk_precedence",
+]
+
+
+class MailMixin:
+    # ---- mailboxes -------------------------------------------------
+    def add_mailbox(self, address: str, imap_host: str, imap_port: int = 993,
+                     smtp_host: str | None = None, smtp_port: int = 465,
+                     password_enc: str | None = None, display_name: str | None = None) -> int:
+        cur = self.execute(
+            "INSERT INTO mailbox"
+            "(address, display_name, imap_host, imap_port, smtp_host, smtp_port, "
+            " auth_kind, password_enc, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'password', ?, 1, ?)",
+            (address.strip(), display_name, imap_host, imap_port, smtp_host, smtp_port,
+             password_enc, now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_mailboxes(self, enabled_only: bool = False) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM mailbox"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        return self.query(sql + " ORDER BY address")
+
+    def get_mailbox(self, mailbox_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mailbox WHERE id = ?", (mailbox_id,))
+
+    def get_mailbox_by_address(self, address: str) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mailbox WHERE address = ?", (address.strip(),))
+
+    def set_mailbox_field(self, mailbox_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE mailbox SET {cols} WHERE id = ?", (*fields.values(), mailbox_id))
+
+    def delete_mailbox(self, mailbox_id: int) -> None:
+        """No ON DELETE CASCADE — foreign_keys stays OFF for the whole
+        database (see Database.__init__), same as every other table here.
+        Attachments before messages: they reference message rows this
+        would otherwise orphan."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM mail_attachment WHERE message_id IN "
+                "(SELECT id FROM mail_message WHERE mailbox_id = ?)", (mailbox_id,))
+            self._conn.execute("DELETE FROM mail_message WHERE mailbox_id = ?", (mailbox_id,))
+            self._conn.execute("DELETE FROM mail_thread WHERE mailbox_id = ?", (mailbox_id,))
+            self._conn.execute("DELETE FROM mail_folder WHERE mailbox_id = ?", (mailbox_id,))
+            self._conn.execute("DELETE FROM mailbox WHERE id = ?", (mailbox_id,))
+            self._conn.commit()
+
+    # ---- folder sync state -------------------------------------------
+    def upsert_mail_folder(self, mailbox_id: int, name: str, enabled: bool = False) -> int:
+        """Ensures a state row exists for this folder — called once per
+        folder LIST discovers, so a folder that already has one (and may
+        already have a nonzero last_uid) keeps it rather than resetting
+        progress on every connect."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO mail_folder(mailbox_id, name, last_uid, enabled) "
+                "VALUES (?, ?, 0, ?) "
+                "ON CONFLICT(mailbox_id, name) DO NOTHING",
+                (mailbox_id, name, 1 if enabled else 0),
+            )
+            self._conn.commit()
+        row = self.get_mail_folder(mailbox_id, name)
+        return row["id"]
+
+    def list_mail_folders(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_folder WHERE mailbox_id = ? ORDER BY name", (mailbox_id,))
+
+    def get_mail_folder(self, mailbox_id: int, name: str) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM mail_folder WHERE mailbox_id = ? AND name = ?", (mailbox_id, name))
+
+    def set_mail_folder_state(self, mailbox_id: int, name: str, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(
+            f"UPDATE mail_folder SET {cols} WHERE mailbox_id = ? AND name = ?",
+            (*fields.values(), mailbox_id, name),
+        )
+
+    def rename_mail_folder_record(self, mailbox_id: int, old_name: str, new_name: str) -> None:
+        """Local half of a server-confirmed rename (see MailService) —
+        the folder row and every message already synced under its old
+        name both follow, so open threads/lists don't quietly point at
+        a name that no longer exists on the server."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE mail_folder SET name = ? WHERE mailbox_id = ? AND name = ?",
+                (new_name, mailbox_id, old_name))
+            self._conn.execute(
+                "UPDATE mail_message SET folder = ? WHERE mailbox_id = ? AND folder = ?",
+                (new_name, mailbox_id, old_name))
+            self._conn.commit()
+
+    def delete_mail_folder_record(self, mailbox_id: int, name: str) -> None:
+        """Local half of a server-confirmed folder deletion — same
+        cleanup order as delete_mailbox()/reset_mail_folder(): attachments
+        before messages, since nothing here has ON DELETE CASCADE."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM mail_attachment WHERE message_id IN "
+                "(SELECT id FROM mail_message WHERE mailbox_id = ? AND folder = ?)",
+                (mailbox_id, name))
+            self._conn.execute(
+                "DELETE FROM mail_message WHERE mailbox_id = ? AND folder = ?",
+                (mailbox_id, name))
+            self._conn.execute(
+                "DELETE FROM mail_folder WHERE mailbox_id = ? AND name = ?", (mailbox_id, name))
+            self._conn.commit()
+
+    def get_mail_folder_by_special_use(self, mailbox_id: int, special_use: str) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM mail_folder WHERE mailbox_id = ? AND special_use = ?",
+            (mailbox_id, special_use))
+
+    def reset_mail_folder(self, mailbox_id: int, name: str, uidvalidity: int | None) -> None:
+        """A changed UIDVALIDITY makes every previously stored UID in this
+        folder meaningless (see imap_client.py's module docstring) — the
+        one case a folder is fully re-read rather than incrementally
+        fetched. Wipes both the sync cursor and the messages it produced,
+        so the next tick starts this folder from UID 1 with a clean slate."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM mail_attachment WHERE message_id IN "
+                "(SELECT id FROM mail_message WHERE mailbox_id = ? AND folder = ?)",
+                (mailbox_id, name),
+            )
+            self._conn.execute(
+                "DELETE FROM mail_message WHERE mailbox_id = ? AND folder = ?",
+                (mailbox_id, name),
+            )
+            self._conn.execute(
+                "UPDATE mail_folder SET uidvalidity = ?, last_uid = 0 "
+                "WHERE mailbox_id = ? AND name = ?",
+                (uidvalidity, mailbox_id, name),
+            )
+            self._conn.commit()
+
+    # ---- threads (П2) --------------------------------------------------
+    # Assembly itself is core/mail_thread.py's job — everything here is
+    # just the queries that logic needs (candidate lookup) or produces
+    # (creating/assigning a thread). See services/mail_service.py for the
+    # orchestration that calls both.
+    def create_mail_thread(self, mailbox_id: int, subject_norm: str) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_thread(mailbox_id, subject_norm, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (mailbox_id, subject_norm, now_iso(), now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_mail_threads_by_subject(self, mailbox_id: int, subject_norm: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_thread WHERE mailbox_id = ? AND subject_norm = ?",
+            (mailbox_id, subject_norm),
+        )
+
+    def get_mail_thread(self, thread_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_thread WHERE id = ?", (thread_id,))
+
+    # ---- lead link (П9) -----------------------------------------------
+    def set_mail_thread_lead(self, thread_id: int, lead_id: int | None) -> None:
+        """The one place either lead_id column is ever written — a
+        whole thread becomes one lead (see schema._MAIL_THREAD_LEAD_
+        COLUMNS's docstring for why mail_message also gets a copy)."""
+        with self._lock:
+            self._conn.execute("UPDATE mail_thread SET lead_id = ? WHERE id = ?", (lead_id, thread_id))
+            self._conn.execute("UPDATE mail_message SET lead_id = ? WHERE thread_id = ?", (lead_id, thread_id))
+            self._conn.commit()
+
+    def get_mail_thread_by_lead(self, lead_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_thread WHERE lead_id = ?", (lead_id,))
+
+    def thread_participants(self, thread_id: int, exclude: str | None = None) -> set[str]:
+        """exclude is the mailbox's own address, lowercased. Without
+        excluding it, every message in the mailbox trivially "shares a
+        participant" with every other one (the mailbox owner is on both
+        sides of every conversation), which would make the overlap check
+        in core.mail_thread.find_subject_fallback_thread match on nothing
+        but the mailbox's own address — i.e. match everything with the
+        same subject, regardless of who it's actually with."""
+        addrs: set[str] = set()
+        for row in self.query(
+            "SELECT sender_address, to_addresses FROM mail_message WHERE thread_id = ?", (thread_id,)
+        ):
+            if row["sender_address"]:
+                addrs.add(row["sender_address"].strip().lower())
+            try:
+                to_list = json.loads(row["to_addresses"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                to_list = []
+            addrs.update(a.strip().lower() for a in to_list if a)
+        if exclude:
+            addrs.discard(exclude.strip().lower())
+        return addrs
+
+    def thread_last_date(self, thread_id: int) -> str | None:
+        row = self.query_one("SELECT MAX(date) AS d FROM mail_message WHERE thread_id = ?", (thread_id,))
+        return row["d"] if row else None
+
+    def thread_has_own_message(self, thread_id: int, own_address: str) -> bool:
+        """П7's "reply_in_thread" triage signal: has the mailbox's own
+        address already sent something into this thread. Goes by
+        sender_address rather than is_outgoing — that column is part of
+        _MESSAGE_HEADER_COLUMNS but nothing in the sync pipeline actually
+        sets it yet (parse_headers() never returns it), a pre-existing
+        gap from П1 noted here rather than fixed, since it's unrelated to
+        this session's own change."""
+        own = (own_address or "").strip().lower()
+        if not own:
+            return False
+        row = self.query_one(
+            "SELECT 1 FROM mail_message WHERE thread_id = ? AND LOWER(sender_address) = ? LIMIT 1",
+            (thread_id, own),
+        )
+        return row is not None
+
+    def set_message_thread(self, message_id: int, thread_id: int) -> None:
+        with self._lock:
+            thread = self._conn.execute(
+                "SELECT lead_id FROM mail_thread WHERE id = ?", (thread_id,)).fetchone()
+            # П9: a message assigned into an already lead-linked thread
+            # (a customer's reply arriving after the lead was created)
+            # picks up that thread's lead_id too — set_mail_thread_lead()
+            # only back-fills messages that existed *at that moment*, so
+            # this is what keeps a later-arriving reply in sync with it.
+            lead_id = thread["lead_id"] if thread is not None else None
+            self._conn.execute(
+                "UPDATE mail_message SET thread_id = ?, lead_id = ? WHERE id = ?",
+                (thread_id, lead_id, message_id))
+            self._conn.execute("UPDATE mail_thread SET updated_at = ? WHERE id = ?", (now_iso(), thread_id))
+            self._conn.commit()
+
+    def list_mail_threads(self, mailbox_id: int, folder: str | None = None,
+                           unread_only: bool = False, with_attachments_only: bool = False,
+                           limit: int = 200) -> list[sqlite3.Row]:
+        """One row per thread that has at least one message, newest
+        activity first — subject/sender shown are the *latest* message's,
+        not the thread's own (a normalized, lowercased subject_norm isn't
+        fit to display)."""
+        clauses = ["t.mailbox_id = ?"]
+        params: list[Any] = [mailbox_id]
+        if folder is not None:
+            clauses.append("EXISTS (SELECT 1 FROM mail_message mf WHERE mf.thread_id = t.id AND mf.folder = ?)")
+            params.append(folder)
+        having = []
+        if unread_only:
+            having.append("unread_count > 0")
+        if with_attachments_only:
+            having.append("has_attachments = 1")
+        having_sql = f" HAVING {' AND '.join(having)}" if having else ""
+        params.append(limit)
+        return self.query(
+            f"""
+            SELECT
+                t.id AS thread_id, t.mailbox_id, t.subject_norm,
+                (SELECT m2.subject FROM mail_message m2 WHERE m2.thread_id = t.id
+                 ORDER BY m2.date DESC, m2.id DESC LIMIT 1) AS subject,
+                (SELECT m2.sender_name FROM mail_message m2 WHERE m2.thread_id = t.id
+                 ORDER BY m2.date DESC, m2.id DESC LIMIT 1) AS sender_name,
+                (SELECT m2.sender_address FROM mail_message m2 WHERE m2.thread_id = t.id
+                 ORDER BY m2.date DESC, m2.id DESC LIMIT 1) AS sender_address,
+                MAX(m.date) AS last_date,
+                COUNT(m.id) AS message_count,
+                SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+                MAX(m.has_attachments) AS has_attachments,
+                MAX(m.is_flagged) AS has_flagged
+            FROM mail_thread t
+            JOIN mail_message m ON m.thread_id = t.id
+            WHERE {' AND '.join(clauses)}
+            GROUP BY t.id
+            {having_sql}
+            ORDER BY last_date DESC
+            LIMIT ?
+            """,
+            params,
+        )
+
+    def list_thread_messages(self, thread_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_message WHERE thread_id = ? ORDER BY date, id", (thread_id,))
+
+    def mark_thread_read(self, thread_id: int) -> list[sqlite3.Row]:
+        """Marks every unread message in the thread read locally and
+        returns the rows that changed (folder + uid), so the caller can
+        push \\Seen to the server for exactly those — see
+        MailService.push_read_flags(). Returns [] (and touches nothing)
+        if the thread was already fully read, so a caller doesn't need to
+        check first."""
+        rows = self.query(
+            "SELECT * FROM mail_message WHERE thread_id = ? AND is_read = 0", (thread_id,))
+        if rows:
+            self.execute("UPDATE mail_message SET is_read = 1 WHERE thread_id = ?", (thread_id,))
+        return rows
+
+    # ---- search (П2) — local FTS5 only; server-side IMAP SEARCH is
+    # integrations/mail/imap_client.py's job, orchestrated by MailService,
+    # since it needs a live connection this layer never holds ----------
+    def search_mail(self, mailbox_id: int, query: str, folder: str | None = None,
+                     limit: int = 100) -> list[sqlite3.Row]:
+        if not query.strip():
+            return self.list_mail_messages(mailbox_id, folder=folder, limit=limit)
+        sql = (
+            "SELECT m.* FROM mail_fts f JOIN mail_message m ON m.id = f.rowid "
+            "WHERE mail_fts MATCH ? AND m.mailbox_id = ?"
+        )
+        params: list[Any] = [_fts_query(query), mailbox_id]
+        if folder is not None:
+            sql += " AND m.folder = ?"
+            params.append(folder)
+        sql += " ORDER BY m.date DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
+    # ---- messages -------------------------------------------------
+    def upsert_mail_message(self, mailbox_id: int, folder: str, uid: int, **fields: Any) -> int:
+        """Insert a message's header fields, or refresh them in place if
+        this (mailbox, folder, uid) was already stored — body/read state
+        set by set_mail_message_body() is never touched here, see
+        _MESSAGE_HEADER_COLUMNS."""
+        cols = [c for c in _MESSAGE_HEADER_COLUMNS if c in fields]
+        col_names = ", ".join(cols)
+        placeholders = ", ".join("?" for _ in cols)
+        update_clause = ", ".join(f"{c} = excluded.{c}" for c in cols) or "uid = excluded.uid"
+        with self._lock:
+            self._conn.execute(
+                f"INSERT INTO mail_message(mailbox_id, folder, uid, {col_names}, created_at) "
+                f"VALUES (?, ?, ?, {placeholders}, ?) "
+                f"ON CONFLICT(mailbox_id, folder, uid) DO UPDATE SET {update_clause}",
+                (mailbox_id, folder, uid, *(fields[c] for c in cols), now_iso()),
+            )
+            self._conn.commit()
+        # Not cur.lastrowid: on the ON CONFLICT DO UPDATE path SQLite
+        # leaves last_insert_rowid() at whatever the connection's most
+        # recent real INSERT was — which, mid-batch, is very often a
+        # *different* message's id, not this row's. Every existing upsert
+        # in this codebase (chats.upsert_chat, search_preset, app_settings)
+        # avoids the same trap by never reading it back this way.
+        return self.get_mail_message_by_uid(mailbox_id, folder, uid)["id"]
+
+    def get_mail_message(self, message_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_message WHERE id = ?", (message_id,))
+
+    def get_mail_message_by_uid(self, mailbox_id: int, folder: str, uid: int) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM mail_message WHERE mailbox_id = ? AND folder = ? AND uid = ?",
+            (mailbox_id, folder, uid),
+        )
+
+    def get_mail_message_by_message_id(self, mailbox_id: int, message_id: str) -> sqlite3.Row | None:
+        """Looks up a stored message by its RFC822 Message-ID header —
+        the exact-match signal core/mail_thread.py's reference-based
+        threading resolves a References/In-Reply-To entry against."""
+        return self.query_one(
+            "SELECT * FROM mail_message WHERE mailbox_id = ? AND message_id = ? "
+            "ORDER BY id LIMIT 1",
+            (mailbox_id, message_id),
+        )
+
+    def list_mail_messages(self, mailbox_id: int, folder: str | None = None,
+                            limit: int = 200) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM mail_message WHERE mailbox_id = ?"
+        params: list[Any] = [mailbox_id]
+        if folder is not None:
+            sql += " AND folder = ?"
+            params.append(folder)
+        sql += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
+    def count_mail_messages(self, mailbox_id: int) -> int:
+        row = self.query_one(
+            "SELECT count(*) AS c FROM mail_message WHERE mailbox_id = ?", (mailbox_id,))
+        return row["c"] if row else 0
+
+    def list_recent_mail_messages(self, mailbox_id: int | None = None, limit: int = 50) -> list[sqlite3.Row]:
+        """The "Разбор" screen's "последние 50, с баллом и причинами"
+        (П7) — across every mailbox by default, or one when given."""
+        sql = "SELECT * FROM mail_message"
+        params: list[Any] = []
+        if mailbox_id is not None:
+            sql += " WHERE mailbox_id = ?"
+            params.append(mailbox_id)
+        sql += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
+    # ---- triage (П7) --------------------------------------------------
+    def set_message_triage(self, message_id: int, score: int, category: str, reasons: list[str]) -> None:
+        self.execute(
+            "UPDATE mail_message SET triage_score = ?, triage_category = ?, triage_reasons = ? WHERE id = ?",
+            (score, category, json.dumps(reasons, ensure_ascii=False), message_id),
+        )
+
+    def set_mail_message_body(self, message_id: int, body_text: str | None,
+                               body_html_path: str | None, has_attachments: bool) -> None:
+        self.execute(
+            "UPDATE mail_message SET body_text = ?, body_html_path = ?, "
+            "has_attachments = ?, body_fetched = 1 WHERE id = ?",
+            (body_text, body_html_path, 1 if has_attachments else 0, message_id),
+        )
+
+    # ---- attachments -------------------------------------------------
+    def add_mail_attachment(self, message_id: int, filename: str, content_type: str | None,
+                             size_bytes: int | None, path: str | None,
+                             extracted_text: str | None = None) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_attachment(message_id, filename, content_type, size_bytes, path, extracted_text) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (message_id, filename, content_type, size_bytes, path, extracted_text),
+        )
+        return cur.lastrowid
+
+    def list_mail_attachments(self, message_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_attachment WHERE message_id = ? ORDER BY id", (message_id,))
+
+    def get_mail_attachment(self, attachment_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_attachment WHERE id = ?", (attachment_id,))
+
+    # ---- ретеншн (П10) --------------------------------------------------
+    # COALESCE(date, created_at), not a bare date < cutoff: date is NULL
+    # whenever the message's own Date header was missing or too malformed
+    # to parse (imap_client._parse_date() returns None) — a plain `date <
+    # cutoff_iso` comparison against SQL NULL is never true, so those rows
+    # would be silently, permanently exempt from every retention query
+    # below. created_at (set once, at insert time, always present) is the
+    # fallback — "when this app first saw it" is still a fair ageing
+    # signal for a message whose own claimed date can't be trusted anyway.
+    def count_mail_messages_older_than(self, cutoff_iso: str) -> int:
+        return self.query_one(
+            "SELECT count(*) AS c FROM mail_message WHERE COALESCE(date, created_at) < ?",
+            (cutoff_iso,))["c"]
+
+    def select_mail_messages_older_than(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_message WHERE COALESCE(date, created_at) < ? "
+            "ORDER BY COALESCE(date, created_at)", (cutoff_iso,))
+
+    def delete_mail_messages_older_than(self, cutoff_iso: str) -> tuple[int, list[str]]:
+        """Deletes mail_message rows (and their attachment rows, filter-
+        log entries, and any mail_thread left with zero messages after)
+        older than cutoff. Returns (messages deleted, attachment file
+        paths that no longer have any row pointing at them) — this
+        mixin never touches the filesystem itself, same split
+        RetentionMixin.delete_older_than()/orphaned_media() already use
+        for Telegram media; MailRetentionService deletes those files."""
+        with self._lock:
+            message_ids = [r[0] for r in self._conn.execute(
+                "SELECT id FROM mail_message WHERE COALESCE(date, created_at) < ?",
+                (cutoff_iso,)).fetchall()]
+            if not message_ids:
+                return 0, []
+            placeholders = ",".join("?" for _ in message_ids)
+            paths = [r[0] for r in self._conn.execute(
+                f"SELECT path FROM mail_attachment WHERE message_id IN ({placeholders}) AND path IS NOT NULL",
+                message_ids).fetchall()]
+            self._conn.execute(f"DELETE FROM mail_attachment WHERE message_id IN ({placeholders})", message_ids)
+            self._conn.execute(f"DELETE FROM mail_filter_log WHERE message_id IN ({placeholders})", message_ids)
+            self._conn.execute(f"DELETE FROM mail_message WHERE id IN ({placeholders})", message_ids)
+            self._conn.execute(
+                "DELETE FROM mail_thread_label WHERE thread_id NOT IN ("
+                "  SELECT DISTINCT thread_id FROM mail_message WHERE thread_id IS NOT NULL)")
+            self._conn.execute(
+                "DELETE FROM mail_thread WHERE id NOT IN ("
+                "  SELECT DISTINCT thread_id FROM mail_message WHERE thread_id IS NOT NULL)")
+            self._conn.commit()
+            return len(message_ids), paths
+
+    def mail_attachments_older_than(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        """The separate «срок для вложений» knob — attachment rows (and
+        their file paths/sizes) whose *message* is older than cutoff,
+        without touching the message or its body text; only the
+        attachment goes."""
+        return self.query(
+            "SELECT a.* FROM mail_attachment a JOIN mail_message m ON m.id = a.message_id "
+            "WHERE COALESCE(m.date, m.created_at) < ? AND a.path IS NOT NULL", (cutoff_iso,))
+
+    def delete_mail_attachment_rows(self, attachment_ids: list[int]) -> None:
+        if not attachment_ids:
+            return
+        with self._lock:
+            placeholders = ",".join("?" for _ in attachment_ids)
+            self._conn.execute(f"DELETE FROM mail_attachment WHERE id IN ({placeholders})", attachment_ids)
+            self._conn.commit()
+
+    def list_all_mail_attachments(self, mailbox_id: int | None = None, query: str | None = None,
+                                   sender: str | None = None, since: str | None = None,
+                                   until: str | None = None, limit: int = 300) -> list[sqlite3.Row]:
+        """П10's «Менеджер вложений» — every attachment across every
+        message, newest message first, joined back to its message for
+        sender/date/subject/mailbox_id (mail_attachment itself carries
+        none of those, see its own schema comment). "type" isn't a
+        separate filter parameter here — the screen filters by extension
+        client-side off filename, since content_type is server-reported
+        and not always populated, while the filename's suffix always is."""
+        sql = (
+            "SELECT a.*, m.mailbox_id AS mailbox_id, m.subject AS message_subject, "
+            "m.sender_name AS sender_name, m.sender_address AS sender_address, m.date AS message_date "
+            "FROM mail_attachment a JOIN mail_message m ON m.id = a.message_id"
+        )
+        clauses, params = [], []
+        if mailbox_id is not None:
+            clauses.append("m.mailbox_id = ?")
+            params.append(mailbox_id)
+        if query:
+            clauses.append("LOWER(a.filename) LIKE ?")
+            params.append(f"%{query.strip().lower()}%")
+        if sender:
+            clauses.append("(LOWER(m.sender_address) LIKE ? OR LOWER(m.sender_name) LIKE ?)")
+            like = f"%{sender.strip().lower()}%"
+            params.extend([like, like])
+        if since is not None:
+            clauses.append("m.date >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("m.date <= ?")
+            params.append(until)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY m.date DESC, a.id DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, params)
+
+    def set_attachment_extracted_text(self, attachment_id: int, text: str) -> None:
+        """The UPDATE alone is enough to make the attachment's content
+        searchable — mail_attachment_text_au (migration 015) recomputes
+        mail_message.attachments_text from it, and mail_message_au
+        carries that into mail_fts, the same cascade
+        thread_participants()'s caller relies on for updated_at."""
+        self.execute(
+            "UPDATE mail_attachment SET extracted_text = ? WHERE id = ?", (text, attachment_id))
+
+    # ---- flags (П4) ----------------------------------------------------
+    _FLAG_COLUMNS = {"is_read", "is_flagged", "is_answered", "is_forwarded"}
+
+    def set_message_flags(self, message_id: int, **flags: bool) -> None:
+        cols = {k: v for k, v in flags.items() if k in self._FLAG_COLUMNS}
+        if not cols:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(
+            f"UPDATE mail_message SET {set_clause} WHERE id = ?",
+            (*(1 if v else 0 for v in cols.values()), message_id))
+
+    def sync_message_flags(self, mailbox_id: int, folder: str, uid: int, flags: dict) -> None:
+        """Reconciles server-reported flags into an already-upserted
+        message — a normal header sync's other half, alongside
+        upsert_mail_message() for subject/sender/date. Deliberately
+        separate from that call (not folded into _MESSAGE_HEADER_COLUMNS):
+        a message with a still-pending local action (say, "mark read"
+        that hasn't reached the server yet — see mail_action_queue) is
+        left alone here, so a resync mid-flight can't silently revert an
+        optimistic local change back to what the server said *before*
+        that action landed. Once the queued action is confirmed applied,
+        the next sync's server-reported flags become authoritative again,
+        same as for a message with no pending action at all."""
+        message = self.get_mail_message_by_uid(mailbox_id, folder, uid)
+        if message is None or self.has_pending_mail_action(message["id"]):
+            return
+        self.set_message_flags(message["id"], **flags)
+
+    # ---- move / delete / restore (П4) -----------------------------------
+    def move_message_local(self, message_id: int, new_folder: str) -> None:
+        """Same-mailbox move only — thread_id stays valid, since threads
+        are scoped to a mailbox, not a folder (see П2). A cross-mailbox
+        move is a different message row entirely under the destination
+        mailbox, handled by MailService as fetch + upsert-there +
+        delete-here, not by this method."""
+        self.execute(
+            "UPDATE mail_message SET folder = ?, restore_folder = NULL WHERE id = ?",
+            (new_folder, message_id))
+
+    def move_message_to_trash_local(self, message_id: int, trash_folder: str) -> None:
+        """Like move_message_local(), but remembers where the message
+        came from so restore_message_from_trash() has something to
+        restore to — the "reversible while it's in Trash" half of the
+        П4 checklist's undo requirement."""
+        message = self.get_mail_message(message_id)
+        if message is None:
+            return
+        self.execute(
+            "UPDATE mail_message SET folder = ?, restore_folder = ? WHERE id = ?",
+            (trash_folder, message["folder"], message_id))
+
+    def set_message_restore_folder(self, message_id: int, restore_folder: str | None) -> None:
+        """Used by MailService after a confirmed trash-move's placeholder
+        delete-and-resync (see _apply_move_action) — the fresh row that
+        resync creates starts with restore_folder NULL like any newly
+        upserted message, so this is what re-attaches "where it came
+        from" onto the row that's actually going to stick around,
+        looked up by Message-ID once the real UID is known."""
+        self.execute(
+            "UPDATE mail_message SET restore_folder = ? WHERE id = ?", (restore_folder, message_id))
+
+    def restore_message_from_trash(self, message_id: int) -> str | None:
+        """Moves a message back to restore_folder and clears it. Returns
+        the folder it was restored to (for the caller to push the same
+        move server-side), or None if there was nothing to restore —
+        either the message isn't in Trash, or it never went through
+        move_message_to_trash_local() (arrived in Trash some other way,
+        so there's no "back" recorded for it)."""
+        message = self.get_mail_message(message_id)
+        if message is None or not message["restore_folder"]:
+            return None
+        target = message["restore_folder"]
+        self.execute(
+            "UPDATE mail_message SET folder = ?, restore_folder = NULL WHERE id = ?",
+            (target, message_id))
+        return target
+
+    def list_trash_messages(self, mailbox_id: int) -> list[sqlite3.Row]:
+        folder = self.get_mail_folder_by_special_use(mailbox_id, "Trash")
+        if folder is None:
+            return []
+        return self.list_mail_messages(mailbox_id, folder=folder["name"])
+
+    def delete_mail_message_local(self, message_id: int) -> None:
+        """Permanent delete's local half — no undo past this point,
+        matching permanently_delete()'s server-side counterpart."""
+        with self._lock:
+            self._conn.execute("DELETE FROM mail_attachment WHERE message_id = ?", (message_id,))
+            self._conn.execute("DELETE FROM mail_message WHERE id = ?", (message_id,))
+            self._conn.commit()
+
+    # ---- offline action queue (П4) --------------------------------------
+    # Scoped to exactly what PLAN.md's checklist names — "действия
+    # (пометки, перемещения)" — per-message tag/move/delete actions.
+    # Folder administration (create/rename/delete/subscribe) always
+    # needs a live connection to mean anything, so it isn't queued.
+    def enqueue_mail_action(self, mailbox_id: int, message_id: int | None,
+                             kind: str, payload: dict) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_action_queue(mailbox_id, message_id, kind, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mailbox_id, message_id, kind, json.dumps(payload, ensure_ascii=False), now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_pending_mail_actions(self, mailbox_id: int | None = None) -> list[sqlite3.Row]:
+        if mailbox_id is None:
+            return self.query(
+                "SELECT * FROM mail_action_queue WHERE applied_at IS NULL ORDER BY id")
+        return self.query(
+            "SELECT * FROM mail_action_queue WHERE applied_at IS NULL AND mailbox_id = ? ORDER BY id",
+            (mailbox_id,))
+
+    def mark_mail_action_applied(self, action_id: int) -> None:
+        self.execute(
+            "UPDATE mail_action_queue SET applied_at = ? WHERE id = ?", (now_iso(), action_id))
+
+    def has_pending_mail_action(self, message_id: int) -> bool:
+        row = self.query_one(
+            "SELECT 1 FROM mail_action_queue WHERE message_id = ? AND applied_at IS NULL LIMIT 1",
+            (message_id,))
+        return row is not None
+
+    # ---- identities (П5) -------------------------------------------------
+    def add_mail_identity(self, mailbox_id: int, display_name: str, from_address: str,
+                           signature: str | None = None, is_default: bool = False) -> int:
+        if is_default:
+            self.execute("UPDATE mail_identity SET is_default = 0 WHERE mailbox_id = ?", (mailbox_id,))
+        cur = self.execute(
+            "INSERT INTO mail_identity(mailbox_id, display_name, from_address, signature, "
+            "is_default, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (mailbox_id, display_name.strip(), from_address.strip(), signature,
+             1 if is_default else 0, now_iso()),
+        )
+        return cur.lastrowid
+
+    def list_mail_identities(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_identity WHERE mailbox_id = ? ORDER BY is_default DESC, display_name",
+            (mailbox_id,))
+
+    def get_mail_identity(self, identity_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_identity WHERE id = ?", (identity_id,))
+
+    def get_default_mail_identity(self, mailbox_id: int) -> sqlite3.Row | None:
+        row = self.query_one(
+            "SELECT * FROM mail_identity WHERE mailbox_id = ? AND is_default = 1", (mailbox_id,))
+        if row is not None:
+            return row
+        return self.query_one(
+            "SELECT * FROM mail_identity WHERE mailbox_id = ? ORDER BY id LIMIT 1", (mailbox_id,))
+
+    def set_mail_identity_default(self, identity_id: int, mailbox_id: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE mail_identity SET is_default = 0 WHERE mailbox_id = ?", (mailbox_id,))
+            self._conn.execute("UPDATE mail_identity SET is_default = 1 WHERE id = ?", (identity_id,))
+            self._conn.commit()
+
+    def update_mail_identity(self, identity_id: int, **fields: Any) -> None:
+        cols = {k: v for k, v in fields.items()
+                if k in ("display_name", "from_address", "signature")}
+        if not cols:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(f"UPDATE mail_identity SET {set_clause} WHERE id = ?",
+                     (*cols.values(), identity_id))
+
+    def delete_mail_identity(self, identity_id: int) -> None:
+        self.execute("DELETE FROM mail_identity WHERE id = ?", (identity_id,))
+
+    # ---- drafts (П5) -------------------------------------------------
+    def create_mail_draft(self, mailbox_id: int, kind: str = "new", identity_id: int | None = None,
+                           in_reply_to_message_id: int | None = None, to_addresses: list | None = None,
+                           cc_addresses: list | None = None, subject: str = "",
+                           body_text: str = "", author: str = "human") -> int:
+        cur = self.execute(
+            "INSERT INTO mail_draft(mailbox_id, identity_id, in_reply_to_message_id, kind, "
+            "to_addresses, cc_addresses, subject, body_text, author, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mailbox_id, identity_id, in_reply_to_message_id, kind,
+             json.dumps(to_addresses or [], ensure_ascii=False),
+             json.dumps(cc_addresses or [], ensure_ascii=False),
+             subject, body_text, author, now_iso()),
+        )
+        return cur.lastrowid
+
+    def get_mail_draft(self, draft_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_draft WHERE id = ?", (draft_id,))
+
+    def list_mail_drafts(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_draft WHERE mailbox_id = ? AND sent_at IS NULL ORDER BY updated_at DESC",
+            (mailbox_id,))
+
+    def update_mail_draft(self, draft_id: int, **fields: Any) -> None:
+        cols = {k: v for k, v in fields.items() if k in (
+            "identity_id", "to_addresses", "cc_addresses", "subject", "body_text", "server_uid")}
+        if not cols:
+            return
+        for key in ("to_addresses", "cc_addresses"):
+            if key in cols and not isinstance(cols[key], str):
+                cols[key] = json.dumps(cols[key], ensure_ascii=False)
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(
+            f"UPDATE mail_draft SET {set_clause}, updated_at = ? WHERE id = ?",
+            (*cols.values(), now_iso(), draft_id))
+
+    def mark_mail_draft_sent(self, draft_id: int) -> None:
+        self.execute("UPDATE mail_draft SET sent_at = ? WHERE id = ?", (now_iso(), draft_id))
+
+    def delete_mail_draft(self, draft_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM mail_draft_attachment WHERE draft_id = ?", (draft_id,))
+            self._conn.execute("DELETE FROM mail_draft WHERE id = ?", (draft_id,))
+            self._conn.commit()
+
+    def add_mail_draft_attachment(self, draft_id: int, filename: str, path: str,
+                                   size_bytes: int | None = None) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_draft_attachment(draft_id, filename, path, size_bytes) "
+            "VALUES (?, ?, ?, ?)",
+            (draft_id, filename, path, size_bytes))
+        return cur.lastrowid
+
+    def list_mail_draft_attachments(self, draft_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_draft_attachment WHERE draft_id = ? ORDER BY id", (draft_id,))
+
+    def remove_mail_draft_attachment(self, attachment_id: int) -> None:
+        self.execute("DELETE FROM mail_draft_attachment WHERE id = ?", (attachment_id,))
+
+    # ---- labels (П6) -------------------------------------------------
+    def create_mail_label(self, mailbox_id: int, name: str, color: str,
+                           hotkey: int | None = None, sort_order: int = 0) -> int:
+        cur = self.execute(
+            "INSERT INTO mail_label(mailbox_id, name, color, hotkey, sort_order, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (mailbox_id, name.strip(), color, hotkey, sort_order, now_iso()),
+        )
+        return cur.lastrowid
+
+    def seed_default_mail_labels(self, mailbox_id: int) -> None:
+        """The «Заказ»/«Запрос КП»/… default set, seeded once when a
+        mailbox is added. INSERT OR IGNORE against mail_label's own
+        UNIQUE(mailbox_id, name) — calling this twice for the same
+        mailbox (a defensive re-call, not just the one at add-time) never
+        duplicates the set or clobbers labels the user has since renamed
+        or recoloured."""
+        from ...core import mail_labels
+        for i, (name, color) in enumerate(mail_labels.DEFAULT_LABELS, start=1):
+            self.execute(
+                "INSERT OR IGNORE INTO mail_label"
+                "(mailbox_id, name, color, hotkey, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (mailbox_id, name, color, i, i, now_iso()),
+            )
+
+    def list_mail_labels(self, mailbox_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM mail_label WHERE mailbox_id = ? ORDER BY sort_order, name",
+            (mailbox_id,))
+
+    def get_mail_label(self, label_id: int) -> sqlite3.Row | None:
+        return self.query_one("SELECT * FROM mail_label WHERE id = ?", (label_id,))
+
+    def get_mail_label_by_hotkey(self, mailbox_id: int, hotkey: int) -> sqlite3.Row | None:
+        return self.query_one(
+            "SELECT * FROM mail_label WHERE mailbox_id = ? AND hotkey = ?", (mailbox_id, hotkey))
+
+    def update_mail_label(self, label_id: int, **fields: Any) -> None:
+        cols = {k: v for k, v in fields.items() if k in ("name", "color", "hotkey", "sort_order")}
+        if not cols:
+            return
+        if "name" in cols:
+            cols["name"] = cols["name"].strip()
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        self.execute(f"UPDATE mail_label SET {set_clause} WHERE id = ?", (*cols.values(), label_id))
+
+    def delete_mail_label(self, label_id: int) -> None:
+        """Removes the label itself and every thread's assignment to it
+        — the "удаление ярлыка снимает его со всех цепочек и не остав-
+        ляет сирот" half of the checklist. MailService.delete_label()
+        does the server-side keyword cleanup (best-effort, see
+        list_thread_ids_with_label) *before* calling this, since once
+        this runs there's no local record left of which threads to push
+        the removal for."""
+        with self._lock:
+            self._conn.execute("DELETE FROM mail_thread_label WHERE label_id = ?", (label_id,))
+            self._conn.execute("DELETE FROM mail_label WHERE id = ?", (label_id,))
+            self._conn.commit()
+
+    def add_thread_label(self, thread_id: int, label_id: int) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO mail_thread_label(thread_id, label_id) VALUES (?, ?)",
+            (thread_id, label_id))
+
+    def remove_thread_label(self, thread_id: int, label_id: int) -> None:
+        self.execute(
+            "DELETE FROM mail_thread_label WHERE thread_id = ? AND label_id = ?",
+            (thread_id, label_id))
+
+    def list_labels_for_thread(self, thread_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT l.* FROM mail_label l JOIN mail_thread_label tl ON tl.label_id = l.id "
+            "WHERE tl.thread_id = ? ORDER BY l.sort_order, l.name",
+            (thread_id,))
+
+    def list_thread_ids_with_label(self, label_id: int) -> list[int]:
+        return [row["thread_id"] for row in self.query(
+            "SELECT thread_id FROM mail_thread_label WHERE label_id = ?", (label_id,))]

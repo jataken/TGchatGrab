@@ -21,6 +21,7 @@ from typing import Callable
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import AppConfig
+from .db.database import Database
 from .paths import Paths
 
 _logger = logging.getLogger("chatgrab")
@@ -81,6 +82,38 @@ class SecurityService:
     def enabled(self) -> bool:
         return self.config.master_password_enabled
 
+    # ---- which session files the vault covers ---------------------------
+    def _plain_sessions(self) -> list[Path]:
+        """Every plaintext session file, not just the primary one.
+
+        Дополнительные аккаунты (telegram/accounts.py) кладут свои файлы
+        рядом, в ту же папку. Шифровать только основной значило бы, что
+        включённый мастер-пароль защищает один вход из нескольких, — а
+        выглядело бы это как полная защита.
+        """
+        paths: list[Path] = []
+        primary = Path(self.config.session_path)
+        if primary.exists():
+            paths.append(primary)
+        session_dir = self.paths.session_dir
+        if session_dir.exists():
+            for file in sorted(session_dir.glob("*.session")):
+                if file != primary:
+                    paths.append(file)
+        return paths
+
+    def _encrypted_sessions(self) -> list[Path]:
+        out: list[Path] = []
+        primary_enc = _session_enc_path(Path(self.config.session_path))
+        if primary_enc.exists():
+            out.append(primary_enc)
+        session_dir = self.paths.session_dir
+        if session_dir.exists():
+            for file in sorted(session_dir.glob("*.session.enc")):
+                if file != primary_enc:
+                    out.append(file)
+        return out
+
     def _current_iterations(self) -> int:
         """The iteration count the *existing* vault was encrypted under —
         never PBKDF2_ITERATIONS directly, so a vault created before this
@@ -104,6 +137,41 @@ class SecurityService:
                 listener(old_password, old_salt_b64, old_iterations, new_password, new_salt_b64, new_iterations)
             except Exception:
                 _logger.warning("secret rotation listener failed", exc_info=True)
+
+    def register_setting_rotation(self, db: Database, setting_key: str, warning_text: str) -> None:
+        """Р3: the shared shape behind every "keep one encrypted
+        app_settings value valid across the vault's password lifecycle"
+        listener — integrations/bitrix.py's webhook URL and
+        integrations/llm.py's API key both used to carry an
+        almost-identical ~20-line copy of this. Not for bots/crypto.py's
+        bot-token rotation: that one re-encrypts a column on every row of
+        `bots`, not a single `app_settings` key — a structurally
+        different shape of the same idea, not worth forcing in here.
+
+        warning_text is logged (not raised) when the old ciphertext can't
+        be decrypted under the key it's about to lose — e.g. the password
+        was reset as forgotten. The setting is left as unrecoverable
+        ciphertext in that case, exactly like every other rotation
+        listener in the app: the caller re-enters it, same as a Telegram
+        session would need re-authorizing.
+        """
+
+        def _on_rotate(old_password, old_salt_b64, old_iterations,
+                        new_password, new_salt_b64, new_iterations) -> None:
+            stored = db.get_setting(setting_key)
+            if not stored:
+                return
+            try:
+                plain = (self.decrypt_with(stored, old_password, old_salt_b64, old_iterations)
+                         if old_password and old_salt_b64 else stored)
+            except Exception:
+                _logger.warning(warning_text)
+                return
+            new_stored = (self.encrypt_with(plain, new_password, new_salt_b64, new_iterations)
+                          if new_password and new_salt_b64 else plain)
+            db.set_setting(setting_key, new_stored)
+
+        self.add_rotation_listener(_on_rotate)
 
     # ---- secrets other than api_hash/session (e.g. bot tokens) ----------
     def encrypt_secret(self, plaintext: str) -> str:
@@ -143,8 +211,7 @@ class SecurityService:
         salt = secrets.token_bytes(16)
         api_hash_enc = _encrypt(self.config.api_hash.encode("utf-8"), password, salt, PBKDF2_ITERATIONS)
 
-        session_path = Path(self.config.session_path)
-        if session_path.exists():
+        for session_path in self._plain_sessions():
             enc_path = _session_enc_path(session_path)
             enc_path.write_bytes(_encrypt(session_path.read_bytes(), password, salt, PBKDF2_ITERATIONS))
             session_path.unlink()
@@ -166,9 +233,10 @@ class SecurityService:
         iterations = self._current_iterations()
         api_hash = _decrypt(base64.b64decode(self.config.api_hash_enc), password, salt, iterations)
 
-        session_path = Path(self.config.session_path)
-        enc_path = _session_enc_path(session_path)
-        if not session_path.exists() and enc_path.exists():
+        for enc_path in self._encrypted_sessions():
+            session_path = enc_path.parent / enc_path.name[: -len(".enc")]
+            if session_path.exists():
+                continue
             session_path.parent.mkdir(parents=True, exist_ok=True)
             session_path.write_bytes(_decrypt(enc_path.read_bytes(), password, salt, iterations))
         # If a plaintext session already exists here, it's a leftover from
@@ -186,9 +254,8 @@ class SecurityService:
         vault was never unlocked this run."""
         if not self.enabled or self._password is None:
             return
-        session_path = Path(self.config.session_path)
-        if session_path.exists():
-            salt = base64.b64decode(self.config.kdf_salt)
+        salt = base64.b64decode(self.config.kdf_salt)
+        for session_path in self._plain_sessions():
             enc_path = _session_enc_path(session_path)
             enc_path.write_bytes(_encrypt(session_path.read_bytes(), self._password, salt, self._current_iterations()))
             session_path.unlink()
@@ -221,11 +288,9 @@ class SecurityService:
         unrecoverable — listeners are notified with no new key at all,
         rather than guess at silently discarding vs. keeping ciphertext
         that can never be opened again."""
-        session_path = Path(self.config.session_path)
-        enc_path = _session_enc_path(session_path)
-        if enc_path.exists():
+        for enc_path in self._encrypted_sessions():
             enc_path.unlink()
-        if session_path.exists():
+        for session_path in self._plain_sessions():
             session_path.unlink()
         old_salt_b64 = self.config.kdf_salt or None
         old_iterations = self._current_iterations() if old_salt_b64 else None

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core import lead_report
 from ..db.database import Database, now_iso
 from ..paths import Paths
 from .xlsx_safety import excel_safe
@@ -43,9 +44,36 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _row_tokens(row) -> int:
+    """Token estimate for a row, from the stored char_len when the row was
+    fetched without its text (the estimate path), or from the text itself
+    otherwise."""
+    try:
+        length = row["char_len"]
+    except (IndexError, KeyError):
+        length = None
+    if length is None:
+        try:
+            length = len(row["text"] or "")
+        except (IndexError, KeyError):
+            length = 0
+    return max(1, length // 4)
+
+
 @dataclass
 class ExportParams:
     chat_ids: list[int]
+    # С8: a second, unrelated thing this same params/preset/schedule
+    # machinery can produce — messages is the export screen's chat
+    # export (chat_ids/format/split_mode/... below all apply to it);
+    # leads_report is the funnel/source report and only reads
+    # date_from/date_to/folder/preset_name, ignoring the rest. Kept as
+    # one dataclass rather than a second one so a leads_report preset
+    # round-trips through the exact same save_preset/load_preset/
+    # export_schedule_service path a messages preset already does —
+    # that reuse is the whole point of С8's "через существующее
+    # расписание выгрузок".
+    kind: str = "messages"        # messages | leads_report
     format: str = "xlsx"          # xlsx | jsonl | markdown
     merge: bool = False
     split_mode: str = "tokens"     # tokens | month | none
@@ -55,6 +83,7 @@ class ExportParams:
     incremental: bool = False
     zip_photos: bool = False
     include_hidden: bool = False
+    unique_only: bool = False
     folder: str = ""
     query: str = ""
     author: str = ""
@@ -117,16 +146,25 @@ class ExportService:
         self.paths = paths
 
     # ---- selection -----------------------------------------------------
-    def _selected_rows(self, params: ExportParams):
+    def _selection_kwargs(self, params: ExportParams) -> dict:
         min_id_by_chat = None
         if params.incremental:
             min_id_by_chat = self.db.incremental_baseline(params.chat_ids)
-        return self.db.export_select(
+        return dict(
             chat_ids=params.chat_ids, date_from=params.date_from, date_to=params.date_to,
-            include_hidden=params.include_hidden, query=params.query, author=params.author,
+            include_hidden=params.include_hidden, unique_only=params.unique_only,
+            query=params.query, author=params.author,
             photos_only=params.photos_only, forwards_only=params.forwards_only,
             replies_only=params.replies_only, min_id_by_chat=min_id_by_chat,
         )
+
+    def _selected_rows(self, params: ExportParams):
+        return self.db.export_select(**self._selection_kwargs(params))
+
+    def _selected_meta(self, params: ExportParams):
+        """Same selection, without message text — enough to count files and
+        tokens, cheap enough to re-run on every change of a checkbox."""
+        return self.db.export_select_meta(**self._selection_kwargs(params))
 
     def _chat_title(self, chat_id: int) -> str:
         chat = self.db.get_chat(chat_id)
@@ -164,7 +202,7 @@ class ExportService:
         current: list = []
         current_tokens = 0
         for r in rows:
-            t = estimate_tokens(r["text"] or "")
+            t = _row_tokens(r)
             if current and current_tokens + t > params.token_limit:
                 out.append(current)
                 current, current_tokens = [], 0
@@ -178,8 +216,8 @@ class ExportService:
 
     # ---- estimate (no writes) -------------------------------------------
     def estimate(self, params: ExportParams) -> ExportEstimate:
-        rows = self._selected_rows(params)
-        token_total = sum(estimate_tokens(r["text"] or "") for r in rows)
+        rows = self._selected_meta(params)
+        token_total = sum(_row_tokens(r) for r in rows)
         names = self._plan_filenames(rows, params)
         return ExportEstimate(row_count=len(rows), token_count=token_total,
                                file_count=len(names), file_names=names)
@@ -283,6 +321,8 @@ class ExportService:
 
     # ---- run -----------------------------------------------------------
     def run(self, params: ExportParams) -> ExportResult:
+        if params.kind == "leads_report":
+            return self._run_leads_report(params)
         rows = self._selected_rows(params)
         folder = Path(params.folder or self.paths.exports_dir)
         folder.mkdir(parents=True, exist_ok=True)
@@ -339,6 +379,89 @@ class ExportService:
             preset_name=params.preset_name,
         )
         return ExportResult(output_paths=output_paths, row_count=len(rows), export_log_id=log_id)
+
+    # ---- leads report (С8) ------------------------------------------------
+    # A different question than the rest of this file — not "which
+    # messages", but "how did the leads that came in convert" — sharing
+    # the same ExportParams/preset/schedule plumbing rather than a
+    # parallel one, per params.kind's own docstring above.
+    def _run_leads_report(self, params: ExportParams) -> ExportResult:
+        folder = Path(params.folder or self.paths.exports_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        by_source = self.db.leads_report_by_source(params.date_from, params.date_to)
+        by_direction = self.db.leads_report_by_direction(params.date_from, params.date_to)
+        avg_days = self.db.avg_days_to_quote(params.date_from, params.date_to)
+        reject_reasons = self.db.reject_reasons_report(params.date_from, params.date_to)
+
+        name = f"chatgrab_отчёт-по-воронке_{now_iso()[:10]}.xlsx"
+        path = folder / name
+        self._write_leads_report_xlsx(path, by_source, by_direction, avg_days, reject_reasons)
+
+        # by_source's NULL-chat bucket included, so this counts every lead
+        # in range exactly once — same total leads_report_by_direction
+        # would give, just grouped differently.
+        total_leads = sum(r["total"] for r in by_source)
+        log_id = self.db.add_export_log(
+            created_at=now_iso(), chat_ids=json.dumps([]), format="xlsx",
+            date_from=params.date_from, date_to=params.date_to,
+            merge=1 if params.merge else 0, split_mode=params.split_mode,
+            token_limit=params.token_limit, incremental=0, zip_photos=0,
+            include_hidden=0, max_message_id_by_chat=json.dumps({}),
+            output_paths=json.dumps([str(path)]), preset_name=params.preset_name,
+        )
+        return ExportResult(output_paths=[str(path)], row_count=total_leads, export_log_id=log_id)
+
+    def _write_leads_report_xlsx(self, path: Path, by_source: list, by_direction: list,
+                                  avg_days: float | None, reject_reasons: list) -> None:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+
+        wb = Workbook()
+        ws_source = wb.active
+        ws_source.title = "Источники"
+        self._write_conversion_sheet(ws_source, by_source, "chat_title", "без чата / от бота")
+
+        ws_direction = wb.create_sheet("Направления")
+        self._write_conversion_sheet(ws_direction, by_direction, "direction_name", "без направления")
+
+        ws_summary = wb.create_sheet("Сводка")
+        ws_summary.append([
+            "Средний срок от первого касания до КП, дней",
+            round(avg_days, 1) if avg_days is not None else "нет данных",
+        ])
+        ws_summary["A1"].font = Font(bold=True)
+        ws_summary.column_dimensions["A"].width = 48
+
+        ws_reasons = wb.create_sheet("Причины отказов")
+        ws_reasons.append(["Причина", "Количество"])
+        for cell in ws_reasons[1]:
+            cell.font = Font(bold=True)
+        for row in reject_reasons:
+            ws_reasons.append([excel_safe(row["reject_reason"] or "не указана"), row["c"]])
+        ws_reasons.column_dimensions["A"].width = 32
+
+        wb.save(path)
+
+    def _write_conversion_sheet(self, ws, rows: list, label_key: str, empty_label: str) -> None:
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+
+        ws.append(["Название", "Всего", "Сделки", "Отказы", "В работе", "Конверсия, %"])
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for row in rows:
+            conv = lead_report.conversion(row["total"], row["won"], row["lost"])
+            label = row[label_key] or empty_label
+            ws.append([
+                excel_safe(label), conv["total"], conv["won"], conv["lost"],
+                conv["in_progress"], conv["conversion_pct"],
+            ])
+        widths = {1: 32, 2: 10, 3: 10, 4: 10, 5: 10, 6: 14}
+        for col, width in widths.items():
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
 
     # ---- presets -----------------------------------------------------
     def save_preset(self, name: str, params: ExportParams) -> None:
