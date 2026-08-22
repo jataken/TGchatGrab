@@ -493,12 +493,18 @@ class _NewBotCard(QFrame):
 
 
 class BotsListTab(QWidget):
+    # design-brief.md §9.6: at 980×620 (the app's own minimum, main_window.py)
+    # the tile grid reflows to 2 columns, narrower still to 1 — not squeezed
+    # into a sliver third column the way a fixed `range(3)` grid would.
+    _MIN_TILE_WIDTH = 270
+
     def __init__(self, ctx: AppContext, navigate=None):
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate or (lambda *_a, **_k: None)
         self.cards: dict[int, BotCard] = {}
         self._new_bot_card: _NewBotCard | None = None
+        self._columns = 3
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -521,8 +527,6 @@ class BotsListTab(QWidget):
         self.grid = QGridLayout()
         self.grid.setHorizontalSpacing(12)
         self.grid.setVerticalSpacing(12)
-        for col in range(3):
-            self.grid.setColumnStretch(col, 1)
         outer.addLayout(self.grid)
 
         ctx.bot_manager.bots_changed.connect(self.refresh)
@@ -530,7 +534,20 @@ class BotsListTab(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._timer.start(3000)
 
+    def _update_columns(self) -> bool:
+        columns = max(1, min(3, self.width() // self._MIN_TILE_WIDTH))
+        if columns == self._columns:
+            return False
+        self._columns = columns
+        return True
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self._update_columns():
+            self.refresh()
+
     def on_show(self) -> None:
+        self._update_columns()
         self.refresh()
 
     def _on_add(self) -> None:
@@ -558,12 +575,16 @@ class BotsListTab(QWidget):
 
         # Detach everything from the grid (widgets survive — just get
         # reparented out) so positions can be recomputed cleanly each
-        # tick, same as bots are added/removed/reordered underneath.
+        # tick, same as bots are added/removed/reordered underneath —
+        # also the mechanism a column-count change (resizeEvent) reflows
+        # through, not just an add/remove/reorder.
         while self.grid.count():
             item = self.grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.setParent(None)
+        for col in range(3):
+            self.grid.setColumnStretch(col, 1 if col < self._columns else 0)
 
         for i, bot in enumerate(bots):
             bot_card = self.cards.get(bot["id"])
@@ -571,10 +592,10 @@ class BotsListTab(QWidget):
                 bot_card = BotCard(self.ctx, bot["id"], self.refresh, self.navigate)
                 self.cards[bot["id"]] = bot_card
             bot_card.refresh()
-            self.grid.addWidget(bot_card, i // 3, i % 3, Qt.AlignTop)
+            self.grid.addWidget(bot_card, i // self._columns, i % self._columns, Qt.AlignTop)
 
         if self._new_bot_card is None:
             self._new_bot_card = _NewBotCard()
             self._new_bot_card.clicked.connect(self._on_add)
         n = len(bots)
-        self.grid.addWidget(self._new_bot_card, n // 3, n % 3, Qt.AlignTop)
+        self.grid.addWidget(self._new_bot_card, n // self._columns, n % self._columns, Qt.AlignTop)

@@ -13,13 +13,13 @@ import datetime as dt
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from .. import theme
 from ..context import AppContext
 from ..format import short_dt
-from ..widgets import ActivityBars, Card, fmt_int as _fmt, h1, label, muted, plural as _plural
+from ..widgets import ActivityBars, Card, button, fmt_int as _fmt, h1, label, muted, plural as _plural
 from ...core import lead as lead_domain
 
 # Д4 («Плотный рефреш»): цвета тона строк — из theme.py, не хардкод-хекс
@@ -187,16 +187,46 @@ class TodayScreen(QWidget):
         head.addWidget(self.date_label)
         head.addStretch(1)
         outer.addLayout(head)
-        outer.addSpacing(18)
+        outer.addSpacing(10)
 
-        columns = QHBoxLayout()
-        columns.setSpacing(18)
+        # design-brief.md §7 «Не авторизован»: плашка WARN со ссылкой на
+        # «Подключение» — раньше нигде не показывалась, единственным
+        # индикатором была точка в сайдбаре (main_window.py). Объектное
+        # имя, а не голый setStyleSheet() на контейнере с детьми — тот же
+        # приём, что у StatusPill (Д2), чтобы фон не протёк на кнопку.
+        self.auth_warning = QWidget()
+        self.auth_warning.setObjectName("todayauthwarn")
+        warn_lay = QHBoxLayout(self.auth_warning)
+        warn_lay.setContentsMargins(12, 9, 10, 9)
+        warn_lay.setSpacing(10)
+        self.auth_warning_label = QLabel("Аккаунт не подключён — сбор остановлен.")
+        self.auth_warning_label.setTextFormat(Qt.PlainText)
+        self.auth_warning_label.setStyleSheet(f"color: {theme.WARN_FG}; font-size: 12px; background: transparent;")
+        warn_lay.addWidget(self.auth_warning_label, 1)
+        goto_connect_btn = button("Подключение", "ghost")
+        goto_connect_btn.clicked.connect(lambda: self.navigate("connect"))
+        warn_lay.addWidget(goto_connect_btn)
+        self.auth_warning.setStyleSheet(
+            "QWidget#todayauthwarn { background: rgba(240,198,160,.07); "
+            "border: 1px solid rgba(240,198,160,.22); border-radius: 10px; }"
+        )
+        self.auth_warning.setVisible(False)
+        outer.addWidget(self.auth_warning)
+        outer.addSpacing(8)
+
+        # design-brief.md §9.6: at 980×620 (минимум приложения) две колонки
+        # side by side обрезали правую — ниже порога ширины они встают друг
+        # под друга вместо горизонтальной пары, тот же QGridLayout-приём,
+        # что и у сетки ботов (bots/list_tab.py), только 1×2 против 2×1.
+        self._columns_grid = QGridLayout()
+        self._columns_grid.setHorizontalSpacing(18)
+        self._columns_grid.setVerticalSpacing(18)
         self.collect_col = BlockColumn("Сбор", "сообщений в день, последние 16 суток")
         self.bots_col = BlockColumn("Боты", "заявок в день, последние 16 суток")
-        columns.addWidget(self.collect_col, 1)
-        columns.addWidget(self.bots_col, 1)
-        outer.addLayout(columns)
+        outer.addLayout(self._columns_grid)
         outer.addStretch(1)
+        self._columns_wide = None
+        self._relayout_columns()
 
         self.collect_msgs = StatCell("Сообщений")
         self.collect_chats = StatCell("Чатов в работе")
@@ -219,7 +249,32 @@ class TodayScreen(QWidget):
         ctx.collector.chats_changed.connect(self.refresh)
         ctx.bot_manager.bots_changed.connect(self.refresh)
 
+    _STACK_BELOW_WIDTH = 900
+
+    def _relayout_columns(self) -> None:
+        wide = self.width() >= self._STACK_BELOW_WIDTH
+        if wide == self._columns_wide:
+            return
+        self._columns_wide = wide
+        self._columns_grid.removeWidget(self.collect_col)
+        self._columns_grid.removeWidget(self.bots_col)
+        if wide:
+            self._columns_grid.addWidget(self.collect_col, 0, 0)
+            self._columns_grid.addWidget(self.bots_col, 0, 1)
+            self._columns_grid.setColumnStretch(0, 1)
+            self._columns_grid.setColumnStretch(1, 1)
+        else:
+            self._columns_grid.addWidget(self.collect_col, 0, 0)
+            self._columns_grid.addWidget(self.bots_col, 1, 0)
+            self._columns_grid.setColumnStretch(0, 1)
+            self._columns_grid.setColumnStretch(1, 0)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._relayout_columns()
+
     def on_show(self, **kwargs) -> None:
+        self._relayout_columns()
         self.refresh()
 
     def refresh(self) -> None:
@@ -227,6 +282,7 @@ class TodayScreen(QWidget):
         month_name = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
                       "августа", "сентября", "октября", "ноября", "декабря"][now.month - 1]
         self.date_label.setText(f"{now.day} {month_name}")
+        self.auth_warning.setVisible(not self.ctx.tg.authorized)
 
         self._refresh_collect()
         self._refresh_bots()

@@ -85,7 +85,10 @@ class FolderManagerDialog(QDialog):
         row_label = folder["name"]
         if folder["special_use"]:
             row_label += f"  · {_SPECIAL_USE_LABELS.get(folder['special_use'], folder['special_use'])}"
-        rl.addWidget(QLabel(row_label), 1)
+        folder_label = QLabel(row_label)
+        # §8: имя папки приходит с IMAP-сервера — внешний текст.
+        folder_label.setTextFormat(Qt.PlainText)
+        rl.addWidget(folder_label, 1)
 
         rl.addWidget(muted("синхронизировать"))
         subscribed = ToggleSwitch(bool(folder["enabled"]))
@@ -233,7 +236,9 @@ class IdentityManagerDialog(QDialog):
         title = f"{identity['display_name']} <{identity['from_address']}>"
         if identity["is_default"]:
             title += "  · по умолчанию"
-        rl.addWidget(QLabel(title), 1)
+        identity_label = QLabel(title)
+        identity_label.setTextFormat(Qt.PlainText)
+        rl.addWidget(identity_label, 1)
         if not identity["is_default"]:
             default_btn = button("Сделать основной", "ghost")
             default_btn.clicked.connect(lambda _c, i=identity["id"]: self._on_set_default(i))
@@ -384,7 +389,9 @@ class LabelManagerDialog(QDialog):
         title = lb["name"]
         if lb["hotkey"]:
             title += f"  ·  {lb['hotkey']}"
-        rl.addWidget(QLabel(title), 1)
+        label_title = QLabel(title)
+        label_title.setTextFormat(Qt.PlainText)
+        rl.addWidget(label_title, 1)
 
         rename_btn = button("✎", "ghost")
         rename_btn.setToolTip("Переименовать")
@@ -661,7 +668,9 @@ class MailSettingsScreen(QWidget):
 
         info = QVBoxLayout()
         info.setSpacing(1)
-        info.addWidget(QLabel(mb["address"]))
+        address_label = QLabel(mb["address"])
+        address_label.setTextFormat(Qt.PlainText)
+        info.addWidget(address_label)
         count = self.ctx.db.count_mail_messages(mb["id"])
         detail = f"писем: {count}"
         detail += f" · синхронизирован {short_dt(mb['last_sync_at'])}" if mb["last_sync_at"] \

@@ -261,6 +261,7 @@ class ConnectScreen(QWidget):
         row = QHBoxLayout(c)
         row.setContentsMargins(16, 16, 16, 16)
         self.avatar_label = QLabel("")
+        self.avatar_label.setTextFormat(Qt.PlainText)
         self.avatar_label.setFixedSize(44, 44)
         self.avatar_label.setAlignment(Qt.AlignCenter)
         self.avatar_label.setStyleSheet(
@@ -273,6 +274,9 @@ class ConnectScreen(QWidget):
         info = QVBoxLayout()
         info.setSpacing(3)
         self.account_name_label = QLabel("Аккаунт подключён")
+        # §8: имя выше становится me.first_name/last_name — Telegram-профиль,
+        # внешний текст.
+        self.account_name_label.setTextFormat(Qt.PlainText)
         self.account_name_label.setStyleSheet("font-size: 14px;")
         info.addWidget(self.account_name_label)
         self.account_meta_label = QLabel("")
@@ -406,6 +410,9 @@ class ConnectScreen(QWidget):
         self.phone_field.input.setStyleSheet(f"font-family: {theme.FONT_MONO}; font-size: 12.5px;")
         lay.addWidget(self.phone_field)
         self.phone_error = QLabel("")
+        # §8: текст сюда приходит через telegram/errors.humanize_error(),
+        # у которого есть запасной путь через str(exc) — внешний текст.
+        self.phone_error.setTextFormat(Qt.PlainText)
         self.phone_error.setWordWrap(True)
         self.phone_error.setStyleSheet(f"color: {theme.BAD_FG}; font-size: 12px;")
         lay.addWidget(self.phone_error)
@@ -428,6 +435,7 @@ class ConnectScreen(QWidget):
         lay.setSpacing(10)
         lay.addWidget(label(_STEP_TITLES["code"], "kicker"))
         self.code_hint = QLabel("")
+        self.code_hint.setTextFormat(Qt.PlainText)
         self.code_hint.setWordWrap(True)
         self.code_hint.setProperty("class", "muted")
         lay.addWidget(self.code_hint)
@@ -446,6 +454,7 @@ class ConnectScreen(QWidget):
         caption_row.addStretch(1)
         lay.addLayout(caption_row)
         self.code_error = QLabel("")
+        self.code_error.setTextFormat(Qt.PlainText)
         self.code_error.setWordWrap(True)
         self.code_error.setStyleSheet(
             f"background: rgba(180,70,90,36); color: {theme.BAD_FG}; border-radius: 8px; "
@@ -475,6 +484,7 @@ class ConnectScreen(QWidget):
         hint.setProperty("class", "muted")
         lay.addWidget(hint)
         self.pwd_error = QLabel("")
+        self.pwd_error.setTextFormat(Qt.PlainText)
         self.pwd_error.setWordWrap(True)
         self.pwd_error.setStyleSheet(f"color: {theme.BAD_FG}; font-size: 12px;")
         lay.addWidget(self.pwd_error)
@@ -522,7 +532,9 @@ class ConnectScreen(QWidget):
             title = acc["name"] + (" · основной" if acc["is_default"] else "")
             name_col = QVBoxLayout()
             name_col.setSpacing(1)
-            name_col.addWidget(QLabel(title))
+            title_label = QLabel(title)
+            title_label.setTextFormat(Qt.PlainText)
+            name_col.addWidget(title_label)
             detail = f"чатов: {usage['chats']} · ботов: {usage['bots']}"
             if acc["last_error"]:
                 detail += f" · {acc['last_error']}"

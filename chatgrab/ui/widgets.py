@@ -332,6 +332,10 @@ class LeadStatusPill(QLabel):
 
     def __init__(self, stage=None, font_size: str = "12px"):
         super().__init__()
+        # §8: stage["label"] — название этапа воронки, заведённое
+        # пользователем в конструкторе воронок, тем же путём, что и любой
+        # другой текст в приложении — без исключений для «своих» данных.
+        self.setTextFormat(Qt.PlainText)
         self._font_size = font_size
         self.set_stage(stage)
 
@@ -660,6 +664,68 @@ class AnimatedProgressBar(QWidget):
             p.setClipPath(track)
             p.fillRect(sweep_rect, grad)
             p.setClipping(False)
+
+
+class SkeletonRow(QWidget):
+    """design-brief.md §7 «Загрузка данных для UI»: a placeholder row for
+    content not back from an async call yet (Telegram's own dialog list,
+    for instance) — rounded block, `rgba(233,233,237,8)` fill, a running
+    shimmer sweeping left→right (§5: 1.6s, continuous). Same sweep-via-
+    gradient technique as `AnimatedProgressBar` above, on a plain block
+    instead of a progress track. Always animating while visible — there's
+    no "idle" state for a loading placeholder the way there is for a
+    progress bar, so no `set_active()` toggle to guard against."""
+
+    _PERIOD_MS = 1600
+
+    def __init__(self, height: int = 16):
+        super().__init__()
+        self.setFixedHeight(height)
+        self._clock = QElapsedTimer()
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self.update)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._clock.start()
+        self._timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect())
+        block = QPainterPath()
+        block.addRoundedRect(rect, 8, 8)
+        p.fillPath(block, QColor(233, 233, 237, 8))
+
+        sweep_w = rect.width() * 0.3
+        t = (self._clock.elapsed() % self._PERIOD_MS) / self._PERIOD_MS
+        x = -sweep_w + t * (rect.width() + sweep_w)
+        sweep_rect = QRectF(x, rect.top(), sweep_w, rect.height())
+        grad = QLinearGradient(sweep_rect.topLeft(), sweep_rect.topRight())
+        grad.setColorAt(0.0, QColor(255, 255, 255, 0))
+        grad.setColorAt(0.5, QColor(255, 255, 255, 22))
+        grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.setClipPath(block)
+        p.fillRect(sweep_rect, grad)
+        p.setClipping(False)
+
+
+def skeleton_rows(count: int = 3, height: int = 16, spacing: int = 8) -> QWidget:
+    """Three (or `count`) stacked `SkeletonRow`s in one ready-to-place
+    widget — the shape every loading call site in §7 actually wants."""
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(spacing)
+    for _ in range(count):
+        lay.addWidget(SkeletonRow(height))
+    return host
 
 
 class Sparkline(QWidget):

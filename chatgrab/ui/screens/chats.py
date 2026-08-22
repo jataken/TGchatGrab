@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from .. import theme
 from ..context import AppContext
 from ..util import fire
-from ..widgets import Sparkline, StatusPill, ToggleSwitch, button, h1, icon_button, label, muted
+from ..widgets import Sparkline, StatusPill, ToggleSwitch, button, h1, icon_button, label, muted, skeleton_rows
 
 
 class AddChatDialog(QDialog):
@@ -77,6 +77,13 @@ class AddChatDialog(QDialog):
         self.dialog_list.itemClicked.connect(self._on_pick)
         lay.addWidget(self.dialog_list)
 
+        # design-brief.md §7 «Загрузка данных для UI»: скелетон-строки
+        # вместо списка, пока «Обновить список» ждёт Telegram — тот же
+        # слот, что и у dialog_list, просто одно видимо, другое скрыто.
+        self.dialog_skeleton = skeleton_rows(3, height=28, spacing=6)
+        self.dialog_skeleton.setVisible(False)
+        lay.addWidget(self.dialog_skeleton)
+
         self.hint = QLabel(
             "История нового чата встанет в общую очередь — чаты грузятся по одному, "
             "чтобы Telegram не останавливал сбор. Для приватных чатов по ссылке-приглашению "
@@ -103,8 +110,9 @@ class AddChatDialog(QDialog):
             self._populate_dialogs(dialogs or [])
 
     def _reload_dialogs(self) -> None:
-        self.dialogs_status.setText("Загружаю список ваших чатов…")
-        self.dialogs_status.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 12px;")
+        self.dialogs_status.setText("")
+        self.dialog_list.setVisible(False)
+        self.dialog_skeleton.setVisible(True)
         self.refresh_dialogs_btn.setEnabled(False)
         account_id = self.account_combo.currentData() if self.account_combo else None
         service = self.ctx.tg
@@ -129,6 +137,8 @@ class AddChatDialog(QDialog):
         task.add_done_callback(_apply)
 
     def _show_dialogs_error(self, message: str) -> None:
+        self.dialog_skeleton.setVisible(False)
+        self.dialog_list.setVisible(True)
         self.dialogs_status.setText(
             f"Не удалось получить список ваших чатов: {message} "
             "Можно добавить чат вручную по ссылке выше."
@@ -137,6 +147,8 @@ class AddChatDialog(QDialog):
         self.dialog_list.clear()
 
     def _populate_dialogs(self, dialogs: list) -> None:
+        self.dialog_skeleton.setVisible(False)
+        self.dialog_list.setVisible(True)
         self._dialogs = dialogs
         self.dialog_list.clear()
         if not dialogs:
@@ -267,7 +279,8 @@ class _ChatRow(QFrame):
         name_wrap.setLayout(name_col)
         lay.addWidget(name_wrap, 1)
 
-        self.spark = Sparkline(db.activity_bars(chat["chat_id"], days=30), height=24)
+        self._spark_series = db.activity_bars(chat["chat_id"], days=30)
+        self.spark = Sparkline(self._spark_series, height=24)
         self.spark.setFixedWidth(_COL_SPARK)
         lay.addWidget(self.spark)
 
@@ -315,6 +328,17 @@ class _ChatRow(QFrame):
         s = theme.STATUS_STYLES.get(status, theme.STATUS_STYLES["idle"])
         self.stripe.setStyleSheet(f"background: {s['dot']}; border-radius: 1px;")
         self.pill.set_status(status)
+
+    def update_spark(self, values: list[int]) -> None:
+        # Д11/§5: Sparkline replays its grow-from-bottom entrance animation
+        # on every set_values() — calling it unconditionally on this row's
+        # 2-second refresh() tick (see `ChatsScreen.refresh` below) would
+        # replay it forever, exactly the periodic-timer flicker §5 warns
+        # against. Only push a new series when the 30-day activity actually
+        # changed since the last tick.
+        if values != self._spark_series:
+            self._spark_series = values
+            self.spark.set_values(values)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         self.doubleClicked.emit()
@@ -510,7 +534,7 @@ class ChatsScreen(QWidget):
                 row.last_label.setText(str(last)[:16].replace("T", " ") if last else "—")
                 row.apply_status(chat["status"])
                 row.toggle.set_checked(bool(chat["enabled"]))
-                row.spark.set_values(db.activity_bars(chat_id, days=30))
+                row.update_spark(db.activity_bars(chat_id, days=30))
 
         for chat_id in list(self._rows):
             if chat_id not in seen:
